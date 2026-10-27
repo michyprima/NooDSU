@@ -37,6 +37,7 @@
 #include "../core/settings.h"
 
 #define MAX_DRAWS 1024
+#define NO_INVALIDATE GX2RResourceFlags(GX2R_RESOURCE_DISABLE_CPU_INVALIDATE | GX2R_RESOURCE_DISABLE_GPU_INVALIDATE)
 extern const uint8_t shader_wiiu_gsh[];
 
 ScreenLayout gpLayout;
@@ -190,19 +191,23 @@ void ConsoleUI::drawTexture(void *texture, float tx, float ty, float tw, float t
     };
 
     // Upload positions to the buffer
-    uint8_t *buffer = (uint8_t*)GX2RLockBufferEx(&posBuffer, GX2R_RESOURCE_BIND_NONE);
+    // Only the written range is flushed, since locking and unlocking normally flush the whole buffer
+    uint8_t *buffer = (uint8_t*)GX2RLockBufferEx(&posBuffer, NO_INVALIDATE);
     memcpy(&buffer[bufOffset * 2], posCoords, posBuffer.elemSize * 8);
-    GX2RUnlockBufferEx(&posBuffer, GX2R_RESOURCE_BIND_NONE);
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, &buffer[bufOffset * 2], posBuffer.elemSize * 8);
+    GX2RUnlockBufferEx(&posBuffer, NO_INVALIDATE);
 
     // Upload texture coordinates to the buffer
-    buffer = (uint8_t*)GX2RLockBufferEx(&texBuffer, GX2R_RESOURCE_BIND_NONE);
+    buffer = (uint8_t*)GX2RLockBufferEx(&texBuffer, NO_INVALIDATE);
     memcpy(&buffer[bufOffset], &texCoords[rotation * 8], texBuffer.elemSize * 4);
-    GX2RUnlockBufferEx(&texBuffer, GX2R_RESOURCE_BIND_NONE);
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, &buffer[bufOffset], texBuffer.elemSize * 4);
+    GX2RUnlockBufferEx(&texBuffer, NO_INVALIDATE);
 
     // Upload vertex colors to the buffer
-    buffer = (uint8_t*)GX2RLockBufferEx(&colBuffer, GX2R_RESOURCE_BIND_NONE);
+    buffer = (uint8_t*)GX2RLockBufferEx(&colBuffer, NO_INVALIDATE);
     memcpy(&buffer[bufOffset * 2], vtxColors, colBuffer.elemSize * 4);
-    GX2RUnlockBufferEx(&colBuffer, GX2R_RESOURCE_BIND_NONE);
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, &buffer[bufOffset * 2], colBuffer.elemSize * 4);
+    GX2RUnlockBufferEx(&colBuffer, NO_INVALIDATE);
 
     // Draw a texture on the TV
     WHBGfxBeginRenderTV();
