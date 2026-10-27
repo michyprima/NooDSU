@@ -41,6 +41,38 @@ struct Entry {
     Entry(uint8_t command, uint32_t param): command(command), param(param) {}
 };
 
+// A ring buffer FIFO of geometry entries, which grows in the rare case that it fills up
+// This avoids the overhead of a deque for every command that's sent
+class EntryFifo {
+public:
+    typedef Entry value_type;
+
+    size_t size() const { return count; }
+    bool empty() const { return count == 0; }
+    Entry &front() { return data[head]; }
+    Entry &operator[](size_t i) { return data[(head + i) & (data.size() - 1)]; }
+    void pop_front() { head = (head + 1) & (data.size() - 1); count--; }
+    void clear() { head = count = 0; }
+
+    void push_back(const Entry &entry) {
+        if (count == data.size()) grow();
+        data[(head + count++) & (data.size() - 1)] = entry;
+    }
+
+private:
+    std::vector<Entry> data = std::vector<Entry>(512);
+    size_t head = 0, count = 0;
+
+    void grow() {
+        // Double the size of the buffer, keeping entries in order
+        std::vector<Entry> bigger(data.size() * 2);
+        for (size_t i = 0; i < count; i++)
+            bigger[i] = (*this)[i];
+        data.swap(bigger);
+        head = 0;
+    }
+};
+
 struct Matrix {
     int32_t data[4 * 4] = {
         1 << 12, 0 << 12, 0 << 12, 0 << 12,
@@ -157,7 +189,7 @@ private:
 
     GXState state = GX_IDLE;
 
-    std::deque<Entry> fifo;
+    EntryFifo fifo;
     uint32_t pipeSize = 0;
     uint32_t testQueue = 0;
     uint32_t matrixQueue = 0;

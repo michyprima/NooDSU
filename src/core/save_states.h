@@ -42,8 +42,8 @@ public:
     bool saveState();
     bool loadState();
 
-    template <typename T> static void writeFifo(std::deque<T> &fifo, FILE *file);
-    template <typename T> static void readFifo(std::deque<T> &fifo, FILE *file);
+    template <typename F> static void writeFifo(F &fifo, FILE *file);
+    template <typename F> static void readFifo(F &fifo, FILE *file);
 
 private:
     Core *core;
@@ -56,7 +56,7 @@ private:
     FILE *openFile(const char *mode);
 };
 
-template <typename T> void SaveStates::writeFifo(std::deque<T> &fifo, FILE *file) {
+template <typename F> void SaveStates::writeFifo(F &fifo, FILE *file) {
     // Parse a FIFO and save its values
     uint32_t count = fifo.size();
     fwrite(&count, sizeof(count), 1, file);
@@ -64,10 +64,10 @@ template <typename T> void SaveStates::writeFifo(std::deque<T> &fifo, FILE *file
         fwrite(&fifo[i], sizeof(fifo[i]), 1, file);
 }
 
-template <typename T> void SaveStates::readFifo(std::deque<T> &fifo, FILE *file) {
+template <typename F> void SaveStates::readFifo(F &fifo, FILE *file) {
     // Reset and reload a FIFO with saved values
     fifo.clear();
-    uint32_t count; T value;
+    uint32_t count; typename F::value_type value;
     fread(&count, sizeof(count), 1, file);
     for (uint32_t i = 0; i < count; i++) {
         fread(&value, sizeof(value), 1, file);

@@ -808,6 +808,9 @@ template <typename T> void Memory::writeFallback(bool arm7, uint32_t address, T 
     if (!arm7) { // ARM9
         switch (address & 0xFF000000) {
         case 0x4000000: // I/O registers
+            // Send 32-bit GXFIFO writes straight to the 3D engine, since games stream lots of them
+            if (sizeof(T) == 4 && (address & ~0x3F) == 0x4000400)
+                return core->gpu3D.writeGxFifo(0xFFFFFFFF, value);
             ioWrite9<T>(address, value);
             return;
 
