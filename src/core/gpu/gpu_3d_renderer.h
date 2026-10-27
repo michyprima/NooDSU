@@ -51,6 +51,7 @@ public:
     void writeToonTable(int index, uint16_t mask, uint16_t value);
 
 private:
+    friend struct LinearStepper;
     Core *core;
 
     bool resShift = false;

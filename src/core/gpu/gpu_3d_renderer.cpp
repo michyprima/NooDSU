@@ -222,6 +222,16 @@ void Gpu3DRenderer::drawScanline1(int line) {
 
     // Clear the scanline buffers with the clear values
     int start = line * 256 * 2, end = start + (256 << resShift);
+#ifdef __WIIU__
+    // Zero whole cache blocks first, so the CPU doesn't fetch lines from memory that are about to be overwritten
+    uint32_t *buffers[] = { &framebuffer[0][start], (uint32_t*)&depthBuffer[0][start], &attribBuffer[0][start] };
+    for (uint32_t *buffer : buffers) {
+        uintptr_t block = ((uintptr_t)buffer + 31) & ~31;
+        uintptr_t last = ((uintptr_t)&buffer[end - start]) & ~31;
+        for (; block < last; block += 32)
+            asm volatile("dcbz 0, %0" :: "r"(block) : "memory");
+    }
+#endif
     for (int i = start; i < end; i++) {
         framebuffer[0][i] = color;
         depthBuffer[0][i] = depth;
@@ -230,7 +240,8 @@ void Gpu3DRenderer::drawScanline1(int line) {
 
     stencilClear[line] = false;
 
-    std::vector<int> translucent;
+    uint16_t translucent[2048];
+    int translucentCount = 0;
 
     // Draw the polygons
     for (int i = 0; i < core->gpu3D.polygonCountOut; i++) {
@@ -241,13 +252,13 @@ void Gpu3DRenderer::drawScanline1(int line) {
         // Draw solid polygons and save the translucent ones for later
         _Polygon *polygon = &core->gpu3D.polygonsOut[i];
         if (polygon->alpha < 0x3F || polygon->textureFmt == 1 || polygon->textureFmt == 6)
-            translucent.push_back(i);
+            translucent[translucentCount++] = i;
         else
             drawPolygon(line, i);
     }
 
     // Draw the translucent polygons
-    for (unsigned int i = 0; i < translucent.size(); i++)
+    for (int i = 0; i < translucentCount; i++)
         drawPolygon(line, translucent[i]);
 }
 
@@ -370,6 +381,58 @@ uint32_t Gpu3DRenderer::interpolateLinear(uint32_t v1, uint32_t v2, uint32_t x1,
     else
         return v2 + (v1 - v2) * (x2 - x) / (x2 - x1);
 }
+
+// Steps linear interpolation across consecutive X values, using a quotient and remainder instead of dividing
+// It only steps when the products in interpolateLinear can't overflow, so the results always match it exactly
+struct LinearStepper {
+    uint32_t v1, v2, x1, x2, next;
+    uint32_t diff, den, quot, rem, stepQuot, stepRem;
+    bool reverse, valid;
+
+    LinearStepper(uint32_t v1, uint32_t v2, uint32_t x1, uint32_t x2): v1(v1), v2(v2), x1(x1), x2(x2), next(x1) {
+        // Interpolate forwards from the first value or backwards from the second, like interpolateLinear
+        reverse = (v1 > v2);
+        diff = reverse ? (v1 - v2) : (v2 - v1);
+        den = x2 - x1;
+        valid = (x2 > x1) && (diff <= UINT32_MAX / den);
+        if (!valid) return;
+        quot = reverse ? diff : 0;
+        rem = 0;
+        stepQuot = diff / den;
+        stepRem = diff % den;
+    }
+
+    FORCE_INLINE uint32_t get(uint32_t x) {
+        // Fall back to the regular calculation if stepping isn't possible
+        if (!valid || x < x1 || x >= x2)
+            return Gpu3DRenderer::interpolateLinear(v1, v2, x1, x, x2);
+
+        // Recalculate the position directly if X didn't follow on from the last call
+        if (x != next) {
+            uint32_t n = diff * (reverse ? (x2 - x) : (x - x1));
+            quot = n / den;
+            rem = n % den;
+        }
+
+        // Get the value at X, and step the numerator to the next X
+        uint32_t value = reverse ? (v2 + quot) : (v1 + quot);
+        if (!reverse) {
+            quot += stepQuot;
+            rem += stepRem;
+            if (rem >= den) { rem -= den; quot++; }
+        }
+        else if (rem < stepRem) {
+            rem += den - stepRem;
+            quot -= stepQuot + 1;
+        }
+        else {
+            rem -= stepRem;
+            quot -= stepQuot;
+        }
+        next = x + 1;
+        return value;
+    }
+};
 
 uint32_t Gpu3DRenderer::interpolateLinRev(uint32_t v1, uint32_t v2, uint32_t x1, uint32_t x, uint32_t x2) {
     if (x <= x1) return v1;
@@ -873,9 +936,11 @@ void Gpu3DRenderer::drawPolygon(int line, int polygonIndex) {
             else {
                 // Adjust W values to be 15-bit so that a 32-bit calculation wouldn't overflow
                 // The calculation is actually 64-bit for upscaling, but it can still be accurate
+                // Use a 32-bit division when the numerator fits, since 64-bit division is slow on 32-bit CPUs
                 uint32_t wa = (ws[i2] >> 1) + ((ws[i2] & 1) && !(ws[i2 + 1] & 1));
-                factor = (uint64_t((ws[i2] >> 1) * (xe[i] - xe1[i])) << 9) /
-                    ((ws[i2 + 1] >> 1) * (xe2[i] - xe[i]) + wa * (xe[i] - xe1[i]));
+                uint64_t num = uint64_t((ws[i2] >> 1) * (xe[i] - xe1[i])) << 9;
+                uint32_t den = (ws[i2 + 1] >> 1) * (xe2[i] - xe[i]) + wa * (xe[i] - xe1[i]);
+                factor = (num >> 32) ? (num / den) : (uint32_t(num) / den);
             }
 
             // Interpolate the W value of a polygon edge using a factor
@@ -925,6 +990,7 @@ void Gpu3DRenderer::drawPolygon(int line, int polygonIndex) {
 
     int lastS = 0xFFFF, lastT = 0xFFFF;
     uint32_t texel;
+    LinearStepper zStep(ze[0], ze[1], x1, x4);
 
     // Draw a line segment
     for (uint32_t x = x1; x < x4; x++) {
@@ -963,7 +1029,7 @@ void Gpu3DRenderer::drawPolygon(int line, int polygonIndex) {
                 depth >>= -polygon->wShift;
         }
         else {
-            depth = interpolateLinear(ze[0], ze[1], x1, x, x4);
+            depth = zStep.get(x);
         }
 
         // Depth test the pixel on the front layer, and on the back layer if under an anti-aliased edge
