@@ -269,13 +269,12 @@ void Gpu3D::runCommands() {
         // Fetch the next geometry command
         Entry entry = fifo.front();
         int count = paramCounts[entry.command];
-        std::vector<uint32_t> params;
+        uint32_t params[32];
 
         // If the command has multiple parameters, fetch them all
         if (count > 1) {
-            params.reserve(count);
             for (int i = 0; i < count; i++) {
-                params.push_back(fifo.front().param);
+                params[i] = fifo.front().param;
                 fifo.pop_front();
             }
         }
@@ -832,7 +831,7 @@ void Gpu3D::mtxIdentityCmd() {
     }
 }
 
-void Gpu3D::mtxLoad44Cmd(std::vector<uint32_t> &params) {
+void Gpu3D::mtxLoad44Cmd(uint32_t *params) {
     // Convert the parameters to a 4x4 matrix
     Matrix matrix = *(Matrix*)&params[0];
 
@@ -860,7 +859,7 @@ void Gpu3D::mtxLoad44Cmd(std::vector<uint32_t> &params) {
     }
 }
 
-void Gpu3D::mtxLoad43Cmd(std::vector<uint32_t> &params) {
+void Gpu3D::mtxLoad43Cmd(uint32_t *params) {
     // Convert the parameters to a 4x3 matrix
     Matrix matrix;
     for (int i = 0; i < 4; i++)
@@ -890,7 +889,7 @@ void Gpu3D::mtxLoad43Cmd(std::vector<uint32_t> &params) {
     }
 }
 
-void Gpu3D::mtxMult44Cmd(std::vector<uint32_t> &params) {
+void Gpu3D::mtxMult44Cmd(uint32_t *params) {
     // Convert the parameters to a 4x4 matrix
     Matrix matrix = *(Matrix*)&params[0];
 
@@ -918,7 +917,7 @@ void Gpu3D::mtxMult44Cmd(std::vector<uint32_t> &params) {
     }
 }
 
-void Gpu3D::mtxMult43Cmd(std::vector<uint32_t> &params) {
+void Gpu3D::mtxMult43Cmd(uint32_t *params) {
     // Convert the parameters to a 4x3 matrix
     Matrix matrix;
     for (int i = 0; i < 4; i++)
@@ -948,7 +947,7 @@ void Gpu3D::mtxMult43Cmd(std::vector<uint32_t> &params) {
     }
 }
 
-void Gpu3D::mtxMult33Cmd(std::vector<uint32_t> &params) {
+void Gpu3D::mtxMult33Cmd(uint32_t *params) {
     // Convert the parameters to a 3x3 matrix
     Matrix matrix;
     for (int i = 0; i < 3; i++)
@@ -978,7 +977,7 @@ void Gpu3D::mtxMult33Cmd(std::vector<uint32_t> &params) {
     }
 }
 
-void Gpu3D::mtxScaleCmd(std::vector<uint32_t> &params) {
+void Gpu3D::mtxScaleCmd(uint32_t *params) {
     // Convert the parameters to a scale matrix
     Matrix matrix;
     for (int i = 0; i < 3; i++)
@@ -1002,7 +1001,7 @@ void Gpu3D::mtxScaleCmd(std::vector<uint32_t> &params) {
     }
 }
 
-void Gpu3D::mtxTransCmd(std::vector<uint32_t> &params) {
+void Gpu3D::mtxTransCmd(uint32_t *params) {
     // Convert the parameters to a translation matrix
     Matrix matrix;
     memcpy(&matrix.data[12], &params[0], 3 * sizeof(int32_t));
@@ -1135,7 +1134,7 @@ void Gpu3D::texCoordCmd(uint32_t param) {
     }
 }
 
-void Gpu3D::vtx16Cmd(std::vector<uint32_t> &params) {
+void Gpu3D::vtx16Cmd(uint32_t *params) {
     // Set the X, Y, and Z coordinates
     savedVertex.x = (int16_t)(params[0] >> 0);
     savedVertex.y = (int16_t)(params[0] >> 16);
@@ -1244,7 +1243,7 @@ void Gpu3D::lightColorCmd(uint32_t param) {
     lightColor[param >> 30] = rgb5ToRgb6(param);
 }
 
-void Gpu3D::shininessCmd(std::vector<uint32_t> &params) {
+void Gpu3D::shininessCmd(uint32_t *params) {
     // Set the values of the specular reflection shininess table
     for (int i = 0; i < 32; i++) {
         shininess[i * 4 + 0] = params[i] >> 0;
@@ -1296,7 +1295,7 @@ void Gpu3D::viewportCmd(uint32_t param) {
     viewportNext[3] = ((191 - ((param >> 8) & 0xFF)) - viewportNext[1] + 1) & 0xFF;
 }
 
-void Gpu3D::boxTestCmd(std::vector<uint32_t> &params) {
+void Gpu3D::boxTestCmd(uint32_t *params) {
     // Store the parameters (X-pos, Y-pos, Z-pos, width, height, depth)
     int16_t boxTestCoords[6] = {
         (int16_t)params[0], (int16_t)(params[0] >> 16),
@@ -1368,7 +1367,7 @@ void Gpu3D::boxTestCmd(std::vector<uint32_t> &params) {
     gxStat &= ~BIT(1);
 }
 
-void Gpu3D::posTestCmd(std::vector<uint32_t> &params) {
+void Gpu3D::posTestCmd(uint32_t *params) {
     // Set the X, Y, and Z coordinates, overwriting the saved vertex
     savedVertex.x = (int16_t)(params[0] >> 0);
     savedVertex.y = (int16_t)(params[0] >> 16);
