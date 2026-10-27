@@ -58,16 +58,14 @@ template <typename T> T VramMapping::read(uint32_t address) {
     // Read a value from all the VRAM mappings ORed together
     T value = 0;
     for (uint8_t m = 0; m < count; m++)
-        for (uint32_t i = 0; i < sizeof(T); i++)
-            value |= mappings[m][address + i] << (i * 8);
+        value |= readLsb<T>(&mappings[m][address]);
     return value;
 }
 
 template <typename T> void VramMapping::write(uint32_t address, T value) {
     // Write a value to all the VRAM mappings
     for (uint8_t m = 0; m < count; m++)
-        for (uint32_t i = 0; i < sizeof(T); i++)
-            mappings[m][address + i] = value >> (i * 8);
+        writeLsb<T>(&mappings[m][address], value);
 }
 
 void Memory::saveState(FILE *file) {
@@ -786,12 +784,8 @@ template <typename T> T Memory::readFallback(bool arm7, uint32_t address) {
     }
 
     // Form an LSB-first value from data at the pointer
-    if (data) {
-        T value = 0;
-        for (uint32_t i = 0; i < sizeof(T); i++)
-            value |= data[i] << (i * 8);
-        return value;
-    }
+    if (data)
+        return readLsb<T>(data);
 
     // Handle unknown NDS reads by returning nothing
     if (!core->gbaMode) {
@@ -893,11 +887,8 @@ template <typename T> void Memory::writeFallback(bool arm7, uint32_t address, T 
     }
 
     // Write an LSB-first value to data at the pointer
-    if (data) {
-        for (uint32_t i = 0; i < sizeof(T); i++)
-            data[i] = value >> (i * 8);
-        return;
-    }
+    if (data)
+        return writeLsb<T>(data, value);
 
     // Handle unknown writes by doing nothing
     if (!core->gbaMode)

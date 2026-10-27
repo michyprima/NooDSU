@@ -158,13 +158,8 @@ template uint32_t Memory::read(bool arm7, uint32_t address, bool tcm);
 template <typename T> FORCE_INLINE T Memory::read(bool arm7, uint32_t address, bool tcm) {
     // Look up a pointer to readable memory and read a value from it LSB-first
     uint8_t **readMap = arm7 ? readMap7 : (tcm ? readMap9A : readMap9B);
-    if (uint8_t *data = readMap[address >> 12]) {
-        T value = 0;
-        data += address & (0x1000 - sizeof(T));
-        for (uint32_t i = 0; i < sizeof(T); i++)
-            value |= data[i] << (i * 8);
-        return value;
-    }
+    if (uint8_t *data = readMap[address >> 12])
+        return readLsb<T>(&data[address & (0x1000 - sizeof(T))]);
 
     // Handle special read cases that can't be mapped
     return readFallback<T>(arm7, address);
@@ -176,12 +171,8 @@ template void Memory::write(bool arm7, uint32_t address, uint32_t value, bool tc
 template <typename T> FORCE_INLINE void Memory::write(bool arm7, uint32_t address, T value, bool tcm) {
     // Look up a pointer to writable memory and write a value to it LSB-first
     uint8_t **writeMap = arm7 ? writeMap7 : (tcm ? writeMap9A : writeMap9B);
-    if (uint8_t *data = writeMap[address >> 12]) {
-        data += address & (0x1000 - sizeof(T));
-        for (uint32_t i = 0; i < sizeof(T); i++)
-            data[i] = value >> (i * 8);
-        return;
-    }
+    if (uint8_t *data = writeMap[address >> 12])
+        return writeLsb<T>(&data[address & (0x1000 - sizeof(T))], value);
 
     // Handle special write cases that can't be mapped
     return writeFallback<T>(arm7, address, value);

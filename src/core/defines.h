@@ -19,7 +19,9 @@
 
 #pragma once
 
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 // Control how many cycles of 3D GPU commands are batched
 #define GPU3D_BATCH 32
@@ -95,6 +97,30 @@
 #else
 #define U32TO8(data, index, value) (*(uint32_t*)&(data)[index] = (value))
 #endif
+
+// Templates that read or write an LSB-first value of any size from an 8-bit array
+// These compile to single accesses, which are byte-reversed on big-endian hosts
+template <typename T> FORCE_INLINE T readLsb(const uint8_t *data) {
+    T value;
+    memcpy(&value, data, sizeof(T));
+#ifdef ENDIAN_BIG
+    switch (sizeof(T)) {
+        case 2: return __builtin_bswap16(value);
+        case 4: return __builtin_bswap32(value);
+    }
+#endif
+    return value;
+}
+
+template <typename T> FORCE_INLINE void writeLsb(uint8_t *data, T value) {
+#ifdef ENDIAN_BIG
+    switch (sizeof(T)) {
+        case 2: value = __builtin_bswap16(value); break;
+        case 4: value = __builtin_bswap32(value); break;
+    }
+#endif
+    memcpy(data, &value, sizeof(T));
+}
 
 // Macros that perform bit rotations
 #define ROL8(v, s) ((v << s) | (v >> (8 - s)))
