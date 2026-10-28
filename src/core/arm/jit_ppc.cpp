@@ -34,6 +34,9 @@
 
 // Registers that hold state while generated code runs; they're saved by the entry code
 enum PpcReg {
+    R_WMAP = 23, // ARM9 write memory map
+    R_RMAP = 24, // ARM9 read memory map
+    R_PC = 25, // Program counter of the current instruction, which is only stored when needed
     R_CACHE = 26, // Block cache, with the code changed flag before it
     R_EVENTS = 27, // Scheduler event vector
     R_LAST = 28, // Global cycles at the start of the last instruction
@@ -149,7 +152,7 @@ public:
 };
 
 // The most words of host code generated for one instruction
-static const int MAX_INSTR_WORDS = 80;
+static const int MAX_INSTR_WORDS = 48;
 
 // Get the code address of a non-virtual member function
 template <typename T> static void *memberAddress(T func) {
@@ -234,60 +237,85 @@ void Jit::initCodegen() {
     addrStore32 = (uint32_t)(uintptr_t)&jitStore32;
     addrStore8 = (uint32_t)(uintptr_t)&jitStore8;
     PpcEmitter e(codeArea);
+    emitStubs(e);
+    codeStart = (uint8_t*)e.here();
+    codePtr = codeStart;
+    finishCode(codeArea, codePtr - codeArea);
+}
 
+void Jit::emitStubs(PpcEmitter &e) {
     // Exit: restore saved registers and return to the caller
     codeExit = e.here();
-    e.lwz(0, 52, 1);
+    e.lwz(0, 68, 1);
     e.mtlr(0);
-    e.lmw(R_CACHE, 24, 1);
-    e.addi(1, 1, 48);
+    e.lmw(R_WMAP, 24, 1);
+    e.addi(1, 1, 64);
     e.blr();
 
-    // Entry: save registers, load the state pointers, and jump to the block
+    // Entry: save registers, load the state pointers, and jump to the block, which sets its program counter
     // Arguments are the interpreter, event vector, limit, block code, global cycles, and cache
     codeEnter = e.here();
-    e.stwu(1, -48, 1);
+    e.stwu(1, -64, 1);
     e.mflr(0);
-    e.stw(0, 52, 1);
-    e.stmw(R_CACHE, 24, 1);
+    e.stw(0, 68, 1);
+    e.stmw(R_WMAP, 24, 1);
     e.mr(R_ARM, 3);
     e.mr(R_EVENTS, 4);
     e.mr(R_LIMIT, 5);
     e.mr(R_GLOBAL, 7);
     e.mr(R_CACHE, 8);
+    e.loadConst(R_RMAP, addrReadMap);
+    e.loadConst(R_WMAP, addrWriteMap);
     e.mtctr(6);
     e.bctr();
 
-    // After an instruction, with its cycles in r3: update the ARM9's cycles, then return to continue
-    // or exit if the interpreter would switch to the ARM7 or a task first; the global cycles are only
-    // advanced when continuing, since the interpreter leaves them at the start of the last instruction
-    // The second version also exits if code changed, since the running block might be stale
-    codePost[1] = e.here();
-    e.lwz(R_LAST, 0, R_GLOBAL);
-    e.add(3, 3, R_LAST);
-    e.stw(3, offCycles, R_ARM);
-    e.lwz(4, -int(sizeof(JitCacheEntry)), R_CACHE);
-    e.cmpwi(4, 0);
-    e.bne(codeExit);
-    uint32_t *checks = e.here();
-    e.lwz(4, 0, R_LIMIT);
-    e.cmplw(3, 4);
-    e.bgt(codeExit);
-    e.lwz(4, 0, R_EVENTS);
-    e.lwz(4, offEventCycles, 4);
-    e.cmplw(3, 4);
-    e.bge(codeExit);
-    e.stw(3, 0, R_GLOBAL);
+    // When the next instruction can't run straight away, call the interleave helper, which runs the ARM7
+    // like the interpreter would and says whether to continue; it needs a stack frame to keep the return address
+    // The first version stores the program counter first, for instructions that don't set it themselves
+    codeSlowPost[1] = e.here();
+    e.stw(R_PC, offPc, R_ARM);
+    codeSlowPost[0] = e.here();
+    e.stwu(1, -16, 1);
+    e.mflr(0);
+    e.stw(0, 20, 1);
+    e.loadConst(3, (uint32_t)(uintptr_t)this);
+    e.mr(4, R_LIMIT);
+    e.call((void*)&Jit::interleaveCall);
+    e.lwz(0, 20, 1);
+    e.mtlr(0);
+    e.addi(1, 1, 16);
+    e.cmpwi(3, 0);
+    e.beq(codeExit);
     e.blr();
 
-    codePost[0] = e.here();
-    e.lwz(R_LAST, 0, R_GLOBAL);
-    e.add(3, 3, R_LAST);
-    e.stw(3, offCycles, R_ARM);
-    e.b(checks);
+    // After an instruction, with its cycles in r3: update the ARM9's cycles, then continue if nothing else
+    // needs to run first; the global cycles are only advanced here, since the helper expects them at the start
+    // of the last instruction; impure versions also check if code changed, since the block might be stale
+    for (int store = 0; store < 2; store++) {
+        for (int impure = 0; impure < 2; impure++) {
+            codePost[impure][store] = e.here();
+            e.lwz(R_LAST, 0, R_GLOBAL);
+            e.add(3, 3, R_LAST);
+            e.stw(3, offCycles, R_ARM);
+            if (impure) {
+                e.lwz(4, -int(sizeof(JitCacheEntry)), R_CACHE);
+                e.cmpwi(4, 0);
+                e.bne(codeSlowPost[store]);
+            }
+            e.lwz(4, 0, R_LIMIT);
+            e.cmplw(3, 4);
+            e.bgt(codeSlowPost[store]);
+            e.lwz(4, 0, R_EVENTS);
+            e.lwz(4, offEventCycles, 4);
+            e.cmplw(3, 4);
+            e.bge(codeSlowPost[store]);
+            e.stw(3, 0, R_GLOBAL);
+            e.blr();
+        }
+    }
 
     // Dispatch: find the next block in the cache from the program counter and jump to it
-    // On a miss, the global cycles are put back to the start of the last instruction before exiting
+    // On a miss, exit with the state as it is, which matches the top of the run loop
     codeDispatch = e.here();
     e.lwz(3, offCpsr, R_ARM);
     e.rlwinm(3, 3, 27, 31, 31); // THUMB bit
@@ -310,12 +338,112 @@ void Jit::initCodegen() {
     e.bctr();
     e.patchBc(miss1);
     e.patchBc(miss2);
-    e.stw(R_LAST, 0, R_GLOBAL);
     e.b(codeExit);
 
-    codeStart = (uint8_t*)e.here();
-    codePtr = codeStart;
-    finishCode(codeArea, codePtr - codeArea);
+    // Conditions: set cr0 to equal if an ARM condition passes, from the interpreter's lookup table
+    for (int cond = 0; cond < 14; cond++) {
+        codeCond[cond] = e.here();
+        e.lwz(3, offCpsr, R_ARM);
+        e.rlwinm(3, 3, 4, 28, 31);
+        e.loadConst(4, addrCondition + cond * 16);
+        e.lbzx(3, 4, 3);
+        e.cmpwi(3, 1);
+        e.blr();
+    }
+
+    // Flags for logical operations, from the result in r5; the second version also sets C from r7
+    for (int carry = 0; carry < 2; carry++) {
+        codeFlags[carry] = e.here();
+        e.rlwinm(8, 5, 0, 0, 0);
+        e.cntlzw(9, 5);
+        e.rlwinm(9, 9, 25, 1, 1);
+        e.or_(8, 8, 9);
+        e.lwz(6, offCpsr, R_ARM);
+        if (carry) {
+            e.rlwinm(7, 7, 29, 2, 2);
+            e.or_(8, 8, 7);
+            e.rlwinm(6, 6, 0, 3, 31);
+        }
+        else {
+            e.rlwinm(6, 6, 0, 2, 31);
+        }
+        e.or_(6, 6, 8);
+        e.stw(6, offCpsr, R_ARM);
+        e.blr();
+    }
+
+    // Flags for arithmetic, from the result in r5, the carry out, and the operands in r3 and r4
+    // Versions are for addition, subtraction of r4 from r3, and subtraction of r3 from r4
+    for (int type = 0; type < 3; type++) {
+        codeFlags[2 + type] = e.here();
+        e.li(9, 0);
+        e.adde(9, 9, 9);
+        e.rlwinm(9, 9, 29, 2, 2);
+        e.rlwinm(8, 5, 0, 0, 0);
+        e.or_(8, 8, 9);
+        e.cntlzw(9, 5);
+        e.rlwinm(9, 9, 25, 1, 1);
+        e.or_(8, 8, 9);
+        if (type == 0) {
+            e.eqv(10, 4, 3);
+            e.xor_(11, 5, 4);
+            e.and_(10, 10, 11);
+        }
+        else {
+            int sub = (type == 1) ? 4 : 3, min = (type == 1) ? 3 : 4;
+            e.xor_(10, sub, min);
+            e.xor_(11, 5, sub);
+            e.andc(10, 10, 11);
+        }
+        e.rlwinm(10, 10, 29, 3, 3);
+        e.or_(8, 8, 10);
+        e.lwz(6, offCpsr, R_ARM);
+        e.rlwinm(6, 6, 0, 4, 31);
+        e.or_(6, 6, 8);
+        e.stw(6, offCpsr, R_ARM);
+        e.blr();
+    }
+
+    // Memory accesses at the address in r5, with the value in r8; mapped memory is accessed directly, and
+    // anything else goes through the memory handlers, which also catch writes to compiled code
+    for (int type = 0; type < 4; type++) {
+        bool load = type < 2, byte = type & 1;
+        codeMemory[type] = e.here();
+        e.rlwinm(6, 5, 22, 10, 29);
+        e.lwzx(6, 6, load ? R_RMAP : R_WMAP);
+        e.cmpwi(6, 0);
+        uint32_t *slow = e.here();
+        e.beq(nullptr);
+        e.rlwinm(7, 5, 0, 20, byte ? 31 : 29);
+        if (load && byte) {
+            e.lbzx(8, 6, 7);
+        }
+        else if (load) {
+            // Rotate misaligned words like the interpreter
+            e.lwbrx(8, 6, 7);
+            e.rlwinm(9, 5, 3, 27, 28);
+            e.subfic(9, 9, 32);
+            e.rlwnm(8, 8, 9, 0, 31);
+        }
+        else {
+            byte ? e.stbx(8, 6, 7) : e.stwbrx(8, 6, 7);
+        }
+        e.blr();
+
+        e.patchBc(slow);
+        e.stwu(1, -16, 1);
+        e.mflr(0);
+        e.stw(0, 20, 1);
+        e.loadConst(3, addrMemory);
+        e.mr(4, 5);
+        if (!load) e.mr(5, 8);
+        e.call(load ? (byte ? addrLoad8 : addrLoad32) : (byte ? addrStore8 : addrStore32));
+        if (load) e.mr(8, 3);
+        e.lwz(0, 20, 1);
+        e.mtlr(0);
+        e.addi(1, 1, 16);
+        e.blr();
+    }
 }
 
 void Jit::freeCodegen() {
@@ -340,6 +468,11 @@ void Jit::finishCode(uint8_t *start, size_t size) {
         JLOG("code %u: %p size %X, switch to RX returned %X, sec %X", count, start, (uint32_t)size, rx, OSGetSecCodeGenMode());
 #endif
 #endif
+}
+
+bool Jit::codeFull() {
+    // Check if a block of the largest size might not fit in the codegen area
+    return codeArea && codeEnd - codePtr < 64 * MAX_INSTR_WORDS * 4 + 16;
 }
 
 void Jit::readReg(PpcEmitter &e, int rt, int reg, uint32_t pc) {
@@ -393,17 +526,14 @@ static int nativeKind(uint32_t op) {
 
 bool Jit::emitNative(PpcEmitter &e, uint32_t op, uint32_t pc) {
     // Generate an ARM instruction as native code if possible, leaving its cycles in r3
+    // Branches leave the program counter set in memory; other instructions leave it unchanged
     int kind = nativeKind(op);
     if (!kind) return false;
 
-    // Skip the instruction if its condition fails, like the interpreter's condition lookup
+    // Skip the instruction if its condition fails, which takes 1 cycle
     uint32_t *skip = nullptr;
     if ((op >> 28) != 0xE) {
-        e.lwz(3, offCpsr, R_ARM);
-        e.rlwinm(3, 3, 4, 28, 31);
-        e.loadConst(4, addrCondition + ((op >> 24) & 0xF0));
-        e.lbzx(3, 4, 3);
-        e.cmpwi(3, 1);
+        e.call(codeCond[op >> 28]);
         skip = e.here();
         e.bne(nullptr);
     }
@@ -414,11 +544,11 @@ bool Jit::emitNative(PpcEmitter &e, uint32_t op, uint32_t pc) {
         case 3: emitTransfer(e, op, pc); break;
     }
 
-    // A failed condition takes 1 cycle
     if (skip) {
         uint32_t *done = e.here();
         e.b(nullptr);
         e.patchBc(skip);
+        if (kind == 2) e.stw(R_PC, offPc, R_ARM);
         e.li(3, 1);
         e.patchB(done);
     }
@@ -427,29 +557,34 @@ bool Jit::emitNative(PpcEmitter &e, uint32_t op, uint32_t pc) {
 
 void Jit::emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc) {
     // Data processing with an immediate or a register shifted left by an immediate
-    // Operands go in r3 and r4, the result in r5, and a shifter carry in r7 if it comes from a register
+    // Operands go in r3 and r4, the result in r5, and a shifter carry in r7 for flag-setting logical operations
     uint32_t opc = (op >> 21) & 0xF;
     bool s = op & BIT(20);
     bool logical = (opc <= 1) || (opc >= 8 && opc <= 9) || opc >= 12;
     if (opc != 13 && opc != 15)
         readReg(e, 3, (op >> 16) & 0xF, pc);
 
-    // Get the second operand and the shifter carry for flag-setting logical operations
-    enum { CARRY_SAME, CARRY_CLEAR, CARRY_SET, CARRY_REG } carry = CARRY_SAME;
+    // Get the second operand and the shifter carry, if it changes
+    bool carry = false;
     if (op & BIT(25)) {
         uint32_t shift = (op >> 7) & 0x1E;
         uint32_t value = ((op & 0xFF) << (32 - shift)) | ((op & 0xFF) >> shift);
         if (shift == 0) value = op & 0xFF;
         e.loadConst(4, value);
-        if (shift > 0) carry = (value >> 31) ? CARRY_SET : CARRY_CLEAR;
+        if (shift > 0 && s && logical) {
+            e.li(7, value >> 31);
+            carry = true;
+        }
     }
     else {
         readReg(e, 4, op & 0xF, pc);
         uint32_t shift = (op >> 7) & 0x1F;
         if (shift > 0) {
-            e.rlwinm(7, 4, shift, 31, 31);
+            if (s && logical) {
+                e.rlwinm(7, 4, shift, 31, 31);
+                carry = true;
+            }
             e.rlwinm(4, 4, shift, 0, 31 - shift);
-            carry = CARRY_REG;
         }
     }
 
@@ -476,56 +611,12 @@ void Jit::emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc) {
         case 0xF: e.nor(5, 4, 4); break; // MVN
     }
 
+    // Set flags with a shared routine
     if (s) {
-        // Build the N and Z flags in r8
-        e.rlwinm(8, 5, 0, 0, 0);
-        e.cntlzw(9, 5);
-        e.rlwinm(9, 9, 25, 1, 1);
-        e.or_(8, 8, 9);
-        e.lwz(6, offCpsr, R_ARM);
-
-        if (logical) {
-            // Logical operations keep V, and set C from the shifter if it shifted
-            switch (carry) {
-            case CARRY_SAME:
-                e.rlwinm(6, 6, 0, 2, 31);
-                break;
-            case CARRY_SET:
-                e.oris(8, 8, 0x2000);
-            case CARRY_CLEAR:
-                e.rlwinm(6, 6, 0, 3, 31);
-                break;
-            case CARRY_REG:
-                e.rlwinm(7, 7, 29, 2, 2);
-                e.or_(8, 8, 7);
-                e.rlwinm(6, 6, 0, 3, 31);
-                break;
-            }
-        }
-        else {
-            // Arithmetic sets C from the carry out, and V from the operand and result signs
-            // For subtraction, C is set when there's no borrow and V uses the subtrahend
-            e.li(9, 0);
-            e.adde(9, 9, 9);
-            e.rlwinm(9, 9, 29, 2, 2);
-            e.or_(8, 8, 9);
-            if (opc == 0x4 || opc == 0xB) {
-                e.eqv(10, 4, 3);
-                e.xor_(11, 5, 4);
-                e.and_(10, 10, 11);
-            }
-            else {
-                int sub = (opc == 0x3) ? 3 : 4, min = (opc == 0x3) ? 4 : 3;
-                e.xor_(10, sub, min);
-                e.xor_(11, 5, sub);
-                e.andc(10, 10, 11);
-            }
-            e.rlwinm(10, 10, 29, 3, 3);
-            e.or_(8, 8, 10);
-            e.rlwinm(6, 6, 0, 4, 31);
-        }
-        e.or_(6, 6, 8);
-        e.stw(6, offCpsr, R_ARM);
+        if (logical)
+            e.call(codeFlags[carry]);
+        else
+            e.call(codeFlags[(opc == 0x4 || opc == 0xB) ? 2 : (opc == 0x3) ? 4 : 3]);
     }
 
     // Store the result unless it's a compare or test
@@ -547,8 +638,7 @@ void Jit::emitBranch(PpcEmitter &e, uint32_t op, uint32_t pc) {
 }
 
 void Jit::emitTransfer(PpcEmitter &e, uint32_t op, uint32_t pc) {
-    // Word or byte load or store at an offset without writeback
-    // The address goes in r5, and the value in r8; the memory map is checked before calling into memory
+    // Word or byte load or store at an offset without writeback, with the address in r5 and value in r8
     uint32_t rn = (op >> 16) & 0xF, rd = (op >> 12) & 0xF;
     bool up = op & BIT(23), byte = op & BIT(22), load = op & BIT(20);
     if (!(op & BIT(25))) {
@@ -569,55 +659,10 @@ void Jit::emitTransfer(PpcEmitter &e, uint32_t op, uint32_t pc) {
         up ? e.add(5, 3, 4) : e.subf(5, 4, 3);
     }
 
-    // Look up the 4KB block in the memory map
-    e.loadConst(12, load ? addrReadMap : addrWriteMap);
-    e.rlwinm(6, 5, 22, 10, 29);
-    e.lwzx(6, 6, 12);
-    e.cmpwi(6, 0);
-    uint32_t *slow = e.here();
-    e.beq(nullptr);
-
-    if (load) {
-        // Read from mapped memory, rotating misaligned words like the interpreter
-        if (byte) {
-            e.rlwinm(7, 5, 0, 20, 31);
-            e.lbzx(8, 6, 7);
-        }
-        else {
-            e.rlwinm(7, 5, 0, 20, 29);
-            e.lwbrx(8, 6, 7);
-            e.rlwinm(9, 5, 3, 27, 28);
-            e.subfic(9, 9, 32);
-            e.rlwnm(8, 8, 9, 0, 31);
-        }
-        uint32_t *done = e.here();
-        e.b(nullptr);
-
-        // Otherwise read through the memory handlers
-        e.patchBc(slow);
-        e.loadConst(3, addrMemory);
-        e.mr(4, 5);
-        e.call(byte ? addrLoad8 : addrLoad32);
-        e.mr(8, 3);
-        e.patchB(done);
-        writeReg(e, 8, rd);
-    }
-    else {
-        // Write to mapped memory
-        readReg(e, 8, rd, pc);
-        e.rlwinm(7, 5, 0, 20, byte ? 31 : 29);
-        byte ? e.stbx(8, 6, 7) : e.stwbrx(8, 6, 7);
-        uint32_t *done = e.here();
-        e.b(nullptr);
-
-        // Otherwise write through the memory handlers, which also catches writes to compiled code
-        e.patchBc(slow);
-        e.loadConst(3, addrMemory);
-        e.mr(4, 5);
-        readReg(e, 5, rd, pc);
-        e.call(byte ? addrStore8 : addrStore32);
-        e.patchB(done);
-    }
+    // Access memory with a shared routine
+    if (!load) readReg(e, 8, rd, pc);
+    e.call(codeMemory[(load ? 0 : 2) + byte]);
+    if (load) writeReg(e, 8, rd);
     e.li(3, 1);
 }
 
@@ -653,74 +698,55 @@ static bool mayJump(uint32_t op, bool thumb) {
     return (op & 0x0E000010) == 0x06000010; // Undefined
 }
 
-bool Jit::codeFull() {
-    // Check if a block of the largest size might not fit in the codegen area
-    return codeArea && codeEnd - codePtr < 64 * MAX_INSTR_WORDS * 4 + 16;
-}
-
-void Jit::emitChecked(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool &ok) {
-    // Set the program counter as if the instruction was fetched
+void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool &ok) {
+    // Generate one instruction; the program counter register already holds its value
     uint32_t op = block->instrs[i].opcode;
-    e.loadConst(0, pc);
-    e.stw(0, offPc, R_ARM);
+    bool native = !block->thumb && emitNative(e, op, pc);
+    bool memoryPc = !native || nativeKind(op) == 2;
 
-    void *handler = block->thumb ? memberAddress(block->instrs[i].thumb) : memberAddress(block->instrs[i].arm);
-    void *reserved = memberAddress(&Interpreter::handleReserved);
-    if (!handler || !reserved) {
-        ok = false;
-        return;
-    }
-
-    if (!block->thumb && emitNative(e, op, pc)) {
-        // The instruction was generated as native code, leaving its cycles in r3
-    }
-    else if (block->thumb || (op >> 28) == 0xE) {
-        // Call the handler directly when there's no condition to check
+    if (!native) {
+        // Call the interpreter handler, with the program counter stored for it to read
+        void *handler = block->thumb ? memberAddress(block->instrs[i].thumb) : memberAddress(block->instrs[i].arm);
+        void *reserved = memberAddress(&Interpreter::handleReserved);
+        if (!handler || !reserved) {
+            ok = false;
+            return;
+        }
+        e.stw(R_PC, offPc, R_ARM);
+        uint32_t cond = op >> 28;
+        uint32_t *skip = nullptr;
+        if (!block->thumb && cond < 0xE) {
+            e.call(codeCond[cond]);
+            skip = e.here();
+            e.bne(nullptr);
+        }
         e.mr(3, R_ARM);
         e.loadConst(4, op);
-        e.call(handler);
-    }
-    else {
-        // Look up the condition result, like the interpreter does
-        e.lwz(3, offCpsr, R_ARM);
-        e.rlwinm(3, 3, 4, 28, 31);
-        e.loadConst(4, addrCondition + ((op >> 24) & 0xF0));
-        e.lbzx(3, 4, 3);
-        e.cmpwi(3, 1);
-        uint32_t *notTrue = e.here();
-        e.bne(nullptr);
-
-        // Condition true: call the handler
-        e.mr(3, R_ARM);
-        e.loadConst(4, op);
-        e.call(handler);
-        uint32_t *done1 = e.here();
-        e.b(nullptr);
-
-        // Condition false: take 1 cycle; reserved: call the reserved handler
-        e.patchBc(notTrue);
-        e.cmpwi(3, 0);
-        e.li(3, 1);
-        uint32_t *done2 = e.here();
-        e.beq(nullptr);
-        e.mr(3, R_ARM);
-        e.loadConst(4, op);
-        e.call(reserved);
-        e.patchB(done1);
-        e.patchBc(done2);
+        e.call((!block->thumb && cond == 0xF) ? reserved : handler);
+        if (skip) {
+            uint32_t *done = e.here();
+            e.b(nullptr);
+            e.patchBc(skip);
+            e.li(3, 1);
+            e.patchB(done);
+        }
     }
 
-    // Count cycles and check whether to stop, then check for jumps
-    e.call(codePost[!isPure(op, block->thumb)]);
+    // Count cycles and check whether to stop; the program counter is stored first if it's only in the register
+    // Then check for jumps, which leave the program counter in memory different from the register
+    e.call(codePost[!isPure(op, block->thumb)][!memoryPc]);
     if (i + 1 < block->instrs.size() && mayJump(op, block->thumb)) {
         e.lwz(4, offPc, R_ARM);
-        e.loadConst(5, pc);
-        e.cmpw(4, 5);
+        e.cmplw(4, R_PC);
         uint32_t *same = e.here();
         e.beq(nullptr);
         e.b(codeDispatch);
         e.patchBc(same);
     }
+
+    // Leave the program counter in memory after the last instruction, for the dispatcher
+    if (i + 1 == block->instrs.size() && !memoryPc)
+        e.stw(R_PC, offPc, R_ARM);
 }
 
 void *Jit::generate(JitBlock *block) {
@@ -734,11 +760,19 @@ void *Jit::generate(JitBlock *block) {
     if (OSGetCoreId() != codeCore || !OSSwitchSecCodeGenMode(CODEGEN_RW_)) return nullptr;
 #endif
 
+    // Set the program counter register at the start, then step it before each instruction
+    // Record where each instruction starts after stepping, so other blocks can jump into the middle
     PpcEmitter e(codePtr);
     uint32_t step = block->thumb ? 2 : 4;
+    uint32_t pc = block->address + step * 2;
+    e.loadConst(R_PC, pc);
+    block->entries.clear();
     bool ok = true;
-    for (size_t i = 0; i < block->instrs.size() && ok; i++)
-        emitChecked(e, block, i, block->address + step * (i + 2), ok);
+    for (size_t i = 0; i < block->instrs.size() && ok; i++, pc += step) {
+        if (i > 0) e.addi(R_PC, R_PC, step);
+        block->entries.push_back((uint8_t*)e.here() - codePtr);
+        emitInstr(e, block, i, pc, ok);
+    }
 
     // Continue to whatever block comes next
     e.b(codeDispatch);
@@ -747,7 +781,23 @@ void *Jit::generate(JitBlock *block) {
     size_t size = (uint8_t*)e.here() - code;
     finishCode(code, size);
     if (!ok) return nullptr;
-    codePtr += (size + 31) & ~31;
+    codePtr += (size + 15) & ~15;
+    return code;
+}
+
+void *Jit::generateEntry(JitBlock *host, size_t index) {
+    // Generate a small entry point into the middle of another block's code, instead of compiling it again
+    if (!codeArea || !host->code || index >= host->entries.size() || codePtr + 64 > codeEnd) return nullptr;
+#ifdef __WIIU__
+    if (OSGetCoreId() != codeCore || !OSSwitchSecCodeGenMode(CODEGEN_RW_)) return nullptr;
+#endif
+    PpcEmitter e(codePtr);
+    e.loadConst(R_PC, host->address + (index + 2) * (host->thumb ? 2 : 4));
+    e.b((uint8_t*)host->code + host->entries[index]);
+    uint8_t *code = codePtr;
+    size_t size = (uint8_t*)e.here() - code;
+    finishCode(code, size);
+    codePtr += (size + 15) & ~15;
     return code;
 }
 
@@ -770,12 +820,19 @@ void *Jit::generate(JitBlock *block) {
     return nullptr;
 }
 
+void *Jit::generateEntry(JitBlock *host, size_t index) {
+    return nullptr;
+}
+
 #endif
 
 #ifdef JIT_PPC_TEST
-// Generate one native instruction followed by a return, for testing generated code in an emulator
-bool jitTestEmit(Jit &jit, uint8_t *buf, uint32_t op, uint32_t pc, uint32_t *size) {
+// Generate the shared routines and then one native instruction, for testing generated code in an emulator
+// The buffer is loaded at a fixed address, and the instruction starts at the returned offset
+bool jitTestEmit(Jit &jit, uint8_t *buf, uint32_t op, uint32_t pc, uint32_t *size, uint32_t *start) {
     PpcEmitter e(buf);
+    jit.emitStubs(e);
+    *start = (uint8_t*)e.here() - buf;
     if (!jit.emitNative(e, op, pc)) return false;
     e.emit(0x48000002 | 0x50000); // Absolute branch to the test's end address, since calls change LR
     *size = (uint8_t*)e.here() - buf;

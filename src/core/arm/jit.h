@@ -51,6 +51,7 @@ struct JitBlock {
     int index; // Position in the block lookup table
     std::vector<JitInstr> instrs;
     void *code = nullptr; // Generated host code, or null to use the portable executor
+    std::vector<uint32_t> entries; // Offsets in the code where each instruction starts
 };
 
 // A direct-mapped cache of recently run blocks by guest address, for jumping between blocks quickly
@@ -72,7 +73,7 @@ struct JitPage {
 // fetch and dispatch overhead, and are the base for generating native code later
 class Jit {
 public:
-    friend bool jitTestEmit(Jit &jit, uint8_t *buf, uint32_t op, uint32_t pc, uint32_t *size);
+    friend bool jitTestEmit(Jit &jit, uint8_t *buf, uint32_t op, uint32_t pc, uint32_t *size, uint32_t *start);
     bool enabled = false;
 
     Jit(Core *core);
@@ -112,7 +113,9 @@ private:
 
     // Generated code, starting with shared entry, exit, dispatch and per-instruction routines
     uint8_t *codeArea = nullptr, *codeStart = nullptr, *codePtr = nullptr, *codeEnd = nullptr;
-    void *codeEnter = nullptr, *codeExit = nullptr, *codeDispatch = nullptr, *codePost[2] = {};
+    void *codeEnter = nullptr, *codeExit = nullptr, *codeDispatch = nullptr;
+    void *codePost[2][2] = {}, *codeSlowPost[2] = {}; // Indexed by impure, then by storing the program counter
+    void *codeCond[14] = {}, *codeFlags[5] = {}, *codeMemory[4] = {};
     int offPc = 0, offCpsr = 0, offCycles = 0, offEventCycles = 0, offUsr = 0, offRegs = 0;
     uint32_t codeCore = 0;
     bool codeFailed = false;
@@ -128,6 +131,8 @@ private:
     JitBlock *lookup(uint32_t address, bool thumb);
     void protect(int page);
     void execute(JitBlock *block, const uint32_t *limit);
+    int interleave(const uint32_t *limit);
+    static int interleaveCall(Jit *jit, const uint32_t *limit);
 
     static bool endsBlock(uint32_t opcode, bool thumb);
 
@@ -136,8 +141,10 @@ private:
     bool codeFull();
     void finishCode(uint8_t *start, size_t size);
     void *generate(JitBlock *block);
+    void *generateEntry(JitBlock *host, size_t index);
+    void emitStubs(PpcEmitter &e);
     bool emitNative(PpcEmitter &e, uint32_t op, uint32_t pc);
-    void emitChecked(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool &ok);
+    void emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool &ok);
     void emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitBranch(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitTransfer(PpcEmitter &e, uint32_t op, uint32_t pc);

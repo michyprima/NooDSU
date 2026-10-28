@@ -18,6 +18,7 @@
 */
 
 #include "../core.h"
+#include "../emu_profile.h"
 
 Interpreter::Interpreter(Core *core, bool arm7): core(core), arm7(arm7) {
     // Initialize the registers for user mode
@@ -111,11 +112,13 @@ void Interpreter::runCoreNone(Core &core) {
     // Run the core with no active CPUs
     while (core.running.exchange(true)) {
         // Jump to the next task and run all that are scheduled now
+        EP_START(tasks);
         core.globalCycles = core.events[0].cycles;
         while (core.events[0].cycles <= core.globalCycles) {
-            core.tasks[core.events[0].task]();
+            EP_TASK(core);
             core.events.erase(core.events.begin());
         }
+        EP_ADD(EP_TASKS, tasks);
     }
 }
 
@@ -128,6 +131,7 @@ template <bool _arm7, int shift> void Interpreter::runCoreSingle(Core &core) {
     static const uint32_t noLimit = 0xFFFFFFFF;
     while (core.running.exchange(true)) {
         // Run a CPU until the next scheduled task
+        EP_START(cpu);
         core.globalCycles = std::max(core.globalCycles, arm.cycles);
         while (core.events[0].cycles > arm.cycles) {
             // Run compiled ARM9 code if possible, falling back to the interpreter
@@ -141,13 +145,16 @@ template <bool _arm7, int shift> void Interpreter::runCoreSingle(Core &core) {
             }
             arm.cycles = (core.globalCycles += arm.runOpcode() << shift);
         }
+        EP_ADD(_arm7 ? EP_ARM7 : EP_ARM9, cpu);
 
         // Jump to the next task and run all that are scheduled now
+        EP_START(tasks);
         core.globalCycles = core.events[0].cycles;
         while (core.events[0].cycles <= core.globalCycles) {
-            core.tasks[core.events[0].task]();
+            EP_TASK(core);
             core.events.erase(core.events.begin());
         }
+        EP_ADD(EP_TASKS, tasks);
     }
 }
 
@@ -157,23 +164,48 @@ void Interpreter::runCoreNds(Core &core) {
     Interpreter &arm7 = core.interpreter[1];
     while (core.running.exchange(true)) {
         // Run the ARM9 and half-speed ARM7 until the next scheduled task
+        EP_START(cpu);
         while (core.events[0].cycles > core.globalCycles) {
-            // Run compiled ARM9 code if possible, stopping before the ARM7 is due, or fall back to the interpreter
-            if (core.globalCycles >= arm9.cycles && !(core.jit.enabled && core.jit.run(&arm7.cycles))) {
+            // Run compiled ARM9 code if possible, which runs the ARM7 in between and leaves the state as it
+            // would be at the top of this loop, or fall back to the interpreter
+            if (core.globalCycles >= arm9.cycles) {
+                if (core.jit.enabled && core.jit.run(&arm7.cycles)) continue;
                 if (arm9.pipelineStale) arm9.refillPipeline();
                 arm9.cycles = core.globalCycles + arm9.runOpcode();
             }
-            if (core.globalCycles >= arm7.cycles)
+            if (core.globalCycles >= arm7.cycles) {
+                EP_START(a7);
                 arm7.cycles = core.globalCycles + (arm7.runOpcode() << 1);
+                EP_ADD(EP_BOTH_ARM7, a7);
+            }
             core.globalCycles = std::min<uint32_t>(arm9.cycles, arm7.cycles);
         }
+        EP_ADD(EP_BOTH, cpu);
 
         // Jump to the next task and run all that are scheduled now
+        EP_START(tasks);
         core.globalCycles = core.events[0].cycles;
         while (core.events[0].cycles <= core.globalCycles) {
-            core.tasks[core.events[0].task]();
+            EP_TASK(core);
             core.events.erase(core.events.begin());
         }
+        EP_ADD(EP_TASKS, tasks);
+    }
+}
+
+bool Interpreter::runArm7UntilArm9(Core &core) {
+    // Continue the NDS run loop after the JIT ran an ARM9 instruction, with the global cycles still at its start
+    // The ARM7 runs as it would in the loop, until either the ARM9 is due again, or a task is due first
+    // When a task is due, the state matches the top of the loop, so it can carry on from there
+    Interpreter &arm9 = core.interpreter[0];
+    Interpreter &arm7 = core.interpreter[1];
+    if (core.globalCycles >= arm7.cycles)
+        arm7.cycles = core.globalCycles + (arm7.runOpcode() << 1);
+    while (true) {
+        core.globalCycles = std::min<uint32_t>(arm9.cycles, arm7.cycles);
+        if (core.events[0].cycles <= core.globalCycles) return false;
+        if (core.globalCycles >= arm9.cycles) return true;
+        arm7.cycles = core.globalCycles + (arm7.runOpcode() << 1);
     }
 }
 
@@ -200,7 +232,7 @@ void Interpreter::runCoreDsi(Core &core) {
         // Jump to the next task and run all that are scheduled now
         core.globalCycles = core.events[0].cycles;
         while (core.events[0].cycles <= core.globalCycles) {
-            core.tasks[core.events[0].task]();
+            EP_TASK(core);
             core.events.erase(core.events.begin());
         }
     }

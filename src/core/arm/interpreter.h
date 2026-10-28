@@ -45,6 +45,7 @@ public:
     template <bool, int> static void runCoreSingle(Core &core);
     static void runCoreNds(Core &core);
     static void runCoreDsi(Core &core);
+    static bool runArm7UntilArm9(Core &core);
 
     uint16_t getOpcode16();
     uint32_t getOpcode32();

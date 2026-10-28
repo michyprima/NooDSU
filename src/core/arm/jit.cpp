@@ -23,6 +23,7 @@
 #endif
 
 #include "../core.h"
+#include "../emu_profile.h"
 
 // The most instructions to put in one block, to limit how much is recompiled when code changes
 static const int MAX_INSTRS = 64;
@@ -150,15 +151,33 @@ bool Jit::endsBlock(uint32_t op, bool thumb) {
 }
 
 JitBlock *Jit::compile(uint32_t address, bool thumb, uint8_t *host, int index) {
-    // Decode instructions until one that ends the block, the end of the page, or the size limit
     JitBlock *block = new JitBlock();
     block->address = address;
     block->thumb = thumb;
     block->start = host;
     block->index = index;
+
+    // If this starts in the middle of a block with generated code, reuse that block's code from there
+    // Its instructions are the same, so only a small entry point is needed instead of another copy
+    int page = pageIndex(host);
+    uint32_t step = thumb ? 2 : 4;
+    for (size_t i = 0; page >= 0 && i < pages[page].blocks.size(); i++) {
+        JitBlock *other = pages[page].blocks[i];
+        if (other->thumb != thumb || !other->code || host <= other->start || host >= other->end) continue;
+        size_t skip = (host - other->start) / step;
+        if ((host - other->start) % step || other->address + skip * step != address) continue;
+        if (void *code = generateEntry(other, skip)) {
+            block->instrs.assign(other->instrs.begin() + skip, other->instrs.end());
+            block->end = other->end;
+            block->code = code;
+            break;
+        }
+    }
+
+    // Otherwise decode instructions until one that ends the block, the end of the page, or the size limit
     uint8_t *pageEnd = (uint8_t*)((uintptr_t(host) & ~0xFFF) + 0x1000);
     uint8_t *ptr = host;
-    while (ptr < pageEnd && block->instrs.size() < MAX_INSTRS) {
+    while (!block->code && ptr < pageEnd && block->instrs.size() < MAX_INSTRS) {
         JitInstr instr;
         if (thumb) {
             instr.opcode = readLsb<uint16_t>(ptr);
@@ -173,14 +192,13 @@ JitBlock *Jit::compile(uint32_t address, bool thumb, uint8_t *host, int index) {
         block->instrs.push_back(instr);
         if (endsBlock(instr.opcode, thumb)) break;
     }
-    block->end = ptr;
+    if (!block->code) block->end = ptr;
 
     // Replace any block already at this position
     if (table[index]) retire(table[index]);
     table[index] = block;
 
     // Track the block in its page, unmapping the page for writes if it's the first code there
-    int page = pageIndex(host);
     if (page >= 0) {
         JitPage &p = pages[page];
         if (p.blocks.empty()) {
@@ -197,7 +215,7 @@ JitBlock *Jit::compile(uint32_t address, bool thumb, uint8_t *host, int index) {
     }
 
     // Generate host code for the block if a backend is available
-    block->code = generate(block);
+    if (!block->code) block->code = generate(block);
     return block;
 }
 
@@ -313,7 +331,9 @@ bool Jit::run(const uint32_t *limit) {
                 delete graveyard[i];
             graveyard.clear();
         }
+        EP_START(comp);
         block = compile(address, thumb, host, index);
+        EP_ADD(EP_COMPILE, comp);
     }
 
     // Cache the block so running code can jump to it, and run it
@@ -323,6 +343,22 @@ bool Jit::run(const uint32_t *limit) {
     entry.block = block;
     execute(block, limit);
     return true;
+}
+
+int Jit::interleave(const uint32_t *limit) {
+    // Called after an ARM9 instruction when the next one can't run straight away, with the global cycles
+    // still at the start of that instruction; returns whether the ARM9 can continue
+    // With only the ARM9 running, it stops, and the run loop catches up the global cycles
+    if (limit != &core->interpreter[1].cycles)
+        return 0;
+
+    // Otherwise run the ARM7 like the interpreter's loop would, until the ARM9 or a task is due
+    return Interpreter::runArm7UntilArm9(*core) && !codeChanged;
+}
+
+int Jit::interleaveCall(Jit *jit, const uint32_t *limit) {
+    // Entry point for generated code
+    return jit->interleave(limit);
 }
 
 void Jit::execute(JitBlock *block, const uint32_t *limit) {
@@ -350,9 +386,8 @@ void Jit::execute(JitBlock *block, const uint32_t *limit) {
 #endif
 
     // Run each instruction like the interpreter does, setting the program counter as if it was fetched
-    // Execution stops when the interpreter would switch to the ARM7 or a scheduled task before the next
-    // instruction; otherwise it continues into the next block if it's cached, after jumps or block ends
-    uint32_t last = core->globalCycles;
+    // When the next ARM9 instruction can't follow straight away, the ARM7 and scheduler are handled like the
+    // interpreter would; otherwise execution continues into the next block if it's cached
     while (block) {
         uint32_t step = block->thumb ? 2 : 4;
         uint32_t pc = block->address + step * 2;
@@ -373,15 +408,18 @@ void Jit::execute(JitBlock *block, const uint32_t *limit) {
                 }
             }
 
-            // Leave the global cycles at the start of the last instruction when stopping, like the interpreter
-            last = core->globalCycles;
-            uint32_t next = last + cycles;
+            // Count the cycles, and continue to the next instruction if nothing else needs to run first
+            uint32_t next = core->globalCycles + cycles;
             arm.cycles = next;
             if (next > *limit || next >= core->events[0].cycles || codeChanged) {
-                stop = true;
-                break;
+                if (!interleave(limit)) {
+                    stop = true;
+                    break;
+                }
             }
-            core->globalCycles = next;
+            else {
+                core->globalCycles = next;
+            }
             if (arm.registersUsr[15] != pc) break; // Jumped
         }
         if (stop) break;
@@ -390,10 +428,8 @@ void Jit::execute(JitBlock *block, const uint32_t *limit) {
         bool thumb = arm.cpsr & BIT(5);
         uint32_t address = arm.registersUsr[15] - (thumb ? 2 : 4);
         JitCacheEntry &entry = cache[(address >> 1) & (CACHE_SIZE - 1)];
-        if (entry.key != (address | thumb) || !entry.block) {
-            core->globalCycles = last;
+        if (entry.key != (address | thumb) || !entry.block)
             break;
-        }
         block = entry.block;
     }
 
