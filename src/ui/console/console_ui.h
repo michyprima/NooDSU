@@ -105,6 +105,8 @@ public:
     static void mainLoop(MenuTouch (*specialTouch)() = nullptr, ScreenLayout *touchLayout = nullptr);
     static int setPath(std::string path);
     static void fileBrowser();
+    static void startCore();
+    static void stopCore();
 
 private:
     static void *fileTextures[2];
@@ -145,8 +147,6 @@ private:
     static bool saveTypeMenu();
 
     static bool createCore();
-    static void startCore();
-    static void stopCore();
     static void runCore();
     static void checkSave();
 };

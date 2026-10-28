@@ -1048,7 +1048,7 @@ void ConsoleUI::pauseMenu() {
     int index = 0;
     while (true) {
         // Create the pause menu
-        uint32_t pressed = menu("NooDS", items, index);
+        uint32_t pressed = menu("NooDS", items, index, "", "Exit");
 
         // Handle menu input
         if (pressed & defaultKeys[INPUT_A]) {
@@ -1133,6 +1133,10 @@ void ConsoleUI::pauseMenu() {
         else if (pressed & defaultKeys[INPUT_B]) {
             // Return to the emulator
             startCore();
+            return;
+        }
+        else if (pressed & defaultKeys[INPUT_START]) {
+            // Close the pause menu with the emulator stopped, which ends the main loop
             return;
         }
     }

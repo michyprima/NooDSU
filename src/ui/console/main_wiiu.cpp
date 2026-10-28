@@ -36,6 +36,9 @@
 #include <whb/sdcard.h>
 #include <whb/gfx.h>
 #include <SDL2/SDL.h>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 
 #include "console_ui.h"
 #include "../core/settings.h"
@@ -61,6 +64,13 @@ WHBGfxShaderGroup group;
 GX2RBuffer posBuffer, texBuffer, colBuffer;
 GX2Sampler samplers[2];
 
+// State shared between the main thread, which handles system messages, and the UI thread
+// When the system asks for the foreground, the UI thread stops between frames until it gets it back
+std::mutex procMutex;
+std::condition_variable procCond;
+std::atomic<bool> releaseRequested;
+bool uiParked, uiDone;
+
 uint32_t ConsoleUI::defaultKeys[] {
     VPAD_BUTTON_A, VPAD_BUTTON_B, VPAD_BUTTON_MINUS, VPAD_BUTTON_PLUS,
     VPAD_BUTTON_RIGHT | VPAD_STICK_R_EMULATION_RIGHT | VPAD_STICK_L_EMULATION_RIGHT,
@@ -79,7 +89,26 @@ const char *ConsoleUI::keyNames[] {
     "LS Down", "LS Up", "LS Right", "LS Left"
 };
 
+void releaseForeground() {
+    // Stop the emulator, since threads on cores 0 and 1 are suspended in the background
+    bool resume = ConsoleUI::running;
+    ConsoleUI::stopCore();
+
+    // Let the main thread release the foreground, and wait until it's back
+    std::unique_lock<std::mutex> lock(procMutex);
+    uiParked = true;
+    procCond.notify_all();
+    procCond.wait(lock, [] { return !releaseRequested; });
+    uiParked = false;
+    lock.unlock();
+    if (resume) ConsoleUI::startCore();
+}
+
 void ConsoleUI::startFrame(uint32_t color) {
+    // Stop drawing while the system needs the foreground, like for the HOME menu
+    if (releaseRequested)
+        releaseForeground();
+
     // Convert the clear color to floats
     float r = float(color & 0xFF) / 0xFF;
     float g = float((color >> 8) & 0xFF) / 0xFF;
@@ -475,11 +504,59 @@ int main() {
     WHBMountSdCard();
     WorkerThread::createThread(logHeartbeat, nullptr, 0x10000, 20, OS_THREAD_ATTRIB_AFFINITY_CPU0);
 #endif
-    if (OSThread *uiThread = WorkerThread::createThread(runUi, nullptr, 0x100000,
-            OSGetThreadPriority(OSGetCurrentThread()), OS_THREAD_ATTRIB_AFFINITY_CPU2))
-        OSJoinThread(uiThread, nullptr);
-    else
-        runUi(0, nullptr);
+    OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int {
+        runUi(argc, argv);
+        std::lock_guard<std::mutex> guard(procMutex);
+        uiDone = true;
+        procCond.notify_all();
+        return 0;
+    };
+
+    if (WorkerThread::createThread(entry, nullptr, 0x100000,
+            OSGetThreadPriority(OSGetCurrentThread()), OS_THREAD_ATTRIB_AFFINITY_CPU2)) {
+        // Handle system messages while the UI runs, which ProcUI only allows on this core
+        bool launched = false;
+        while (true) {
+            switch (ProcUIProcessMessages(true)) {
+            case PROCUI_STATUS_EXITING:
+                // Exit, leaving the UI stopped if it's still running; save data was written when it stopped
+                ProcUIShutdown();
+                return 0;
+
+            case PROCUI_STATUS_RELEASE_FOREGROUND: {
+                // Wait for the UI to stop drawing before releasing the foreground
+                std::unique_lock<std::mutex> lock(procMutex);
+                releaseRequested = true;
+                procCond.wait(lock, [] { return uiParked || uiDone; });
+                lock.unlock();
+                ProcUIDrawDoneRelease();
+                break;
+            }
+
+            default: {
+                // Let the UI continue if the foreground came back
+                std::unique_lock<std::mutex> lock(procMutex);
+                if (releaseRequested) {
+                    releaseRequested = false;
+                    procCond.notify_all();
+                }
+
+                // Return to the system menu once the UI has finished
+                if (uiDone && !launched) {
+                    launched = true;
+                    lock.unlock();
+                    SYSLaunchMenu();
+                    break;
+                }
+                lock.unlock();
+                OSSleepTicks(OSMillisecondsToTicks(20));
+                break;
+            }
+            }
+        }
+    }
+
+    runUi(0, nullptr);
     SYSLaunchMenu();
 
     // Respond to system messages appropriately to allow exiting
