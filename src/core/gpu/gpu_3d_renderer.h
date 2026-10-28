@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <thread>
+#include <vector>
 
 #include "../worker_thread.h"
 
@@ -67,14 +68,19 @@ private:
     Core *core;
 
     bool resShift = false;
-    uint32_t framebuffer[2][256 * 192 * 4] = {};
-    int32_t depthBuffer[2][256 * 192 * 4] = {};
-    uint32_t attribBuffer[2][256 * 192 * 4] = {};
+    // Each layer is padded by 512 bytes, since the layers' sizes are a multiple of the cache's way size, which would
+    // make the same pixel in all of them compete for the same cache set
+    static const int LAYER_SIZE = 256 * 192 * 4 + 128;
+    uint32_t framebuffer[2][LAYER_SIZE] = {};
+    int32_t depthBuffer[2][LAYER_SIZE] = {};
+    uint32_t attribBuffer[2][LAYER_SIZE] = {};
     uint8_t stencilBuffer[256 * 192 * 4] = {};
     bool stencilClear[256 * 2] = {};
 
     int polygonTop[2048] = {};
     int polygonBot[2048] = {};
+    std::vector<uint16_t> linePolygons;
+    int lineStarts[192 * 2 + 1] = {};
 
     uint8_t activeThreads = 0;
     std::vector<WorkerThread*> threads;
@@ -104,6 +110,7 @@ private:
     static uint32_t interpolateLinRev(uint32_t v1, uint32_t v2, uint32_t x1, uint32_t x, uint32_t x2);
     static uint32_t interpolateFactor(uint32_t factor, uint32_t shift, uint32_t v1, uint32_t v2);
     static uint32_t interpolateColor(uint32_t c1, uint32_t c2, uint32_t x1, uint32_t x, uint32_t x2);
+    static uint32_t blendColor(uint32_t c1, uint32_t c2, uint32_t a);
 
     uint32_t readTexture(_Polygon *polygon, int s, int t);
     void drawPolygon(int line, int polygonIndex);

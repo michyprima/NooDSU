@@ -137,6 +137,26 @@ void Gpu3DRenderer::drawScanline(int line) {
             if (polygonTop[i] == polygonBot[i]) polygonBot[i]++;
         }
 
+        // List the polygons on each scanline in order, so drawing a scanline doesn't have to check every polygon
+        // Each scanline's list starts where the previous one ends, sized by counting the polygons on each scanline
+        int counts[192 * 2 + 1] = {};
+        int total = 0;
+        for (int i = 0; i < core->gpu3D.polygonCountOut; i++) {
+            int top = std::max(polygonTop[i], 0), bot = std::min(polygonBot[i], 192 * 2);
+            for (int j = top; j < bot; j++) counts[j]++;
+            total += std::max(bot - top, 0);
+        }
+        linePolygons.resize(total);
+        for (int j = 0, start = 0; j <= 192 * 2; j++) {
+            lineStarts[j] = start;
+            start += counts[j];
+            counts[j] = lineStarts[j];
+        }
+        for (int i = 0; i < core->gpu3D.polygonCountOut; i++) {
+            int top = std::max(polygonTop[i], 0), bot = std::min(polygonBot[i], 192 * 2);
+            for (int j = top; j < bot; j++) linePolygons[counts[j]++] = i;
+        }
+
         // Update the resolution shift for the next frame
         resShift = Settings::highRes3D;
 
@@ -265,14 +285,12 @@ void Gpu3DRenderer::drawScanline1(int line) {
     uint16_t translucent[2048];
     int translucentCount = 0;
 
-    // Draw the polygons
-    for (int i = 0; i < core->gpu3D.polygonCountOut; i++) {
-        // Skip polygons that aren't on the current scanline
-        if (line < polygonTop[i] || line >= polygonBot[i])
-            continue;
-
+    // Draw the polygons on the current scanline
+    _Polygon *polygons = core->gpu3D.polygonsOut;
+    for (int j = lineStarts[line], end = lineStarts[line + 1]; j < end; j++) {
         // Draw solid polygons and save the translucent ones for later
-        _Polygon *polygon = &core->gpu3D.polygonsOut[i];
+        int i = linePolygons[j];
+        _Polygon *polygon = &polygons[i];
         if (polygon->alpha < 0x3F || polygon->textureFmt == 1 || polygon->textureFmt == 6)
             translucent[translucentCount++] = i;
         else
@@ -373,7 +391,7 @@ void Gpu3DRenderer::finishScanline(int line) {
             if (((attribBuffer[0][i] >> 15) & 0x3F) < 0x3F) { // Edge not opaque
                 // Blend with the lower pixel, or simply set the alpha if the lower pixel has alpha 0
                 if ((framebuffer[1][i] >> 18) & 0x3F)
-                    framebuffer[0][i] = BIT(26) | interpolateColor(framebuffer[1][i], framebuffer[0][i], 0, ((attribBuffer[0][i] >> 15) & 0x3F), 0x3F);
+                    framebuffer[0][i] = BIT(26) | blendColor(framebuffer[1][i], framebuffer[0][i], (attribBuffer[0][i] >> 15) & 0x3F);
                 else
                     framebuffer[0][i] = (framebuffer[0][i] & ~0xFC0000) | ((attribBuffer[0][i] & 0x1F8000) << 3);
             }
@@ -473,6 +491,26 @@ uint32_t Gpu3DRenderer::interpolateFactor(uint32_t factor, uint32_t shift, uint3
         return v1 + (((v2 - v1) * factor) >> shift);
     else
         return v2 + (((v1 - v2) * ((1 << shift) - factor)) >> shift);
+}
+
+FORCE_INLINE static uint32_t blendChannel(uint32_t v1, uint32_t v2, uint32_t a) {
+    // Interpolate a 6-bit channel like interpolateLinear(v1, v2, 0, a, 63), without dividing
+    // The products are at most 63 * 63, and (n + 1) * 4161 >> 18 equals n / 63 for all of them
+    if (a == 0) return v1;
+    if (a >= 63) return v2;
+    if (v1 <= v2)
+        return v1 + ((((v2 - v1) * a + 1) * 4161) >> 18);
+    else
+        return v2 + ((((v1 - v2) * (63 - a) + 1) * 4161) >> 18);
+}
+
+uint32_t Gpu3DRenderer::blendColor(uint32_t c1, uint32_t c2, uint32_t a) {
+    // Blend 2 colors by an alpha, giving the same result as interpolateColor(c1, c2, 0, a, 63)
+    uint32_t r = blendChannel((c1 >> 0) & 0x3F, (c2 >> 0) & 0x3F, a);
+    uint32_t g = blendChannel((c1 >> 6) & 0x3F, (c2 >> 6) & 0x3F, a);
+    uint32_t b = blendChannel((c1 >> 12) & 0x3F, (c2 >> 12) & 0x3F, a);
+    uint32_t a1 = (c1 >> 18) & 0x3F, a2 = (c2 >> 18) & 0x3F;
+    return ((a1 > a2 ? a1 : a2) << 18) | (b << 12) | (g << 6) | r;
 }
 
 uint32_t Gpu3DRenderer::interpolateColor(uint32_t c1, uint32_t c2, uint32_t x1, uint32_t x, uint32_t x2) {
@@ -1043,6 +1081,14 @@ template <bool wBuffer, bool antiAlias, bool textured> void Gpu3DRenderer::drawS
     uint32_t texel;
     LinearStepper zStep(ze[0], ze[1], x1, x4);
 
+    // When W is the same at both ends, attributes are interpolated linearly; step them instead of dividing per pixel
+    // Steppers give the same results as interpolateLinear for any X; unused ones get an empty range, which skips
+    // the divisions of setting them up
+    const bool linear = (we[0] == we[1] && !(we[0] & 0x7F));
+    const uint32_t xc = linear ? x4 : x1, xt = (linear && textured) ? x4 : x1;
+    LinearStepper rStep(re[0], re[1], x1, xc), gStep(ge[0], ge[1], x1, xc), bStep(be[0], be[1], x1, xc);
+    LinearStepper sStep(se[0] + 0xFFFF, se[1] + 0xFFFF, x1, xt), tStep(te[0] + 0xFFFF, te[1] + 0xFFFF, x1, xt);
+
     // Keep polygon settings in locals, since buffer stores would otherwise make them be reloaded for every pixel
     const uint8_t alpha = polygon->alpha, mode = polygon->mode, id = polygon->id, textureFmt = polygon->textureFmt;
     const bool depthTestEqual = polygon->depthTestEqual;
@@ -1051,7 +1097,7 @@ template <bool wBuffer, bool antiAlias, bool textured> void Gpu3DRenderer::drawS
 
     // Calculate the interpolation factor with a precision of 8 bits for polygon fills
     auto getFactor = [&](uint32_t x) -> uint32_t {
-        if (we[0] == we[1] && !(we[0] & 0x7F)) // Linear fallback
+        if (linear) // Linear fallback
             return -1;
         else if (x <= x1) // Clamp min
             return 0;
@@ -1139,9 +1185,9 @@ template <bool wBuffer, bool antiAlias, bool textured> void Gpu3DRenderer::drawS
         if (!wBuffer) factor = getFactor(x);
         uint32_t rv, gv, bv;
         if (factor == -1) {
-            rv = interpolateLinear(re[0], re[1], x1, x, x4) >> 3;
-            gv = interpolateLinear(ge[0], ge[1], x1, x, x4) >> 3;
-            bv = interpolateLinear(be[0], be[1], x1, x, x4) >> 3;
+            rv = rStep.get(x) >> 3;
+            gv = gStep.get(x) >> 3;
+            bv = bStep.get(x) >> 3;
         }
         else {
             rv = interpolateFactor(factor, 8, re[0], re[1]) >> 3;
@@ -1155,8 +1201,8 @@ template <bool wBuffer, bool antiAlias, bool textured> void Gpu3DRenderer::drawS
             // Interpolate the texture coordinates at the current pixel
             int s, t;
             if (factor == -1) {
-                s = (int)(interpolateLinear(se[0] + 0xFFFF, se[1] + 0xFFFF, x1, x, x4) - 0xFFFF) >> 4;
-                t = (int)(interpolateLinear(te[0] + 0xFFFF, te[1] + 0xFFFF, x1, x, x4) - 0xFFFF) >> 4;
+                s = (int)(sStep.get(x) - 0xFFFF) >> 4;
+                t = (int)(tStep.get(x) - 0xFFFF) >> 4;
             }
             else {
                 s = (int)(interpolateFactor(factor, 8, se[0] + 0xFFFF, se[1] + 0xFFFF) - 0xFFFF) >> 4;
@@ -1265,14 +1311,14 @@ template <bool wBuffer, bool antiAlias, bool textured> void Gpu3DRenderer::drawS
         else if (!(attribBuffer[layer][i] & BIT(12)) || ((attribBuffer[layer][i] >> 6) & 0x3F) != id) { // Transparent
             // Transparent pixels are only drawn if the old pixel isn't transparent or the polygon ID differs
             framebuffer[layer][i] = BIT(26) | (((disp3DCnt & BIT(3)) && (framebuffer[layer][i] & 0xFC0000)) ?
-                interpolateColor(framebuffer[layer][i], color, 0, color >> 18, 63) : color);
+                blendColor(framebuffer[layer][i], color, color >> 18) : color);
             if (transNewDepth) depthBuffer[layer][i] = depth;
             attribBuffer[layer][i] = (attribBuffer[layer][i] & (0x1FC03F | (fog << 13))) | BIT(12) | (id << 6);
 
             // Blend with the back layer as well if drawing over a front anti-aliased edge pixel
             if (antiAlias && layer == 0 && (attribBuffer[0][i] & BIT(14))) {
                 framebuffer[1][i] = BIT(26) | (((disp3DCnt & BIT(3)) && (framebuffer[1][i] & 0xFC0000)) ?
-                    interpolateColor(framebuffer[1][i], color, 0, color >> 18, 63) : color);
+                    blendColor(framebuffer[1][i], color, color >> 18) : color);
                 if (transNewDepth) depthBuffer[1][i] = depth;
                 attribBuffer[1][i] = (attribBuffer[1][i] & (0x1FC03F | (fog << 13))) | BIT(12) | (id << 6);
             }

@@ -25,12 +25,8 @@
 #include <string>
 
 namespace Sampler {
-    // The pause menu item comes after the 3D benchmark when that's included too
-#ifdef PROFILE_EMU
+    // The pause menu item comes after the 3D benchmark, which sampler builds always include
     static const int MENU_INDEX = 8;
-#else
-    static const int MENU_INDEX = 7;
-#endif
 
     void start();
     void stop();
