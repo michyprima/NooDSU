@@ -1099,6 +1099,9 @@ void ConsoleUI::pauseMenu() {
         MenuItem("Settings"),
         MenuItem("File Browser")
     };
+#ifdef PROFILE_EMU
+    items.push_back(MenuItem("3D Benchmark"));
+#endif
 
     int index = 0;
     while (true) {
@@ -1183,6 +1186,42 @@ void ConsoleUI::pauseMenu() {
                 // Open the file browser and close the pause menu
                 fileBrowser();
                 return;
+
+#ifdef PROFILE_EMU
+            case 7: { // 3D Benchmark
+                // Re-render the paused frame's 3D with one thread on core 1, which nothing else uses while paused
+                struct Bench { Core *core; double ms; uint64_t px[PX_COUNT]; } bench = { core };
+                OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int {
+                    Bench *b = (Bench*)argv;
+                    int saved = Settings::threaded3D;
+                    Settings::threaded3D = 0;
+                    uint64_t before[PX_COUNT];
+                    memcpy(before, EmuProfile::pixelTicks[1], sizeof(before));
+                    OSTime start = OSGetSystemTime();
+                    for (int n = 0; n < 20; n++)
+                        for (int line = 0; line < 192; line++)
+                            b->core->gpu3DRenderer.drawScanline(line);
+                    b->ms = OSTicksToMicroseconds(OSGetSystemTime() - start) / 20000.0;
+                    for (int i = 0; i < PX_COUNT; i++)
+                        b->px[i] = EmuProfile::pixelTicks[1][i] - before[i];
+                    Settings::threaded3D = saved;
+                    return 0;
+                };
+                if (OSThread *thread = WorkerThread::createThread(entry, &bench, 0x10000, 16, OS_THREAD_ATTRIB_AFFINITY_CPU1))
+                    OSJoinThread(thread, nullptr);
+
+                // Show the time per frame, and how it splits into drawing phases
+                double ms[PX_COUNT];
+                for (int i = 0; i < PX_COUNT; i++)
+                    ms[i] = bench.px[i] * 1000.0 / OSTimerClockSpeed / 20;
+                char text[256];
+                snprintf(text, sizeof(text), "%.2f ms per frame with one thread\nclear %.2f, span setup %.2f, pixel depth %.2f\n"
+                    "interp %.2f, texel %.2f, write %.2f", bench.ms, ms[PX_CLEAR], ms[PX_SPAN], ms[PX_DEPTH], ms[PX_INTERP],
+                    ms[PX_TEXEL], ms[PX_WRITE]);
+                message("3D Benchmark", text);
+                break;
+            }
+#endif
             }
         }
         else if (pressed & defaultKeys[INPUT_B]) {
