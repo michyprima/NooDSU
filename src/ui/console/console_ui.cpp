@@ -295,7 +295,7 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         if (showFpsCounter) {
             static uint64_t last[EP_COUNT];
             static OSTime lastTime = OSGetSystemTime();
-            static std::string lines[11];
+            static std::string lines[10];
             OSTime now = OSGetSystemTime();
             if (OSTicksToMilliseconds(now - lastTime) >= 1000) {
                 double wall = double(now - lastTime), frames = std::max(core->fps, 1);
@@ -365,20 +365,6 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
                     "write %.1f", pixelMs[PX_CLEAR], pixelMs[PX_SPAN], pixelMs[PX_DEPTH], pixelMs[PX_INTERP], pixelMs[PX_TEXEL],
                     pixelMs[PX_WRITE]);
                 lines[9] = text;
-                // Show the CPU time the OS counted for each kind of thread, as a share of one core
-                static uint32_t lastCpu[CPU_COUNT + 2];
-                uint32_t cpu[CPU_COUNT + 2];
-                for (int i = 0; i < CPU_COUNT; i++) cpu[i] = EmuProfile::cpuUs[i];
-                cpu[CPU_COUNT] = emuThread ? uint32_t(emuThread->coreTimeConsumedNs / 1000) : lastCpu[CPU_COUNT];
-                cpu[CPU_COUNT + 1] = uint32_t(OSGetCurrentThread()->coreTimeConsumedNs / 1000);
-                double cpuPct[CPU_COUNT + 2];
-                for (int i = 0; i < CPU_COUNT + 2; i++) {
-                    cpuPct[i] = uint32_t(cpu[i] - lastCpu[i]) * 100.0 / OSTicksToMicroseconds(now - lastTime);
-                    lastCpu[i] = cpu[i];
-                }
-                snprintf(text, sizeof(text), "CPU %% of a core: emulator %.0f, UI %.0f, 3D threads %.0f, 2D thread %.0f, geometry %.0f",
-                    cpuPct[CPU_COUNT], cpuPct[CPU_COUNT + 1], cpuPct[CPU_3D], cpuPct[CPU_2D], cpuPct[CPU_GEOM]);
-                lines[10] = text;
 
                 // List the most expensive scheduled tasks
                 static const char *names[] = { "run", "reset", "cart9", "cart7", "dma9.0", "dma9.1", "dma9.2", "dma9.3",
@@ -401,7 +387,7 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
                 lines[4] = "Tasks ms/f: " + top;
                 lastTime = now;
             }
-            for (int i = 0; i < 11; i++)
+            for (int i = 0; i < 10; i++)
                 drawString(lines[i], SCALE(5), SCALE(48) + SCALE(30) * i, SCALE(30));
         }
 #endif
@@ -960,6 +946,7 @@ void ConsoleUI::settingsMenu() {
         // Add Wii U settings at the end, so the indices of the others stay the same
         settings.push_back(MenuItem("Wii U Settings", true));
         settings.push_back(MenuItem("JIT (Experimental)", toggle[Settings::jit]));
+        settings.push_back(MenuItem("Fast CPU Timing (Experimental)", toggle[Settings::fastTiming]));
 #endif
 
         // Create the settings menu
@@ -995,6 +982,7 @@ void ConsoleUI::settingsMenu() {
                 case 30: ScreenLayout::integerScale = (ScreenLayout::integerScale + 1) % 2; break;
                 case 31: ScreenLayout::gbaCrop = (ScreenLayout::gbaCrop + 1) % 2; break;
                 case 33: Settings::jit = (Settings::jit + 1) % 2; break;
+                case 34: Settings::fastTiming = (Settings::fastTiming + 1) % 2; break;
 
             case 5:
                 // Update the palette when changing themes

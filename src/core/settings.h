@@ -50,6 +50,7 @@ public:
     static int dsiMode;
     static int arm7Hle;
     static int jit;
+    static int fastTiming;
 
     static std::string gbaBiosPath;
     static std::string ndsBios9Path;

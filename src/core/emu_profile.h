@@ -76,13 +76,6 @@ enum PixelProfileSlot {
     PX_COUNT
 };
 
-enum CpuProfileSlot {
-    CPU_3D, // 3D renderer threads
-    CPU_2D, // 2D thread
-    CPU_GEOM, // Geometry worker
-    CPU_COUNT
-};
-
 enum EmuCountSlot {
     EC_LINES_EMU, // 2D scanlines drawn fully on the emulator thread
     EC_LINES_HALF, // 2D scanlines where the emulator thread drew engine B
@@ -91,9 +84,7 @@ enum EmuCountSlot {
 };
 
 #ifdef PROFILE_EMU
-#include <atomic>
 #include <coreinit/core.h>
-#include <coreinit/thread.h>
 #include <coreinit/time.h>
 
 namespace EmuProfile {
@@ -102,7 +93,6 @@ namespace EmuProfile {
     extern uint32_t counts[EC_COUNT];
     extern uint64_t renderTicks[4][RP_COUNT]; // Kept separately for each 3D thread
     extern uint64_t pixelTicks[3][PX_COUNT]; // Kept separately for each CPU core
-    extern std::atomic<uint32_t> cpuUs[CPU_COUNT]; // CPU time used by helper threads in microseconds, as counted by the OS
 
     // Read the time base directly, which is cheaper than calling the OS for timing inside pixel loops
     inline uint32_t tick() {
@@ -132,8 +122,6 @@ namespace EmuProfile {
 #define PX_TIMER(phase) EmuProfile::PixelTimer pxTimer(pxSlots, phase)
 #define PX_NEXT() pxTimer.next()
 #define PX_START(name) uint32_t name = EmuProfile::tick()
-#define CPU_ADD_THREAD(slot) (EmuProfile::cpuUs[slot] += uint32_t(OSGetCurrentThread()->coreTimeConsumedNs / 1000))
-#define CPU_SET_THREAD(slot) (EmuProfile::cpuUs[slot] = uint32_t(OSGetCurrentThread()->coreTimeConsumedNs / 1000))
 #define PX_ADD(slot, start) (pxSlots[slot] += EmuProfile::tick() - (start))
 
 #define EP_START(name) uint32_t name = EmuProfile::now()
@@ -151,8 +139,6 @@ namespace EmuProfile {
 #define PX_TIMER(phase) do {} while (0)
 #define PX_NEXT() do {} while (0)
 #define PX_START(name) do {} while (0)
-#define CPU_ADD_THREAD(slot) do {} while (0)
-#define CPU_SET_THREAD(slot) do {} while (0)
 #define PX_ADD(slot, start) do {} while (0)
 #ifdef HEARTBEAT
 #define EP_TASK(core) do { HB_SET(HB_EMU_TASK, (core).events[0].task); (core).tasks[(core).events[0].task](); \

@@ -155,6 +155,10 @@ public:
     std::function<void()> tasks[MAX_TASKS];
     uint32_t globalCycles = 0;
 
+    // With fast CPU timing, the ARM9 can run up to this many cycles ahead of the ARM7 before it catches up
+    static const uint32_t FAST_SLICE = 64;
+    uint32_t sliceLimit = 0;
+
     Core(std::string ndsRom = "", std::string gbaRom = "", int id = 0, int ndsRomFd = -1, int gbaRomFd = -1,
         int ndsSaveFd = -1, int gbaSaveFd = -1, int ndsStateFd = -1, int gbaStateFd = -1, int ndsCheatFd = -1);
     void saveState(FILE *file);

@@ -44,8 +44,10 @@ public:
     static void runCoreNone(Core &core);
     template <bool, int> static void runCoreSingle(Core &core);
     static void runCoreNds(Core &core);
+    static void runCoreNdsFast(Core &core);
     static void runCoreDsi(Core &core);
     static bool runArm7UntilArm9(Core &core);
+    static bool runArm7Behind(Core &core);
 
     uint16_t getOpcode16();
     uint32_t getOpcode32();

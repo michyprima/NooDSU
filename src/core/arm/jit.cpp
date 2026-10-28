@@ -437,6 +437,12 @@ int Jit::interleave(const uint32_t *limit) {
     // Called after an ARM9 instruction when the next one can't run straight away, with the global cycles
     // still at the start of that instruction; returns whether the ARM9 can continue
     // With only the ARM9 running, it stops, and the run loop catches up the global cycles
+    // With fast timing, the ARM7 catches up from behind and the ARM9 gets a new slice, like the run loop does
+    if (limit == &core->sliceLimit) {
+        if (!Interpreter::runArm7Behind(*core) || codeChanged) return 0;
+        core->sliceLimit = core->interpreter[1].cycles + Core::FAST_SLICE;
+        return 1;
+    }
     if (limit != &core->interpreter[1].cycles)
         return 0;
 

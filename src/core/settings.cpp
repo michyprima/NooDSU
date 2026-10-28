@@ -37,6 +37,7 @@ int Settings::screenFilter = 2;
 int Settings::dsiMode = 0;
 int Settings::arm7Hle = 0;
 int Settings::jit = 0;
+int Settings::fastTiming = 0;
 
 std::string Settings::gbaBiosPath = "gba_bios.bin";
 std::string Settings::ndsBios9Path = "bios9.bin";
@@ -67,6 +68,7 @@ std::vector<Setting> Settings::settings = {
     Setting("dsiMode", &dsiMode, false),
     Setting("arm7Hle", &arm7Hle, false),
     Setting("jit", &jit, false),
+    Setting("fastTiming", &fastTiming, false),
     Setting("gbaBiosPath", &gbaBiosPath, true),
     Setting("ndsBios9Path", &ndsBios9Path, true),
     Setting("ndsBios7Path", &ndsBios7Path, true),

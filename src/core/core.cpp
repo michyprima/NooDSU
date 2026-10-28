@@ -34,7 +34,6 @@ uint64_t EmuProfile::taskTicks[64];
 uint32_t EmuProfile::counts[EC_COUNT];
 uint64_t EmuProfile::renderTicks[4][RP_COUNT];
 uint64_t EmuProfile::pixelTicks[3][PX_COUNT];
-std::atomic<uint32_t> EmuProfile::cpuUs[CPU_COUNT];
 #endif
 
 Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gbaRomFd,

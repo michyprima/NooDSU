@@ -720,10 +720,7 @@ void Gpu::drawThreaded() {
         // Wait until the next scanline should start, and claim it unless the emulator thread already did
         int expected = 1;
         while (!drawing.compare_exchange_weak(expected, 2)) {
-            if (!running.load()) {
-                CPU_ADD_THREAD(CPU_2D);
-                return;
-            }
+            if (!running.load()) return;
             std::this_thread::yield();
             expected = 1;
         }
@@ -741,7 +738,6 @@ void Gpu::drawThreaded() {
         // Signal that the scanlines are finished
         drawing.store(0);
     }
-    CPU_ADD_THREAD(CPU_2D);
 }
 
 void Gpu::writeDispStat(bool cpu, uint16_t mask, uint16_t value) {

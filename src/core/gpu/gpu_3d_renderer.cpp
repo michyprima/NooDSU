@@ -228,7 +228,6 @@ void Gpu3DRenderer::drawThreaded(int thread) {
     HB_INC(HB_3D_LINES);
     finishScanline(prev);
     ready[prev].store(3);
-    CPU_ADD_THREAD(CPU_3D);
 }
 
 void Gpu3DRenderer::drawScanline1(int line) {

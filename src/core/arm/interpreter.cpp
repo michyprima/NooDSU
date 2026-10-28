@@ -18,6 +18,7 @@
 */
 
 #include "../core.h"
+#include "../settings.h"
 #include "../emu_profile.h"
 
 Interpreter::Interpreter(Core *core, bool arm7): core(core), arm7(arm7) {
@@ -159,7 +160,10 @@ template <bool _arm7, int shift> void Interpreter::runCoreSingle(Core &core) {
 }
 
 void Interpreter::runCoreNds(Core &core) {
-    // Run the core with both CPUs active in NDS mode
+    // Run the core with both CPUs active in NDS mode, switching between them every instruction unless timing
+    // is allowed to be less exact
+    if (Settings::fastTiming)
+        return runCoreNdsFast(core);
     Interpreter &arm9 = core.interpreter[0];
     Interpreter &arm7 = core.interpreter[1];
     while (core.running.exchange(true)) {
@@ -190,6 +194,65 @@ void Interpreter::runCoreNds(Core &core) {
             core.events.erase(core.events.begin());
         }
         EP_ADD(EP_TASKS, tasks);
+    }
+}
+
+void Interpreter::runCoreNdsFast(Core &core) {
+    // Run the core with both CPUs active in NDS mode, letting the ARM9 run ahead of the ARM7 by up to a slice
+    // The ARM9 still stops at scheduled tasks, so only the ARM7 is behind, and it catches up from its own time
+    // This switches between the CPUs much less often, at the cost of timing between them being less exact
+    Interpreter &arm9 = core.interpreter[0];
+    Interpreter &arm7 = core.interpreter[1];
+
+    // A CPU that was halted keeps the cycles from when it stopped, so bring it up to the current time; otherwise both
+    // are already there, since the ARM7 catches up before any task runs
+    arm9.cycles = std::max(arm9.cycles, core.globalCycles);
+    arm7.cycles = std::max(arm7.cycles, core.globalCycles);
+
+    while (core.running.exchange(true)) {
+        // Run the ARM9 ahead and let the ARM7 catch up, until the next scheduled task
+        EP_START(cpu);
+        while (core.events[0].cycles > core.globalCycles) {
+            if (core.globalCycles >= arm9.cycles) {
+                // Run compiled ARM9 code if possible, which lets the ARM7 catch up in between and leaves the state as
+                // it would be at the top of this loop, or fall back to the interpreter
+                core.sliceLimit = arm7.cycles + Core::FAST_SLICE;
+                if (core.jit.enabled && core.jit.run(&core.sliceLimit)) continue;
+                if (arm9.pipelineStale) arm9.refillPipeline();
+                uint32_t next = core.globalCycles + arm9.runOpcode();
+                arm9.cycles = next;
+                if (next <= core.sliceLimit && next < core.events[0].cycles) {
+                    core.globalCycles = next;
+                    continue;
+                }
+            }
+            EP_START(a7);
+            runArm7Behind(core);
+            EP_ADD(EP_BOTH_ARM7, a7);
+        }
+        EP_ADD(EP_BOTH, cpu);
+
+        // Jump to the next task and run all that are scheduled now
+        EP_START(tasks);
+        core.globalCycles = core.events[0].cycles;
+        while (core.events[0].cycles <= core.globalCycles) {
+            EP_TASK(core);
+            core.events.erase(core.events.begin());
+        }
+        EP_ADD(EP_TASKS, tasks);
+    }
+}
+
+bool Interpreter::runArm7Behind(Core &core) {
+    // Run the ARM7 from its own time until it reaches the ARM9, or a task is due first
+    // Returns whether the ARM9 can continue, with the state otherwise matching the top of the run loop
+    Interpreter &arm9 = core.interpreter[0];
+    Interpreter &arm7 = core.interpreter[1];
+    while (true) {
+        core.globalCycles = std::min<uint32_t>(arm9.cycles, arm7.cycles);
+        if (core.events[0].cycles <= core.globalCycles) return false;
+        if (core.globalCycles >= arm9.cycles) return true;
+        arm7.cycles = core.globalCycles + (arm7.runOpcode() << 1);
     }
 }
 
