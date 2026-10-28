@@ -169,6 +169,7 @@ public:
     uint32_t readVecMtxResult(int index);
 
     void writeGxFifo(uint32_t mask, uint32_t value);
+    void writeGxFifo(const uint8_t *data, int count);
     void writeMtxMode(uint32_t mask, uint32_t value);
     void writeMtxPush(uint32_t mask, uint32_t value);
     void writeMtxPop(uint32_t mask, uint32_t value);
@@ -340,5 +341,8 @@ private:
     void posTestCmd(uint32_t *params);
     void vecTestCmd(uint32_t param);
 
+    void queueEntry(Entry entry);
+    void finishEntries(size_t oldSize);
     void addEntry(Entry entry);
+    void queueGxFifo(uint32_t value);
 };

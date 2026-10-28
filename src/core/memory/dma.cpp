@@ -62,6 +62,28 @@ void Dma::transfer(int channel) {
                 srcAddrs[channel] -= 4;
         }
     }
+    else if ((dmaCnt[channel] & BIT(26)) && !cpu && srcAddrCnt == 0 && dstAddrCnt == 2 &&
+            (dstAddrs[channel] & ~0x3F) == 0x4000400 && !(srcAddrs[channel] & 0x3)) { // Whole words to GXFIFO
+        LOG_INFO("ARM9 DMA channel %d transferring %d words from 0x%X to GXFIFO in mode %d\n",
+            channel, wordCounts[channel], srcAddrs[channel], mode);
+
+        // Send runs of words within a memory page straight to the 3D engine, which updates its status once per run
+        // In GXFIFO mode, only send 112 words at a time
+        unsigned int total = (mode == 7) ? std::min(wordCounts[channel], 112U) : wordCounts[channel];
+        for (unsigned int done = 0; done < total;) {
+            uint32_t count = std::min(total - done, (0x1000 - (srcAddrs[channel] & 0xFFF)) >> 2);
+            if (const uint8_t *data = core->memory.getReadPtr(0, srcAddrs[channel], false)) {
+                core->gpu3D.writeGxFifo(data, count);
+            }
+            else {
+                count = 1;
+                core->gpu3D.writeGxFifo(0xFFFFFFFF, core->memory.read<uint32_t>(0, srcAddrs[channel], false));
+            }
+            srcAddrs[channel] += count << 2;
+            done += count;
+        }
+        if (mode == 7) gxFifoCount = total;
+    }
     else if (dmaCnt[channel] & BIT(26)) { // Whole word transfer
         LOG_INFO("ARM%d DMA channel %d transferring %d words from 0x%X to 0x%X in mode %d\n",
             cpu ? 7 : 9, channel, wordCounts[channel], srcAddrs[channel], dstAddrs[channel], mode);

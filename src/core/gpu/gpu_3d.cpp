@@ -1623,31 +1623,15 @@ void Gpu3D::vecTestCmd(uint32_t param) {
     vecResult[2] = ((int16_t)(vector.z << 3)) >> 3;
 }
 
-void Gpu3D::addEntry(Entry entry) {
+FORCE_INLINE void Gpu3D::queueEntry(Entry entry) {
+    // Add an entry to the FIFO, leaving the FIFO status to be updated after a batch of entries
+    // No time passes and nothing else runs between entries of a batch, so the result is the same as updating each time
+    // Data moves directly into the pipe if the FIFO is empty and the pipe isn't full
     if (fifo.size() - pipeSize == 0 && pipeSize < 4) {
-        // Move data directly into the pipe if the FIFO is empty and the pipe isn't full
-        fifo.push_back(entry);
         pipeSize++;
-
-        // Update the FIFO status
         gxStat |= BIT(27); // Commands executing
     }
-    else {
-        // If the FIFO is full, halt the CPU until space is free
-        if (fifo.size() - pipeSize >= 256)
-            core->interpreter[0].halt(1);
-
-        // Move data into the FIFO
-        fifo.push_back(entry);
-
-        // Update the FIFO status
-        gxStat = (gxStat & ~0x01FF0000) | ((fifo.size() - pipeSize) << 16); // FIFO entries
-        gxStat &= ~BIT(26); // FIFO not empty
-
-        // If the FIFO is half full or more, disable GXFIFO DMA transfers
-        if (fifo.size() - pipeSize >= 128 && (gxStat & BIT(25)))
-            gxStat &= ~BIT(25);
-    }
+    fifo.push_back(entry);
 
     switch (entry.command) {
     case 0x11: case 0x12: // MTX_PUSH, MTX_POP
@@ -1662,6 +1646,25 @@ void Gpu3D::addEntry(Entry entry) {
         gxStat |= BIT(0);
         break;
     }
+}
+
+void Gpu3D::finishEntries(size_t oldSize) {
+    // Update the FIFO status after entries were added, if any were; entries only go into the FIFO itself once
+    // the pipe is full, and only increase the count, so checks against the final count match checking after each entry
+    if (fifo.size() == oldSize) return;
+    if (uint32_t count = fifo.size() - pipeSize) {
+        // If the FIFO was full when an entry was added, halt the CPU until space is free
+        if (count > 256)
+            core->interpreter[0].halt(1);
+
+        // Update the FIFO status
+        gxStat = (gxStat & ~0x01FF0000) | (count << 16); // FIFO entries
+        gxStat &= ~BIT(26); // FIFO not empty
+
+        // If the FIFO is half full or more, disable GXFIFO DMA transfers
+        if (count >= 128 && (gxStat & BIT(25)))
+            gxStat &= ~BIT(25);
+    }
 
     // Start executing commands if one is ready
     if (state == GX_IDLE && fifo.size() >= paramCounts[fifo.front().command]) {
@@ -1670,16 +1673,22 @@ void Gpu3D::addEntry(Entry entry) {
     }
 }
 
-void Gpu3D::writeGxFifo(uint32_t mask, uint32_t value) {
-    EP_START(fifoStart);
+void Gpu3D::addEntry(Entry entry) {
+    // Add a single entry and update the FIFO status
+    size_t oldSize = fifo.size();
+    queueEntry(entry);
+    finishEntries(oldSize);
+}
+
+FORCE_INLINE void Gpu3D::queueGxFifo(uint32_t value) {
+    // Add entries for a word written to GXFIFO, without updating the FIFO status
     if (gxFifo == 0) {
         // Read new packed commands
-        gxFifo = value & mask;
+        gxFifo = value;
     }
     else {
         // Add a command parameter
-        Entry entry(gxFifo, value & mask);
-        addEntry(entry);
+        queueEntry(Entry(gxFifo, value));
         gxFifoCount++;
 
         // Move to the next command once all parameters have been sent
@@ -1691,10 +1700,27 @@ void Gpu3D::writeGxFifo(uint32_t mask, uint32_t value) {
 
     // Add entries for commands with no parameters
     while (gxFifo != 0 && paramCounts[gxFifo & 0xFF] == 0) {
-        Entry entry(gxFifo, 0);
-        addEntry(entry);
+        queueEntry(Entry(gxFifo, 0));
         gxFifo >>= 8;
     }
+}
+
+void Gpu3D::writeGxFifo(uint32_t mask, uint32_t value) {
+    // Write a word to GXFIFO
+    EP_START(fifoStart);
+    size_t oldSize = fifo.size();
+    queueGxFifo(value & mask);
+    finishEntries(oldSize);
+    EP_ADD(EP_GXFIFO, fifoStart);
+}
+
+void Gpu3D::writeGxFifo(const uint8_t *data, int count) {
+    // Write a batch of little-endian words to GXFIFO, as a DMA transfer does, updating the FIFO status once at the end
+    EP_START(fifoStart);
+    size_t oldSize = fifo.size();
+    for (int i = 0; i < count; i++)
+        queueGxFifo(readLsb<uint32_t>(&data[i * 4]));
+    finishEntries(oldSize);
     EP_ADD(EP_GXFIFO, fifoStart);
 }
 
