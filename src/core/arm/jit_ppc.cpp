@@ -34,6 +34,8 @@
 
 // Registers that hold state while generated code runs; they're saved by the entry code
 enum PpcReg {
+    R_TMP2 = 21, // Values kept across memory accesses
+    R_TMP1 = 22,
     R_WMAP = 23, // ARM9 write memory map
     R_RMAP = 24, // ARM9 read memory map
     R_PC = 25, // Program counter of the current instruction, which is only stored when needed
@@ -69,6 +71,7 @@ public:
     void cmpwi(int ra, int32_t si) { d(11, 0, ra, si); }
     void oris(int ra, int rs, uint32_t ui) { d(25, rs, ra, ui); }
     void subfic(int rt, int ra, int32_t si) { d(8, rt, ra, si); }
+    void andi_(int ra, int rs, uint32_t ui) { d(28, rs, ra, ui); }
 
     // X-form instructions
     void x(int rt, int ra, int rb, int xo) { emit((31 << 26) | (rt << 21) | (ra << 16) | (rb << 11) | (xo << 1)); }
@@ -84,6 +87,11 @@ public:
     void nor(int ra, int rs, int rb) { x(rs, ra, rb, 124); }
     void eqv(int ra, int rs, int rb) { x(rs, ra, rb, 284); }
     void cntlzw(int ra, int rs) { x(rs, ra, 0, 26); }
+    void srawi(int ra, int rs, int sh) { x(rs, ra, sh, 824); }
+    void extsb(int ra, int rs) { x(rs, ra, 0, 954); }
+    void extsh(int ra, int rs) { x(rs, ra, 0, 922); }
+    void lhbrx(int rt, int ra, int rb) { x(rt, ra, rb, 790); }
+    void sthbrx(int rs, int ra, int rb) { x(rs, ra, rb, 918); }
     void lwzx(int rt, int ra, int rb) { x(rt, ra, rb, 23); }
     void stbx(int rs, int ra, int rb) { x(rs, ra, rb, 215); }
     void lwbrx(int rt, int ra, int rb) { x(rt, ra, rb, 534); }
@@ -152,7 +160,7 @@ public:
 };
 
 // The most words of host code generated for one instruction
-static const int MAX_INSTR_WORDS = 48;
+static const int MAX_INSTR_WORDS = 120;
 
 // Get the code address of a non-virtual member function
 template <typename T> static void *memberAddress(T func) {
@@ -175,6 +183,14 @@ static uint32_t jitLoad32(Memory *memory, uint32_t address) {
 
 static uint32_t jitLoad8(Memory *memory, uint32_t address) {
     return memory->read<uint8_t>(false, address);
+}
+
+static uint32_t jitLoad16(Memory *memory, uint32_t address) {
+    return memory->read<uint16_t>(false, address);
+}
+
+static void jitStore16(Memory *memory, uint32_t address, uint32_t value) {
+    memory->write<uint16_t>(false, address, value);
 }
 
 static void jitStore32(Memory *memory, uint32_t address, uint32_t value) {
@@ -236,6 +252,8 @@ void Jit::initCodegen() {
     addrLoad8 = (uint32_t)(uintptr_t)&jitLoad8;
     addrStore32 = (uint32_t)(uintptr_t)&jitStore32;
     addrStore8 = (uint32_t)(uintptr_t)&jitStore8;
+    addrLoad16 = (uint32_t)(uintptr_t)&jitLoad16;
+    addrStore16 = (uint32_t)(uintptr_t)&jitStore16;
     PpcEmitter e(codeArea);
     emitStubs(e);
     codeStart = (uint8_t*)e.here();
@@ -246,19 +264,19 @@ void Jit::initCodegen() {
 void Jit::emitStubs(PpcEmitter &e) {
     // Exit: restore saved registers and return to the caller
     codeExit = e.here();
-    e.lwz(0, 68, 1);
+    e.lwz(0, 84, 1);
     e.mtlr(0);
-    e.lmw(R_WMAP, 24, 1);
-    e.addi(1, 1, 64);
+    e.lmw(R_TMP2, 24, 1);
+    e.addi(1, 1, 80);
     e.blr();
 
     // Entry: save registers, load the state pointers, and jump to the block, which sets its program counter
     // Arguments are the interpreter, event vector, limit, block code, global cycles, and cache
     codeEnter = e.here();
-    e.stwu(1, -64, 1);
+    e.stwu(1, -80, 1);
     e.mflr(0);
-    e.stw(0, 68, 1);
-    e.stmw(R_WMAP, 24, 1);
+    e.stw(0, 84, 1);
+    e.stmw(R_TMP2, 24, 1);
     e.mr(R_ARM, 3);
     e.mr(R_EVENTS, 4);
     e.mr(R_LIMIT, 5);
@@ -406,17 +424,22 @@ void Jit::emitStubs(PpcEmitter &e) {
 
     // Memory accesses at the address in r5, with the value in r8; mapped memory is accessed directly, and
     // anything else goes through the memory handlers, which also catch writes to compiled code
-    for (int type = 0; type < 4; type++) {
-        bool load = type < 2, byte = type & 1;
+    // Types are word, byte and halfword loads, then the same for stores
+    for (int type = 0; type < 6; type++) {
+        bool load = type < 3;
+        int size = (type % 3 == 0) ? 4 : (type % 3 == 1) ? 1 : 2;
         codeMemory[type] = e.here();
         e.rlwinm(6, 5, 22, 10, 29);
         e.lwzx(6, 6, load ? R_RMAP : R_WMAP);
         e.cmpwi(6, 0);
         uint32_t *slow = e.here();
         e.beq(nullptr);
-        e.rlwinm(7, 5, 0, 20, byte ? 31 : 29);
-        if (load && byte) {
+        e.rlwinm(7, 5, 0, 20, (size == 4) ? 29 : (size == 2) ? 30 : 31);
+        if (load && size == 1) {
             e.lbzx(8, 6, 7);
+        }
+        else if (load && size == 2) {
+            e.lhbrx(8, 6, 7);
         }
         else if (load) {
             // Rotate misaligned words like the interpreter
@@ -426,7 +449,7 @@ void Jit::emitStubs(PpcEmitter &e) {
             e.rlwnm(8, 8, 9, 0, 31);
         }
         else {
-            byte ? e.stbx(8, 6, 7) : e.stwbrx(8, 6, 7);
+            (size == 1) ? e.stbx(8, 6, 7) : (size == 2) ? e.sthbrx(8, 6, 7) : e.stwbrx(8, 6, 7);
         }
         e.blr();
 
@@ -437,7 +460,8 @@ void Jit::emitStubs(PpcEmitter &e) {
         e.loadConst(3, addrMemory);
         e.mr(4, 5);
         if (!load) e.mr(5, 8);
-        e.call(load ? (byte ? addrLoad8 : addrLoad32) : (byte ? addrStore8 : addrStore32));
+        if (load) e.call((size == 4) ? addrLoad32 : (size == 1) ? addrLoad8 : addrLoad16);
+        else e.call((size == 4) ? addrStore32 : (size == 1) ? addrStore8 : addrStore16);
         if (load) e.mr(8, 3);
         e.lwz(0, 20, 1);
         e.mtlr(0);
@@ -501,27 +525,62 @@ void Jit::writeReg(PpcEmitter &e, int rs, int reg) {
     }
 }
 
+enum NativeKind {
+    NK_NONE = 0,
+    NK_ALU, // Data processing with an immediate or register shifted by an immediate
+    NK_BRANCH, // B/BL
+    NK_TRANSFER, // LDR/STR/LDRB/STRB
+    NK_BRANCH_REG, // BX/BLX
+    NK_HALF, // LDRH/STRH/LDRSB/LDRSH at an offset
+    NK_BLOCK, // LDM/STM
+    NK_SWAP // SWP/SWPB
+};
+
 static int nativeKind(uint32_t op) {
-    // Check which kind of native code an ARM instruction can be generated as, or 0 for none
+    // Check which kind of native code an ARM instruction can be generated as, or NK_NONE
     // Anything that writes the program counter, other than branches, is left to the interpreter
-    if ((op >> 28) == 0xF) return 0;
-    uint32_t rd = (op >> 12) & 0xF;
-    if ((op & 0x0C000000) == 0x00000000) { // Data processing
+    if ((op >> 28) == 0xF) return NK_NONE;
+    uint32_t rd = (op >> 12) & 0xF, rn = (op >> 16) & 0xF, rm = op & 0xF;
+    if ((op & 0x0C000000) == 0x00000000) {
+        if (!(op & BIT(25)) && (op & BIT(4))) {
+            if ((op & 0x0FB00FF0) == 0x01000090) // SWP/SWPB
+                return (rd == 15 || rn == 15 || rm == 15) ? NK_NONE : NK_SWAP;
+            if ((op & 0x0FFFFFD0) == 0x012FFF10) // BX/BLX
+                return (rm == 15) ? NK_NONE : NK_BRANCH_REG;
+            if ((op & 0x0E000090) == 0x00000090 && (op & 0x60)) { // Halfword and signed transfers
+                if ((op & 0x01200000) != 0x01000000 || rd == 15) return NK_NONE; // Only offsets without writeback
+                if (!(op & BIT(20)) && (op & 0x60) != 0x20) return NK_NONE; // LDRD/STRD
+                return NK_HALF;
+            }
+            return NK_NONE; // Shifts by register, multiplies and misc
+        }
         uint32_t opc = (op >> 21) & 0xF;
         bool s = op & BIT(20);
-        if (!(op & BIT(25)) && (op & 0x70) != 0) return 0; // Only LSL by immediate for registers
-        if (opc >= 8 && opc <= 11) return s ? 1 : 0; // Compares and tests, other encodings are misc
-        if (opc >= 5 && opc <= 7 && s) return 0; // Flag-setting ADC/SBC/RSC
-        return (rd == 15) ? 0 : 1;
+        if (opc >= 8 && opc <= 11) return s ? NK_ALU : NK_NONE; // Compares and tests, other encodings are misc
+        if (opc >= 5 && opc <= 7 && s) return NK_NONE; // Flag-setting ADC/SBC/RSC
+        return (rd == 15) ? NK_NONE : NK_ALU;
     }
     if ((op & 0x0E000000) == 0x0A000000) // B/BL
-        return 2;
+        return NK_BRANCH;
     if ((op & 0x0C000000) == 0x04000000) { // LDR/STR/LDRB/STRB
-        if ((op & 0x01200000) != 0x01000000) return 0; // Only offsets without writeback
-        if ((op & BIT(25)) && (op & 0x70) != 0) return 0; // Only LSL by immediate for registers
-        return (rd == 15) ? 0 : 3;
+        if ((op & BIT(25)) && (op & BIT(4))) return NK_NONE; // Undefined
+        bool writeback = !(op & BIT(24)) || (op & BIT(21));
+        if (!(op & BIT(24)) && (op & BIT(21))) return NK_NONE; // LDRT/STRT
+        if (rd == 15 || (writeback && rn == 15)) return NK_NONE;
+        return NK_TRANSFER;
     }
-    return 0;
+    if ((op & 0x0E000000) == 0x08000000) { // LDM/STM
+        uint32_t list = op & 0xFFFF;
+        if (!list || (list & BIT(15)) || (op & BIT(22)) || rn == 15) return NK_NONE;
+        if ((op & BIT(20)) && (op & BIT(21)) && (list & BIT(rn))) return NK_NONE; // Loading the base with writeback
+        return NK_BLOCK;
+    }
+    return NK_NONE;
+}
+
+static bool nativeJumps(int kind) {
+    // Check if a native instruction kind can change the program counter
+    return kind == NK_BRANCH || kind == NK_BRANCH_REG;
 }
 
 bool Jit::emitNative(PpcEmitter &e, uint32_t op, uint32_t pc) {
@@ -539,16 +598,20 @@ bool Jit::emitNative(PpcEmitter &e, uint32_t op, uint32_t pc) {
     }
 
     switch (kind) {
-        case 1: emitAlu(e, op, pc); break;
-        case 2: emitBranch(e, op, pc); break;
-        case 3: emitTransfer(e, op, pc); break;
+        case NK_ALU: emitAlu(e, op, pc); break;
+        case NK_BRANCH: emitBranch(e, op, pc); break;
+        case NK_TRANSFER: emitTransfer(e, op, pc); break;
+        case NK_BRANCH_REG: emitBranchReg(e, op, pc); break;
+        case NK_HALF: emitHalf(e, op, pc); break;
+        case NK_BLOCK: emitBlock(e, op, pc); break;
+        case NK_SWAP: emitSwap(e, op, pc); break;
     }
 
     if (skip) {
         uint32_t *done = e.here();
         e.b(nullptr);
         e.patchBc(skip);
-        if (kind == 2) e.stw(R_PC, offPc, R_ARM);
+        if (nativeJumps(kind)) e.stw(R_PC, offPc, R_ARM);
         e.li(3, 1);
         e.patchB(done);
     }
@@ -577,15 +640,7 @@ void Jit::emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc) {
         }
     }
     else {
-        readReg(e, 4, op & 0xF, pc);
-        uint32_t shift = (op >> 7) & 0x1F;
-        if (shift > 0) {
-            if (s && logical) {
-                e.rlwinm(7, 4, shift, 31, 31);
-                carry = true;
-            }
-            e.rlwinm(4, 4, shift, 0, 31 - shift);
-        }
+        carry = emitShift(e, op, pc, s && logical);
     }
 
     // Get the carry flag for operations that use it
@@ -637,12 +692,89 @@ void Jit::emitBranch(PpcEmitter &e, uint32_t op, uint32_t pc) {
     e.li(3, 3);
 }
 
+bool Jit::emitShift(PpcEmitter &e, uint32_t op, uint32_t pc, bool setCarry) {
+    // Load a register shifted by an immediate into r4, like the interpreter's operand helpers
+    // If requested, also put the shifter carry in r7, returning whether the carry changes
+    readReg(e, 4, op & 0xF, pc);
+    uint32_t type = (op >> 5) & 0x3, shift = (op >> 7) & 0x1F;
+
+    // Get the carry from the last bit shifted out, before shifting
+    int carryBit = -1;
+    switch (type) {
+        case 0: if (shift) carryBit = 32 - shift; break; // LSL
+        case 1: case 2: carryBit = shift ? (shift - 1) : 31; break; // LSR, ASR
+        case 3: carryBit = shift ? (shift - 1) : 0; break; // ROR, RRX
+    }
+    if (setCarry && carryBit >= 0)
+        e.rlwinm(7, 4, (32 - carryBit) & 0x1F, 31, 31);
+
+    switch (type) {
+    case 0: // LSL
+        if (shift) e.rlwinm(4, 4, shift, 0, 31 - shift);
+        break;
+    case 1: // LSR, where 0 means 32
+        if (shift) e.rlwinm(4, 4, 32 - shift, shift, 31);
+        else e.li(4, 0);
+        break;
+    case 2: // ASR, where 0 means 32
+        e.srawi(4, 4, shift ? shift : 31);
+        break;
+    case 3: // ROR, where 0 means rotate right through carry
+        if (shift) {
+            e.rlwinm(4, 4, 32 - shift, 0, 31);
+        }
+        else {
+            e.lwz(6, offCpsr, R_ARM);
+            e.rlwinm(6, 6, 2, 0, 0);
+            e.rlwinm(4, 4, 31, 1, 31);
+            e.or_(4, 4, 6);
+        }
+        break;
+    }
+    return setCarry && carryBit >= 0;
+}
+
 void Jit::emitTransfer(PpcEmitter &e, uint32_t op, uint32_t pc) {
-    // Word or byte load or store at an offset without writeback, with the address in r5 and value in r8
+    // Word or byte load or store with any addressing mode, with the address in r5 and value in r8
+    // Writeback happens before the memory access, which is the same as the interpreter since loads replace it
+    // and stores read their value first; the memory call can change volatile registers, so it goes last
     uint32_t rn = (op >> 16) & 0xF, rd = (op >> 12) & 0xF;
-    bool up = op & BIT(23), byte = op & BIT(22), load = op & BIT(20);
+    bool pre = op & BIT(24), up = op & BIT(23), byte = op & BIT(22), load = op & BIT(20);
+    bool writeback = !pre || (op & BIT(21));
+
+    // Get the offset, folding constant addresses from the program counter
     if (!(op & BIT(25))) {
         uint32_t offset = op & 0xFFF;
+        if (rn == 15) {
+            e.loadConst(5, up ? (pc + offset) : (pc - offset));
+        }
+        else {
+            readReg(e, 3, rn, pc);
+            e.addi(9, 3, up ? offset : -offset);
+            e.mr(5, pre ? 9 : 3);
+        }
+    }
+    else {
+        emitShift(e, op, pc, false);
+        readReg(e, 3, rn, pc);
+        up ? e.add(9, 3, 4) : e.subf(9, 4, 3);
+        e.mr(5, pre ? 9 : 3);
+    }
+
+    if (!load) readReg(e, 8, rd, pc);
+    if (writeback) writeReg(e, 9, rn);
+    e.call(codeMemory[(load ? 0 : 3) + byte]);
+    if (load) writeReg(e, 8, rd);
+    e.li(3, 1);
+}
+
+void Jit::emitHalf(PpcEmitter &e, uint32_t op, uint32_t pc) {
+    // Halfword or signed load, or halfword store, at an offset without writeback
+    uint32_t rn = (op >> 16) & 0xF, rd = (op >> 12) & 0xF;
+    bool up = op & BIT(23), load = op & BIT(20);
+    uint32_t type = (op >> 5) & 0x3; // 1 = halfword, 2 = signed byte, 3 = signed halfword
+    if (op & BIT(22)) {
+        uint32_t offset = ((op >> 4) & 0xF0) | (op & 0xF);
         if (rn == 15) {
             e.loadConst(5, up ? (pc + offset) : (pc - offset));
         }
@@ -654,16 +786,101 @@ void Jit::emitTransfer(PpcEmitter &e, uint32_t op, uint32_t pc) {
     else {
         readReg(e, 3, rn, pc);
         readReg(e, 4, op & 0xF, pc);
-        uint32_t shift = (op >> 7) & 0x1F;
-        if (shift) e.rlwinm(4, 4, shift, 0, 31 - shift);
         up ? e.add(5, 3, 4) : e.subf(5, 4, 3);
     }
 
-    // Access memory with a shared routine
-    if (!load) readReg(e, 8, rd, pc);
-    e.call(codeMemory[(load ? 0 : 2) + byte]);
-    if (load) writeReg(e, 8, rd);
+    if (load) {
+        e.call(codeMemory[(type == 2) ? 1 : 2]);
+        if (type == 2) e.extsb(8, 8);
+        if (type == 3) e.extsh(8, 8);
+        writeReg(e, 8, rd);
+    }
+    else {
+        readReg(e, 8, rd, pc);
+        e.call(codeMemory[5]);
+    }
     e.li(3, 1);
+}
+
+void Jit::emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc) {
+    // Block load or store of registers other than the program counter, with words at aligned addresses
+    // The base is kept in R_TMP1, since memory calls can change volatile registers
+    uint32_t rn = (op >> 16) & 0xF, list = op & 0xFFFF;
+    bool pre = op & BIT(24), up = op & BIT(23), writeback = op & BIT(21), load = op & BIT(20);
+    int count = 0;
+    for (int i = 0; i < 16; i++)
+        count += (list >> i) & 1;
+    int32_t first = up ? (pre ? 4 : 0) : (pre ? -count * 4 : -count * 4 + 4);
+    int32_t end = up ? count * 4 : -count * 4;
+    readReg(e, R_TMP1, rn, pc);
+
+    // Loads write back first, since the base isn't loaded; stores write back last, storing the old base
+    if (load && writeback) {
+        e.addi(9, R_TMP1, end);
+        writeReg(e, 9, rn);
+    }
+    int32_t offset = first;
+    for (int i = 0; i < 16; i++) {
+        if (!(list & BIT(i))) continue;
+        e.addi(5, R_TMP1, offset);
+        offset += 4;
+        e.rlwinm(5, 5, 0, 0, 29);
+        if (load) {
+            e.call(codeMemory[0]);
+            writeReg(e, 8, i);
+        }
+        else {
+            readReg(e, 8, i, pc);
+            e.call(codeMemory[3]);
+        }
+    }
+    if (!load && writeback) {
+        e.addi(9, R_TMP1, end);
+        writeReg(e, 9, rn);
+    }
+    e.li(3, count + (count < 2));
+}
+
+void Jit::emitSwap(PpcEmitter &e, uint32_t op, uint32_t pc) {
+    // Swap a word or byte, reading the source and address first since memory calls can change volatile registers
+    bool byte = op & BIT(22);
+    readReg(e, R_TMP2, op & 0xF, pc);
+    readReg(e, R_TMP1, (op >> 16) & 0xF, pc);
+    e.mr(5, R_TMP1);
+    e.call(codeMemory[byte ? 1 : 0]);
+    writeReg(e, 8, (op >> 12) & 0xF);
+    e.mr(5, R_TMP1);
+    e.mr(8, R_TMP2);
+    e.call(codeMemory[byte ? 4 : 3]);
+    e.li(3, 2);
+}
+
+void Jit::emitBranchReg(PpcEmitter &e, uint32_t op, uint32_t pc) {
+    // Branch to a register, switching to THUMB if bit 0 is set, with optional link
+    readReg(e, 5, op & 0xF, pc);
+    if (op & BIT(5)) {
+        e.loadConst(6, pc - 4);
+        writeReg(e, 6, 14);
+    }
+    e.lwz(6, offCpsr, R_ARM);
+    e.rlwinm(7, 5, 5, 26, 26);
+    e.or_(6, 6, 7);
+    e.stw(6, offCpsr, R_ARM);
+
+    // Set the program counter as if the pipeline was flushed in the new mode
+    e.andi_(7, 5, 1);
+    uint32_t *arm = e.here();
+    e.beq(nullptr);
+    e.rlwinm(8, 5, 0, 0, 30);
+    e.addi(8, 8, 2);
+    uint32_t *done = e.here();
+    e.b(nullptr);
+    e.patchBc(arm);
+    e.rlwinm(8, 5, 0, 0, 29);
+    e.addi(8, 8, 4);
+    e.patchB(done);
+    e.stw(8, offPc, R_ARM);
+    e.li(3, 3);
 }
 
 static bool isPure(uint32_t op, bool thumb) {
@@ -702,7 +919,7 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
     // Generate one instruction; the program counter register already holds its value
     uint32_t op = block->instrs[i].opcode;
     bool native = !block->thumb && emitNative(e, op, pc);
-    bool memoryPc = !native || nativeKind(op) == 2;
+    bool memoryPc = !native || nativeJumps(nativeKind(op));
 
     if (!native) {
         // Call the interpreter handler, with the program counter stored for it to read

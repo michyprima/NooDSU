@@ -115,14 +115,14 @@ private:
     uint8_t *codeArea = nullptr, *codeStart = nullptr, *codePtr = nullptr, *codeEnd = nullptr;
     void *codeEnter = nullptr, *codeExit = nullptr, *codeDispatch = nullptr;
     void *codePost[2][2] = {}, *codeSlowPost[2] = {}; // Indexed by impure, then by storing the program counter
-    void *codeCond[14] = {}, *codeFlags[5] = {}, *codeMemory[4] = {};
+    void *codeCond[14] = {}, *codeFlags[5] = {}, *codeMemory[6] = {};
     int offPc = 0, offCpsr = 0, offCycles = 0, offEventCycles = 0, offUsr = 0, offRegs = 0;
     uint32_t codeCore = 0;
     bool codeFailed = false;
 
     // Addresses that native instructions use, which tests can point elsewhere
     uint32_t addrCondition = 0, addrMemory = 0, addrReadMap = 0, addrWriteMap = 0;
-    uint32_t addrLoad32 = 0, addrLoad8 = 0, addrStore32 = 0, addrStore8 = 0;
+    uint32_t addrLoad32 = 0, addrLoad8 = 0, addrStore32 = 0, addrStore8 = 0, addrLoad16 = 0, addrStore16 = 0;
 
     int tableIndex(uint8_t *host);
     int pageIndex(uint8_t *host);
@@ -148,6 +148,11 @@ private:
     void emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitBranch(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitTransfer(PpcEmitter &e, uint32_t op, uint32_t pc);
+    bool emitShift(PpcEmitter &e, uint32_t op, uint32_t pc, bool setCarry);
+    void emitHalf(PpcEmitter &e, uint32_t op, uint32_t pc);
+    void emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc);
+    void emitSwap(PpcEmitter &e, uint32_t op, uint32_t pc);
+    void emitBranchReg(PpcEmitter &e, uint32_t op, uint32_t pc);
     void readReg(PpcEmitter &e, int rt, int reg, uint32_t pc);
     void writeReg(PpcEmitter &e, int rs, int reg);
     void clearCache();
