@@ -68,6 +68,16 @@ public:
     template <typename T> T read(bool arm7, uint32_t address, bool tcm = true);
     template <typename T> void write(bool arm7, uint32_t address, T value, bool tcm = true);
 
+    // Get pointers to memory that can be accessed directly, or null if accesses need special handling
+    uint8_t *getReadPtr(bool arm7, uint32_t address, bool tcm = true) {
+        uint8_t *data = (arm7 ? readMap7 : (tcm ? readMap9A : readMap9B))[address >> 12];
+        return data ? &data[address & 0xFFF] : nullptr;
+    }
+    uint8_t *getWritePtr(bool arm7, uint32_t address, bool tcm = true) {
+        uint8_t *data = (arm7 ? writeMap7 : (tcm ? writeMap9A : writeMap9B))[address >> 12];
+        return data ? &data[address & 0xFFF] : nullptr;
+    }
+
     uint32_t readDmaFill(int channel) { return dmaFill[channel]; }
     uint8_t readVramCnt(int block) { return vramCnt[block]; }
     uint8_t readVramStat() { return vramStat; }

@@ -82,6 +82,8 @@ private:
     uint16_t dispStat[2] = {};
     uint16_t vCount = 0;
     uint32_t dispCapCnt = 0;
+    uint8_t blendTable[32 * 32];
+    uint16_t blendFactors = 0xFFFF;
     uint16_t powCnt1 = 0;
 
     static uint32_t rgb5ToRgb8(uint32_t color);

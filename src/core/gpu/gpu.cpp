@@ -400,6 +400,14 @@ void Gpu::scanline256() {
             uint32_t base = 0x6800000 + ((dispCapCnt & 0x00030000) >> 16) * 0x20000;
             uint32_t writeOffset = ((dispCapCnt & 0x000C0000) >> 3) + vCount * width * 2;
 
+            // Get direct pointers to a scanline's VRAM if it's mapped and within a page, or null to use memory accesses
+            auto linePtr = [&](uint32_t offset, bool write) -> uint8_t* {
+                offset &= 0x1FFFF;
+                if ((offset & 0xFFF) + width * 2 > 0x1000) return nullptr;
+                return write ? core->memory.getWritePtr(0, base + offset) : core->memory.getReadPtr(0, base + offset);
+            };
+            uint8_t *dst = linePtr(writeOffset, true);
+
             // Copy the source contents to memory as a 15-bit bitmap
             switch ((dispCapCnt & 0x60000000) >> 29) { // Capture source
             case 0: { // Source A
@@ -409,8 +417,11 @@ void Gpu::scanline256() {
                 bool resShift = (Settings::highRes3D && (dispCapCnt & BIT(24)));
 
                 // Copy a scanline to memory
-                for (int i = 0; i < width; i++)
-                    core->memory.write<uint16_t>(0, base + ((writeOffset + i * 2) & 0x1FFFF), rgb6ToRgb5(source[i << resShift]));
+                for (int i = 0; i < width; i++) {
+                    uint16_t color = rgb6ToRgb5(source[i << resShift]);
+                    if (dst) writeLsb<uint16_t>(&dst[i * 2], color);
+                    else core->memory.write<uint16_t>(0, base + ((writeOffset + i * 2) & 0x1FFFF), color);
+                }
                 break;
             }
 
@@ -422,11 +433,14 @@ void Gpu::scanline256() {
 
                 // Get the VRAM source address for the current scanline
                 uint32_t readOffset = ((dispCapCnt & 0x0C000000) >> 11) + vCount * width * 2;
+                uint8_t *src = linePtr(readOffset, false);
 
                 // Copy a scanline to memory
                 for (int i = 0; i < width; i++) {
-                    uint16_t color = core->memory.read<uint16_t>(0, base + ((readOffset + i * 2) & 0x1FFFF));
-                    core->memory.write<uint16_t>(0, base + ((writeOffset + i * 2) & 0x1FFFF), color);
+                    uint16_t color = src ? readLsb<uint16_t>(&src[i * 2]) :
+                        core->memory.read<uint16_t>(0, base + ((readOffset + i * 2) & 0x1FFFF));
+                    if (dst) writeLsb<uint16_t>(&dst[i * 2], color);
+                    else core->memory.write<uint16_t>(0, base + ((writeOffset + i * 2) & 0x1FFFF), color);
                 }
                 break;
             }
@@ -444,24 +458,33 @@ void Gpu::scanline256() {
 
                 // Get the VRAM source address for the current scanline
                 uint32_t readOffset = ((dispCapCnt & 0x0C000000) >> 11) + vCount * width * 2;
+                uint8_t *src = linePtr(readOffset, false);
 
-                // Get the blending factors for the two sources
+                // Build a table of blended color channels for the current blending factors, indexed by the two sources
                 uint8_t eva = std::min((dispCapCnt >> 0) & 0x1F, 16U);
                 uint8_t evb = std::min((dispCapCnt >> 8) & 0x1F, 16U);
+                if (blendFactors != ((eva << 8) | evb)) {
+                    blendFactors = (eva << 8) | evb;
+                    for (int c1 = 0; c1 < 32; c1++)
+                        for (int c2 = 0; c2 < 32; c2++)
+                            blendTable[(c1 << 5) | c2] = std::min((c1 * eva + c2 * evb) / 16, 31);
+                }
 
                 // Copy a scanline to memory
                 for (int i = 0; i < width; i++) {
                     // Get colors from the two sources
                     uint16_t c1 = rgb6ToRgb5(source[i << resShift]);
-                    uint16_t c2 = core->memory.read<uint16_t>(0, base + ((readOffset + i * 2) & 0x1FFFF));
+                    uint16_t c2 = src ? readLsb<uint16_t>(&src[i * 2]) :
+                        core->memory.read<uint16_t>(0, base + ((readOffset + i * 2) & 0x1FFFF));
 
                     // Blend the color values
-                    uint8_t r = std::min((((c1 >> 0) & 0x1F) * eva + ((c2 >> 0) & 0x1F) * evb) / 16, 31);
-                    uint8_t g = std::min((((c1 >> 5) & 0x1F) * eva + ((c2 >> 5) & 0x1F) * evb) / 16, 31);
-                    uint8_t b = std::min((((c1 >> 10) & 0x1F) * eva + ((c2 >> 10) & 0x1F) * evb) / 16, 31);
+                    uint8_t r = blendTable[((c1 << 5) & 0x3E0) | ((c2 >> 0) & 0x1F)];
+                    uint8_t g = blendTable[((c1 >> 0) & 0x3E0) | ((c2 >> 5) & 0x1F)];
+                    uint8_t b = blendTable[((c1 >> 5) & 0x3E0) | ((c2 >> 10) & 0x1F)];
 
                     uint16_t color = BIT(15) | (b << 10) | (g << 5) | r;
-                    core->memory.write<uint16_t>(0, base + ((writeOffset + i * 2) & 0x1FFFF), color);
+                    if (dst) writeLsb<uint16_t>(&dst[i * 2], color);
+                    else core->memory.write<uint16_t>(0, base + ((writeOffset + i * 2) & 0x1FFFF), color);
                 }
                 break;
             }}
