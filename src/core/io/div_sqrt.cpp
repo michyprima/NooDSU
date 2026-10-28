@@ -17,11 +17,27 @@
     along with NooDS. If not, see <https://www.gnu.org/licenses/>.
 */
 
-#include <cmath>
 #include "../core.h"
 
+template <typename T> static T intSqrt(T value) {
+    // Find the integer square root one result bit at a time, starting from the highest bit pair that's set
+    T root = 0;
+    for (T bit = T(1) << ((sizeof(T) * 8 - 1 - (sizeof(T) > 4 ? __builtin_clzll(value | 1) :
+        __builtin_clz(value | 1))) & ~1); bit; bit >>= 2) {
+        if (value >= root + bit) {
+            value -= root + bit;
+            root = (root >> 1) + bit;
+        }
+        else {
+            root >>= 1;
+        }
+    }
+    return root;
+}
+
 void DivSqrt::saveState(FILE *file) {
-    // Write state data to the file
+    // Write state data to the file, with the results up to date
+    updateResults();
     fwrite(&divCnt, sizeof(divCnt), 1, file);
     fwrite(&divNumer, sizeof(divNumer), 1, file);
     fwrite(&divDenom, sizeof(divDenom), 1, file);
@@ -42,9 +58,18 @@ void DivSqrt::loadState(FILE *file) {
     fread(&sqrtCnt, sizeof(sqrtCnt), 1, file);
     fread(&sqrtResult, sizeof(sqrtResult), 1, file);
     fread(&sqrtParam, sizeof(sqrtParam), 1, file);
+    divDirty = sqrtDirty = false;
+}
+
+void DivSqrt::updateResults() {
+    // Calculate results that were invalidated by writes, which is done when they're read so that setting up
+    // an operation over several writes only calculates it once
+    if (divDirty) divide();
+    if (sqrtDirty) squareRoot();
 }
 
 void DivSqrt::divide() {
+    divDirty = false;
     // Set the division by zero bit based on the full 64-bit denominator, even in 32-bit mode
     divDenom ? (divCnt &= ~BIT(14)) : (divCnt |= BIT(14));
 
@@ -99,63 +124,64 @@ void DivSqrt::divide() {
 
 void DivSqrt::squareRoot() {
     // Calculate the square root result
+    sqrtDirty = false;
     switch (sqrtCnt & 0x1) { // Square root mode
     case 0: // 32-bit
-        sqrtResult = sqrt((uint32_t)sqrtParam);
+        sqrtResult = intSqrt<uint32_t>(sqrtParam);
         break;
 
     case 1: // 64-bit
-        sqrtResult = sqrtl(sqrtParam);
+        sqrtResult = (sqrtParam >> 32) ? intSqrt<uint64_t>(sqrtParam) : intSqrt<uint32_t>(sqrtParam);
         break;
     }
 }
 
 void DivSqrt::writeDivCnt(uint16_t mask, uint16_t value) {
-    // Write to the DIVCNT register and update the division result
+    // Write to the DIVCNT register and invalidate the division result
     mask &= 0x0003;
     divCnt = (divCnt & ~mask) | (value & mask);
-    divide();
+    divDirty = true;
 }
 
 void DivSqrt::writeDivNumerL(uint32_t mask, uint32_t value) {
-    // Write to the DIVNUMER register and update the division result
+    // Write to the DIVNUMER register and invalidate the division result
     divNumer = (divNumer & ~((uint64_t)mask)) | (value & mask);
-    divide();
+    divDirty = true;
 }
 
 void DivSqrt::writeDivNumerH(uint32_t mask, uint32_t value) {
-    // Write to the DIVNUMER register and update the division result
+    // Write to the DIVNUMER register and invalidate the division result
     divNumer = (divNumer & ~((uint64_t)mask << 32)) | ((uint64_t)(value & mask) << 32);
-    divide();
+    divDirty = true;
 }
 
 void DivSqrt::writeDivDenomL(uint32_t mask, uint32_t value) {
-    // Write to the DIVDENOM register and update the division result
+    // Write to the DIVDENOM register and invalidate the division result
     divDenom = (divDenom & ~((uint64_t)mask)) | (value & mask);
-    divide();
+    divDirty = true;
 }
 
 void DivSqrt::writeDivDenomH(uint32_t mask, uint32_t value) {
-    // Write to the DIVDENOM register and update the division result
+    // Write to the DIVDENOM register and invalidate the division result
     divDenom = (divDenom & ~((uint64_t)mask << 32)) | ((uint64_t)(value & mask) << 32);
-    divide();
+    divDirty = true;
 }
 
 void DivSqrt::writeSqrtCnt(uint16_t mask, uint16_t value) {
-    // Write to the SQRTCNT register and update the square root result
+    // Write to the SQRTCNT register and invalidate the square root result
     mask &= 0x0001;
     sqrtCnt = (sqrtCnt & ~mask) | (value & mask);
-    squareRoot();
+    sqrtDirty = true;
 }
 
 void DivSqrt::writeSqrtParamL(uint32_t mask, uint32_t value) {
-    // Write to the DIVDENOM register and update the square root result
+    // Write to the SQRTPARAM register and invalidate the square root result
     sqrtParam = (sqrtParam & ~((uint64_t)mask)) | (value & mask);
-    squareRoot();
+    sqrtDirty = true;
 }
 
 void DivSqrt::writeSqrtParamH(uint32_t mask, uint32_t value) {
-    // Write to the SQRTPARAM register and update the square root result
+    // Write to the SQRTPARAM register and invalidate the square root result
     sqrtParam = (sqrtParam & ~((uint64_t)mask << 32)) | ((uint64_t)(value & mask) << 32);
-    squareRoot();
+    sqrtDirty = true;
 }

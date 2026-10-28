@@ -30,17 +30,17 @@ public:
     void saveState(FILE *file);
     void loadState(FILE *file);
 
-    uint16_t readDivCnt() { return divCnt; }
+    uint16_t readDivCnt() { if (divDirty) divide(); return divCnt; }
     uint32_t readDivNumerL() { return divNumer; }
     uint32_t readDivNumerH() { return divNumer >> 32; }
     uint32_t readDivDenomL() { return divDenom; }
     uint32_t readDivDenomH() { return divDenom >> 32; }
-    uint32_t readDivResultL() { return divResult; }
-    uint32_t readDivResultH() { return divResult >> 32; }
-    uint32_t readDivRemResultL() { return divRemResult; }
-    uint32_t readDivRemResultH() { return divRemResult >> 32; }
+    uint32_t readDivResultL() { if (divDirty) divide(); return divResult; }
+    uint32_t readDivResultH() { if (divDirty) divide(); return divResult >> 32; }
+    uint32_t readDivRemResultL() { if (divDirty) divide(); return divRemResult; }
+    uint32_t readDivRemResultH() { if (divDirty) divide(); return divRemResult >> 32; }
     uint16_t readSqrtCnt() { return sqrtCnt; }
-    uint32_t readSqrtResult() { return sqrtResult; }
+    uint32_t readSqrtResult() { if (sqrtDirty) squareRoot(); return sqrtResult; }
     uint32_t readSqrtParamL() { return sqrtParam; }
     uint32_t readSqrtParamH() { return sqrtParam >> 32; }
 
@@ -66,6 +66,10 @@ private:
     uint32_t sqrtResult = 0;
     uint64_t sqrtParam = 0;
 
+    bool divDirty = false;
+    bool sqrtDirty = false;
+
+    void updateResults();
     void divide();
     void squareRoot();
 };
