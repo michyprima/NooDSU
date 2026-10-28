@@ -17,17 +17,32 @@
     along with NooDS. If not, see <https://www.gnu.org/licenses/>.
 */
 
+#include <algorithm>
 #include <cstring>
+#include <new>
+
 #include "../core.h"
 
 Cartridge::~Cartridge() {
     // Update the save file before exiting
     writeSave();
 
+    // Stop loading ROM chunks ahead
+    if (prefetchThread) {
+        chunkMutex.lock();
+        stopPrefetch = true;
+        chunkMutex.unlock();
+        chunkCond.notify_all();
+        prefetchThread->join();
+        delete prefetchThread;
+    }
+
     // Free the ROM and save memory
     if (romFile) fclose(romFile);
     if (rom) delete[] rom;
     if (save) delete[] save;
+    for (int i = 0; i < CHUNK_COUNT; i++)
+        delete[] chunks[i].data;
 }
 
 bool Cartridge::setRom(std::string romPath, int romFd, int saveFd, int stateFd, int cheatFd) {
@@ -80,12 +95,108 @@ bool Cartridge::loadRom() {
 }
 
 void Cartridge::loadRomSection(size_t offset, size_t size) {
-    // Load a section of the current ROM file into memory
-    if (rom) delete[] rom;
-    rom = new uint8_t[size];
+    // Make sure the ROM buffer can hold the section, keeping it between loads
+    if (size > romBufSize) {
+        if (rom) delete[] rom;
+        rom = new uint8_t[size];
+        romBufSize = size;
+    }
+
+    // Load the whole ROM directly, since caching it in chunks wouldn't help
+    if (offset == 0 && size >= (size_t)romSize) {
+        readRomFile(rom, 0, size);
+        if (!core->dsiMode) core->dldi.patchRom(rom, offset, size);
+        return;
+    }
+
+    // Start loading chunks ahead the first time a section is loaded
+    if (!prefetchThread)
+        prefetchThread = new WorkerThread(&Cartridge::runPrefetch, this);
+
+    // Copy the section from cached chunks, loading any that are missing
+    std::unique_lock<std::mutex> lock(chunkMutex);
+    size_t pos = offset, end = offset + size;
+    while (pos < end) {
+        uint32_t index = pos / CHUNK_SIZE;
+        int slot = findChunk(index);
+        while (slot != -1 && chunks[slot].loading) {
+            chunkCond.wait(lock);
+            slot = findChunk(index);
+        }
+        if (slot == -1 && (slot = fillChunk(index, lock)) == -1) {
+            // Fall back to reading the rest from the file if a chunk can't be allocated
+            lock.unlock();
+            readRomFile(&rom[pos - offset], pos, end - pos);
+            if (!core->dsiMode) core->dldi.patchRom(&rom[pos - offset], pos, end - pos);
+            return;
+        }
+
+        uint32_t start = pos - index * CHUNK_SIZE;
+        uint32_t count = std::min<size_t>(end - pos, CHUNK_SIZE - start);
+        memcpy(&rom[pos - offset], &chunks[slot].data[start], count);
+        chunks[slot].lastUse = ++chunkUses;
+        pos += count;
+    }
+
+    // Ask for the next chunk to be loaded ahead if it isn't cached yet
+    uint32_t next = (end - 1) / CHUNK_SIZE + 1;
+    if (next * CHUNK_SIZE < (size_t)romSize && findChunk(next) == -1 && prefetchIndex != next) {
+        prefetchIndex = next;
+        lock.unlock();
+        chunkCond.notify_all();
+    }
+}
+
+void Cartridge::readRomFile(uint8_t *data, size_t offset, size_t size) {
+    // Read data from the ROM file, with 0xFFs past the end
+    std::lock_guard<std::mutex> guard(fileMutex);
     fseek(romFile, offset, SEEK_SET);
-    fread(rom, sizeof(uint8_t), size, romFile);
-    if (!core->dsiMode) core->dldi.patchRom(rom, offset, size);
+    size_t count = fread(data, sizeof(uint8_t), size, romFile);
+    memset(&data[count], 0xFF, size - count);
+}
+
+int Cartridge::findChunk(uint32_t index) {
+    // Find the slot holding a ROM chunk, or -1 if it isn't cached
+    for (int i = 0; i < CHUNK_COUNT; i++)
+        if (chunks[i].index == index) return i;
+    return -1;
+}
+
+int Cartridge::fillChunk(uint32_t index, std::unique_lock<std::mutex> &lock) {
+    // Pick the least recently used slot that isn't loading
+    int slot = -1;
+    for (int i = 0; i < CHUNK_COUNT; i++)
+        if (!chunks[i].loading && (slot == -1 || chunks[i].lastUse < chunks[slot].lastUse)) slot = i;
+    if (slot == -1) return -1;
+
+    // Allocate chunk memory, with room for DLDI patches that run past the end
+    RomChunk &chunk = chunks[slot];
+    if (!chunk.data && !(chunk.data = new (std::nothrow) uint8_t[CHUNK_SIZE + 0x100]))
+        return -1;
+
+    // Load the chunk from file without holding the lock, so cached chunks can still be used
+    chunk.index = index;
+    chunk.loading = true;
+    chunk.lastUse = ++chunkUses;
+    lock.unlock();
+    readRomFile(chunk.data, index * CHUNK_SIZE, CHUNK_SIZE);
+    if (!core->dsiMode) core->dldi.patchRom(chunk.data, index * CHUNK_SIZE, CHUNK_SIZE);
+    lock.lock();
+    chunk.loading = false;
+    chunkCond.notify_all();
+    return slot;
+}
+
+void Cartridge::runPrefetch() {
+    // Load requested ROM chunks ahead of when they're needed
+    std::unique_lock<std::mutex> lock(chunkMutex);
+    while (true) {
+        chunkCond.wait(lock, [this] { return stopPrefetch || prefetchIndex != (uint32_t)-1; });
+        if (stopPrefetch) return;
+        uint32_t index = prefetchIndex;
+        prefetchIndex = -1;
+        if (findChunk(index) == -1) fillChunk(index, lock);
+    }
 }
 
 void Cartridge::writeSave() {
@@ -123,6 +234,7 @@ void Cartridge::trimRom() {
         memcpy(newRom, rom, newSize * sizeof(uint8_t));
         delete[] rom;
         rom = newRom;
+        romBufSize = newSize;
 
         // Update the ROM file
         FILE *romFile = (romFd == -1) ? fopen(romPath.c_str(), "wb") : fdopen(dup(romFd), "wb");

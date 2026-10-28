@@ -19,12 +19,14 @@
 
 #pragma once
 
+#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>
 
 #include "../defines.h"
+#include "../worker_thread.h"
 
 class Core;
 
@@ -68,6 +70,32 @@ protected:
 private:
     std::string romPath, savePath;
     int romFd = -1, saveFd = -1;
+
+    // Large chunks of a ROM file kept in memory, so that small streamed reads don't each go to the file,
+    // with the chunk after the last one read loaded ahead on another thread
+    static const uint32_t CHUNK_SIZE = 0x40000;
+    static const int CHUNK_COUNT = 8;
+
+    struct RomChunk {
+        uint8_t *data = nullptr;
+        uint32_t index = -1;
+        uint32_t lastUse = 0;
+        bool loading = false;
+    };
+
+    RomChunk chunks[CHUNK_COUNT];
+    uint32_t chunkUses = 0;
+    uint32_t prefetchIndex = -1;
+    bool stopPrefetch = false;
+    size_t romBufSize = 0;
+    std::mutex chunkMutex, fileMutex;
+    std::condition_variable chunkCond;
+    WorkerThread *prefetchThread = nullptr;
+
+    void readRomFile(uint8_t *data, size_t offset, size_t size);
+    int findChunk(uint32_t index);
+    int fillChunk(uint32_t index, std::unique_lock<std::mutex> &lock);
+    void runPrefetch();
 };
 
 class CartridgeNds: public Cartridge {
