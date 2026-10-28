@@ -36,6 +36,7 @@ public:
     void drawScanline(int line);
 
     uint32_t *getFramebuffer() { return framebuffer; }
+    void setFramebuffer(uint32_t *buffer) { framebuffer = buffer ? buffer : ownFramebuffer; }
     uint32_t *getRawLine() { return layers[0]; }
 
     uint32_t readDispCnt() { return dispCnt; }
@@ -74,7 +75,9 @@ private:
     uint8_t *palette, *oam;
     uint8_t **extPalettes;
 
-    uint32_t framebuffer[256 * 192] = {};
+    uint32_t ownFramebuffer[256 * 192] = {};
+    uint32_t *framebuffer = ownFramebuffer;
+    bool objWindow[256] = {};
     uint32_t layers[2][256] = {};
     int8_t priorities[2][256] = {};
     int8_t blendBits[2][256] = {};

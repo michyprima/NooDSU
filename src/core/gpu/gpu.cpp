@@ -17,9 +17,31 @@
     along with NooDS. If not, see <https://www.gnu.org/licenses/>.
 */
 
+#include <algorithm>
 #include <cstring>
+#ifdef __WIIU__
+#include <malloc.h>
+#endif
+
 #include "../core.h"
 #include "../emu_profile.h"
+
+// Allocate framebuffers for the frontend, aligned to cache blocks on Wii U so lines can be claimed without reading them
+static uint32_t *newFramebuffer(size_t count) {
+#ifdef __WIIU__
+    return (uint32_t*)memalign(32, count * sizeof(uint32_t));
+#else
+    return new uint32_t[count];
+#endif
+}
+
+static void freeFramebuffer(uint32_t *buffer) {
+#ifdef __WIIU__
+    free(buffer);
+#else
+    delete[] buffer;
+#endif
+}
 
 Gpu::Gpu(Core *core): core(core) {
     // Mark the thread as not drawing to start
@@ -37,9 +59,10 @@ Gpu::~Gpu() {
     }
 
     // Clean up any queued framebuffers
+    freeFramebuffer(drawBuffer);
     while (!framebuffers.empty()) {
         Buffers &buffers = framebuffers.front();
-        delete[] buffers.framebuffer;
+        freeFramebuffer(buffers.framebuffer);
         delete[] buffers.hiRes3D;
         framebuffers.pop();
     }
@@ -195,7 +218,7 @@ bool Gpu::getFrame(uint32_t *out, bool gbaCrop) {
     }
 
     // Free the used buffers
-    delete[] buffers.framebuffer;
+    freeFramebuffer(buffers.framebuffer);
     delete[] buffers.hiRes3D;
 
     if (Settings::screenGhost) {
@@ -279,7 +302,7 @@ void Gpu::gbaScanline308() {
         if (frames == 0 && framebuffers.size() < 2) {
             // Copy the completed sub-framebuffer to a new framebuffer
             Buffers buffers;
-            buffers.framebuffer = new uint32_t[256 * 160];
+            buffers.framebuffer = newFramebuffer(256 * 160);
             memcpy(buffers.framebuffer, core->gpu2D[0].getFramebuffer(), 256 * 160 * sizeof(uint32_t));
 
             // Add the frame to the queue
@@ -547,26 +570,41 @@ void Gpu::scanline355() {
         }
 
         // Swap the buffers of the 3D engine if needed
-        if (core->gpu3D.shouldSwap())
+        if (core->gpu3D.shouldSwap()) {
+            EP_START(swap);
             core->gpu3D.swapBuffers();
+            EP_ADD(EP_SWAP3D, swap);
+        }
 
         // Allow up to 2 framebuffers to be queued, to preserve frame pacing if emulation runs ahead
         if (frames == 0 && framebuffers.size() < 2) {
-            // Copy the completed sub-framebuffers to a new framebuffer
+            EP_START(frameCopy);
             Buffers buffers;
-            buffers.framebuffer = new uint32_t[256 * 192 * 2];
-            if (powCnt1 & BIT(0)) { // LCDs enabled
-                if (powCnt1 & BIT(15)) { // Display swap
-                    memcpy(&buffers.framebuffer[0], core->gpu2D[0].getFramebuffer(), 256 * 192 * sizeof(uint32_t));
-                    memcpy(&buffers.framebuffer[256 * 192], core->gpu2D[1].getFramebuffer(), 256 * 192 * sizeof(uint32_t));
-                }
-                else {
-                    memcpy(&buffers.framebuffer[0], core->gpu2D[1].getFramebuffer(), 256 * 192 * sizeof(uint32_t));
-                    memcpy(&buffers.framebuffer[256 * 192], core->gpu2D[0].getFramebuffer(), 256 * 192 * sizeof(uint32_t));
-                }
+            if (drawBuffer) {
+                // Use the buffer the engines drew into, fixing the screen order if display swap changed mid-frame
+                buffers.framebuffer = drawBuffer;
+                drawBuffer = nullptr;
+                if (!(powCnt1 & BIT(0))) // LCDs disabled
+                    memset(buffers.framebuffer, 0, 256 * 192 * 2 * sizeof(uint32_t));
+                else if (bool(powCnt1 & BIT(15)) != drawSwap)
+                    std::swap_ranges(buffers.framebuffer, &buffers.framebuffer[256 * 192], &buffers.framebuffer[256 * 192]);
             }
             else {
-                memset(buffers.framebuffer, 0, 256 * 192 * 2 * sizeof(uint32_t));
+                // Copy the completed sub-framebuffers to a new framebuffer
+                buffers.framebuffer = newFramebuffer(256 * 192 * 2);
+                if (powCnt1 & BIT(0)) { // LCDs enabled
+                    if (powCnt1 & BIT(15)) { // Display swap
+                        memcpy(&buffers.framebuffer[0], core->gpu2D[0].getFramebuffer(), 256 * 192 * sizeof(uint32_t));
+                        memcpy(&buffers.framebuffer[256 * 192], core->gpu2D[1].getFramebuffer(), 256 * 192 * sizeof(uint32_t));
+                    }
+                    else {
+                        memcpy(&buffers.framebuffer[0], core->gpu2D[1].getFramebuffer(), 256 * 192 * sizeof(uint32_t));
+                        memcpy(&buffers.framebuffer[256 * 192], core->gpu2D[0].getFramebuffer(), 256 * 192 * sizeof(uint32_t));
+                    }
+                }
+                else {
+                    memset(buffers.framebuffer, 0, 256 * 192 * 2 * sizeof(uint32_t));
+                }
             }
 
             // Copy the upscaled 3D output to a new buffer if enabled
@@ -581,7 +619,14 @@ void Gpu::scanline355() {
             framebuffers.push(buffers);
             ready.store(true);
             mutex.unlock();
+            EP_ADD(EP_FRAMECOPY, frameCopy);
         }
+
+        // Drop the drawn buffer if the frame wasn't queued, and let the engines draw into their own buffers again
+        freeFramebuffer(drawBuffer);
+        drawBuffer = nullptr;
+        core->gpu2D[0].setFramebuffer(nullptr);
+        core->gpu2D[1].setFramebuffer(nullptr);
 
         // Update the frame count to skip frames when non-zero
         if (frames++ >= Settings::frameskip)
@@ -603,6 +648,15 @@ void Gpu::scanline355() {
         vCount = 0;
         core->gpu2D[0].reloadRegisters();
         core->gpu2D[1].reloadRegisters();
+
+        // Draw the frame straight into a buffer for the frontend if it won't be skipped, saving a copy at V-blank
+        // Each engine gets the half it's expected to be shown in, based on the current display swap
+        if (frames == 0 && !drawBuffer) {
+            drawBuffer = newFramebuffer(256 * 192 * 2);
+            drawSwap = (powCnt1 & BIT(15));
+            core->gpu2D[0].setFramebuffer(&drawBuffer[drawSwap ? 0 : (256 * 192)]);
+            core->gpu2D[1].setFramebuffer(&drawBuffer[drawSwap ? (256 * 192) : 0]);
+        }
 
         // Start the 2D thread if enabled
         if (Settings::threaded2D && frames == 0 && !thread) {

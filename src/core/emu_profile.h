@@ -48,6 +48,13 @@ enum EmuProfileSlot {
     EP_3D_HELP, // Drawing 3D scanlines for threads that fell behind, on the emulator thread
     EP_3D_WAIT, // Waiting for 3D scanlines, on the emulator thread
     EP_CAPTURE, // Display capture
+    EP_2D_CLEAR, // Clearing layers before drawing a 2D scanline, on the emulator thread
+    EP_2D_OBJ, // Drawing objects, on the emulator thread
+    EP_2D_BG, // Drawing backgrounds, on the emulator thread
+    EP_2D_BLEND, // Blending layers, on the emulator thread
+    EP_2D_OUT, // Copying the final scanline and applying master brightness, on the emulator thread
+    EP_SWAP3D, // Swapping 3D buffers at V-blank
+    EP_FRAMECOPY, // Copying finished frames for the frontend
     EP_COUNT
 };
 

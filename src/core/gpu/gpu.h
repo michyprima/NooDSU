@@ -67,6 +67,8 @@ private:
     };
 
     std::queue<Buffers> framebuffers;
+    uint32_t *drawBuffer = nullptr;
+    bool drawSwap = false;
     std::atomic<bool> ready;
     std::mutex mutex;
 

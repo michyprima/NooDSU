@@ -19,6 +19,7 @@
 
 #include <cstring>
 #include "../core.h"
+#include "../emu_profile.h"
 
 Gpu2D::Gpu2D(Core *core, bool engine): core(core), engine(engine) {
     // Set up 2D GPU engine A or B
@@ -119,8 +120,10 @@ void Gpu2D::drawGbaScanline(int line) {
     memset(blendBits, 5, sizeof(blendBits));
 
     // Draw the object window first if enabled, since it affects which layers are drawn
-    if ((dispCnt & BIT(12)) && (dispCnt & BIT(15)))
-        drawObjects<1>(line, true);
+    if (dispCnt & BIT(15)) {
+        memset(objWindow, 0, sizeof(objWindow));
+        if (dispCnt & BIT(12)) drawObjects<1>(line, true);
+    }
 
     // Work out which layers the windows enable for each pixel, if windows are enabled
     if (dispCnt & 0xE000)
@@ -216,6 +219,7 @@ void Gpu2D::drawGbaScanline(int line) {
 }
 
 void Gpu2D::drawScanline(int line) {
+    EP_START_EMU(clear);
     // Clear layers with the backdrop (first palette index)
     uint32_t backdrop = U8TO16(palette, 0) & ~BIT(15);
     for (int i = 0; i < 256; i++) layers[0][i] = backdrop;
@@ -223,9 +227,14 @@ void Gpu2D::drawScanline(int line) {
     memset(priorities, 4, sizeof(priorities));
     memset(blendBits, 5, sizeof(blendBits));
 
+    EP_ADD_EMU(EP_2D_CLEAR, clear);
+    EP_START_EMU(obj);
+
     // Draw the object window first if enabled, since it affects which layers are drawn
-    if ((dispCnt & BIT(12)) && (dispCnt & BIT(15)))
-        drawObjects<0>(line, true);
+    if (dispCnt & BIT(15)) {
+        memset(objWindow, 0, sizeof(objWindow));
+        if (dispCnt & BIT(12)) drawObjects<0>(line, true);
+    }
 
     // Work out which layers the windows enable for each pixel, if windows are enabled
     if (dispCnt & 0xE000)
@@ -234,6 +243,9 @@ void Gpu2D::drawScanline(int line) {
     // Draw the objects
     if (dispCnt & BIT(12))
         drawObjects<0>(line, false);
+
+    EP_ADD_EMU(EP_2D_OBJ, obj);
+    EP_START_EMU(bg);
 
     // Draw the background layers depending on the BG mode
     switch (uint8_t mode = (dispCnt & 0x7)) {
@@ -287,6 +299,9 @@ void Gpu2D::drawScanline(int line) {
         LOG_CRIT("Unknown engine %c BG mode: %d\n", (engine == 0) ? 'A' : 'B', mode);
         break;
     }
+
+    EP_ADD_EMU(EP_2D_BG, bg);
+    EP_START_EMU(blend);
 
     // Blend the layers to form the final image
     for (int mode = (bldCnt >> 6) & 0x3, i = 0; i < 256; i++) {
@@ -365,6 +380,9 @@ void Gpu2D::drawScanline(int line) {
         }
     }
 
+    EP_ADD_EMU(EP_2D_BLEND, blend);
+    EP_START_EMU(out);
+
     // Copy the final image to the framebuffer
     switch ((dispCnt >> 16) & 0x3) { // Display mode
     case 0: // Display off
@@ -372,9 +390,17 @@ void Gpu2D::drawScanline(int line) {
         memset(&framebuffer[line * 256], 0xFF, 256 * sizeof(uint32_t));
         break;
 
-    case 1: // Layers
-        memcpy(&framebuffer[line * 256], layers[0], 256 * sizeof(uint32_t));
+    case 1: { // Layers
+        uint32_t *dst = &framebuffer[line * 256];
+#ifdef __WIIU__
+        // Claim the destination's cache blocks without reading them from memory first, since they're fully overwritten
+        if (!((uintptr_t)dst & 31))
+            for (int i = 0; i < 256 * 4; i += 32)
+                __asm__ volatile("dcbz %0, %1" :: "b"(dst), "r"(i) : "memory");
+#endif
+        memcpy(dst, layers[0], 256 * sizeof(uint32_t));
         break;
+    }
 
     case 2: // VRAM display
         // Draw raw bitmap data from a VRAM block
@@ -413,6 +439,7 @@ void Gpu2D::drawScanline(int line) {
         }
         break;
     }
+    EP_ADD_EMU(EP_2D_OUT, out);
 }
 
 void Gpu2D::calcWinMasks(int line, int width) {
@@ -422,7 +449,7 @@ void Gpu2D::calcWinMasks(int line, int width) {
             winMasks[x] = winIn >> 0; // Window 0
         else if ((dispCnt & BIT(14)) && winVFlag[1] && (x >= winX1[1] && x < winX2[1]) != winHFlip[1])
             winMasks[x] = winIn >> 8; // Window 1
-        else if ((dispCnt & BIT(15)) && (framebuffer[line * 256 + x] & BIT(24)))
+        else if ((dispCnt & BIT(15)) && objWindow[x])
             winMasks[x] = winOut >> 8; // Object window
         else
             winMasks[x] = winOut >> 0; // Outside of windows
@@ -972,7 +999,7 @@ template <bool gbaMode> void Gpu2D::drawObjects(int line, bool window) {
 
                     if (index && type == 2) { // Object window
                         // Mark object window pixels with an extra bit, and don't draw anything
-                        framebuffer[line * 256 + offset] |= BIT(24);
+                        objWindow[offset] = true;
                     }
                     else {
                         // Draw a pixel, marking semi-transparent pixels with an extra bit
@@ -1013,7 +1040,7 @@ template <bool gbaMode> void Gpu2D::drawObjects(int line, bool window) {
 
                     if (index && type == 2) { // Object window
                         // Mark object window pixels with an extra bit, and don't draw anything
-                        framebuffer[line * 256 + offset] |= BIT(24);
+                        objWindow[offset] = true;
                     }
                     else {
                         // Draw a pixel, marking semi-transparent pixels with an extra bit
@@ -1058,7 +1085,7 @@ template <bool gbaMode> void Gpu2D::drawObjects(int line, bool window) {
 
                 if (index && type == 2) { // Object window
                     // Mark object window pixels with an extra bit, and don't draw anything
-                    framebuffer[line * 256 + offset] |= BIT(24);
+                    objWindow[offset] = true;
                 }
                 else {
                     // Draw a pixel, marking semi-transparent pixels with an extra bit
@@ -1096,7 +1123,7 @@ template <bool gbaMode> void Gpu2D::drawObjects(int line, bool window) {
 
                 if (index && type == 2) { // Object window
                     // Mark object window pixels with an extra bit, and don't draw anything
-                    framebuffer[line * 256 + offset] |= BIT(24);
+                    objWindow[offset] = true;
                 }
                 else {
                     // Draw a pixel, marking semi-transparent pixels with an extra bit

@@ -295,7 +295,7 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         if (showFpsCounter) {
             static uint64_t last[EP_COUNT];
             static OSTime lastTime = OSGetSystemTime();
-            static std::string lines[7];
+            static std::string lines[8];
             OSTime now = OSGetSystemTime();
             if (OSTicksToMilliseconds(now - lastTime) >= 1000) {
                 double wall = double(now - lastTime), frames = std::max(core->fps, 1);
@@ -338,6 +338,10 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
                     "3D wait %.1fms/f, capture %.1fms/f", lineCounts[EC_LINES_EMU], lineCounts[EC_LINES_HALF],
                     lineCounts[EC_LINES_THREAD], ms[EP_3D_HELP], ms[EP_3D_WAIT], ms[EP_CAPTURE]);
                 lines[6] = text;
+                snprintf(text, sizeof(text), "2D ms/f: clear %.1f, objects %.1f, BGs %.1f, blend %.1f, output %.1f; "
+                    "3D swap %.1f, frame copy %.1f", ms[EP_2D_CLEAR], ms[EP_2D_OBJ], ms[EP_2D_BG], ms[EP_2D_BLEND],
+                    ms[EP_2D_OUT], ms[EP_SWAP3D], ms[EP_FRAMECOPY]);
+                lines[7] = text;
 
                 // List the most expensive scheduled tasks
                 static const char *names[] = { "run", "reset", "cart9", "cart7", "dma9.0", "dma9.1", "dma9.2", "dma9.3",
@@ -360,7 +364,7 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
                 lines[4] = "Tasks ms/f: " + top;
                 lastTime = now;
             }
-            for (int i = 0; i < 7; i++)
+            for (int i = 0; i < 8; i++)
                 drawString(lines[i], SCALE(5), SCALE(48) + SCALE(30) * i, SCALE(30));
         }
 #endif
