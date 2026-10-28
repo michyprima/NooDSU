@@ -26,6 +26,8 @@
 #include <gx2/mem.h>
 #include <gx2/registers.h>
 #include <gx2r/draw.h>
+#include <padscore/kpad.h>
+#include <padscore/wpad.h>
 #include <proc_ui/procui.h>
 #include <sysapp/launch.h>
 #include <vpad/input.h>
@@ -48,6 +50,7 @@ bool firstScreen;
 
 VPADStatus vpad;
 VPADTouchData touch;
+uint32_t extHeld[4];
 bool scanned;
 
 WHBGfxShaderGroup group;
@@ -240,25 +243,93 @@ void ConsoleUI::drawTexture(void *texture, float tx, float ty, float tw, float t
         bufOffset += 8 * sizeof(float);
 }
 
-uint32_t ConsoleUI::getInputHeld() {
-    // Scan for input once per frame
-    if (!scanned) {
-        VPADRead(VPAD_CHAN_0, &vpad, 1, nullptr);
-        VPADGetTPCalibratedPoint(VPAD_CHAN_0, &touch, &vpad.tpNormal);
-        scanned = true;
-    }
+uint32_t extToVpad(uint32_t hold, bool pro) {
+    // Convert Pro Controller or Classic Controller buttons to GamePad buttons, so key binds apply to both
+    // The face buttons, shoulders, d-pad, plus, minus and home use the same bits on both controllers
+    static const uint32_t buttons[][2] = {
+        { WPAD_PRO_BUTTON_A, VPAD_BUTTON_A }, { WPAD_PRO_BUTTON_B, VPAD_BUTTON_B },
+        { WPAD_PRO_BUTTON_X, VPAD_BUTTON_X }, { WPAD_PRO_BUTTON_Y, VPAD_BUTTON_Y },
+        { WPAD_PRO_BUTTON_L, VPAD_BUTTON_L }, { WPAD_PRO_BUTTON_R, VPAD_BUTTON_R },
+        { WPAD_PRO_BUTTON_ZL, VPAD_BUTTON_ZL }, { WPAD_PRO_BUTTON_ZR, VPAD_BUTTON_ZR },
+        { WPAD_PRO_BUTTON_PLUS, VPAD_BUTTON_PLUS }, { WPAD_PRO_BUTTON_MINUS, VPAD_BUTTON_MINUS },
+        { WPAD_PRO_BUTTON_HOME, VPAD_BUTTON_HOME }, { WPAD_PRO_BUTTON_UP, VPAD_BUTTON_UP },
+        { WPAD_PRO_BUTTON_DOWN, VPAD_BUTTON_DOWN }, { WPAD_PRO_BUTTON_LEFT, VPAD_BUTTON_LEFT },
+        { WPAD_PRO_BUTTON_RIGHT, VPAD_BUTTON_RIGHT }
+    };
+    static const uint32_t proSticks[][2] = {
+        { WPAD_PRO_BUTTON_STICK_L, VPAD_BUTTON_STICK_L }, { WPAD_PRO_BUTTON_STICK_R, VPAD_BUTTON_STICK_R },
+        { WPAD_PRO_STICK_L_EMULATION_UP, VPAD_STICK_L_EMULATION_UP },
+        { WPAD_PRO_STICK_L_EMULATION_DOWN, VPAD_STICK_L_EMULATION_DOWN },
+        { WPAD_PRO_STICK_L_EMULATION_LEFT, VPAD_STICK_L_EMULATION_LEFT },
+        { WPAD_PRO_STICK_L_EMULATION_RIGHT, VPAD_STICK_L_EMULATION_RIGHT },
+        { WPAD_PRO_STICK_R_EMULATION_UP, VPAD_STICK_R_EMULATION_UP },
+        { WPAD_PRO_STICK_R_EMULATION_DOWN, VPAD_STICK_R_EMULATION_DOWN },
+        { WPAD_PRO_STICK_R_EMULATION_LEFT, VPAD_STICK_R_EMULATION_LEFT },
+        { WPAD_PRO_STICK_R_EMULATION_RIGHT, VPAD_STICK_R_EMULATION_RIGHT }
+    };
+    static const uint32_t classicSticks[][2] = {
+        { WPAD_CLASSIC_STICK_L_EMULATION_UP, VPAD_STICK_L_EMULATION_UP },
+        { WPAD_CLASSIC_STICK_L_EMULATION_DOWN, VPAD_STICK_L_EMULATION_DOWN },
+        { WPAD_CLASSIC_STICK_L_EMULATION_LEFT, VPAD_STICK_L_EMULATION_LEFT },
+        { WPAD_CLASSIC_STICK_L_EMULATION_RIGHT, VPAD_STICK_L_EMULATION_RIGHT },
+        { WPAD_CLASSIC_STICK_R_EMULATION_UP, VPAD_STICK_R_EMULATION_UP },
+        { WPAD_CLASSIC_STICK_R_EMULATION_DOWN, VPAD_STICK_R_EMULATION_DOWN },
+        { WPAD_CLASSIC_STICK_R_EMULATION_LEFT, VPAD_STICK_R_EMULATION_LEFT },
+        { WPAD_CLASSIC_STICK_R_EMULATION_RIGHT, VPAD_STICK_R_EMULATION_RIGHT }
+    };
 
-    // Return a mask of mappable keys
-    return vpad.hold & 0x7FFFFFFF;
+    uint32_t result = 0;
+    for (auto &b : buttons)
+        if (hold & b[0]) result |= b[1];
+    if (pro) {
+        for (auto &b : proSticks)
+            if (hold & b[0]) result |= b[1];
+    }
+    else {
+        for (auto &b : classicSticks)
+            if (hold & b[0]) result |= b[1];
+    }
+    return result;
+}
+
+void scanInput() {
+    // Scan for input once per frame
+    if (scanned) return;
+    scanned = true;
+    VPADRead(VPAD_CHAN_0, &vpad, 1, nullptr);
+    VPADGetTPCalibratedPoint(VPAD_CHAN_0, &touch, &vpad.tpNormal);
+
+    // Read Pro Controllers and Classic Controllers on every channel
+    // Channels without new data keep their last state, and disconnected ones are cleared
+    for (int i = 0; i < 4; i++) {
+        KPADStatus status;
+        KPADError error;
+        if (!KPADReadEx((KPADChan)i, &status, 1, &error)) {
+            if (error == KPAD_ERROR_INVALID_CONTROLLER)
+                extHeld[i] = 0;
+            continue;
+        }
+        if (status.extensionType == WPAD_EXT_PRO_CONTROLLER)
+            extHeld[i] = extToVpad(status.pro.hold, true);
+        else if (status.extensionType == WPAD_EXT_CLASSIC || status.extensionType == WPAD_EXT_MPLUS_CLASSIC)
+            extHeld[i] = extToVpad(status.classic.hold, false);
+        else
+            extHeld[i] = 0;
+    }
+}
+
+uint32_t ConsoleUI::getInputHeld() {
+    // Return a mask of mappable keys from the GamePad and any other controllers
+    scanInput();
+    uint32_t held = vpad.hold;
+    for (int i = 0; i < 4; i++)
+        held |= extHeld[i];
+    return held & 0x7FFFFFFF;
 }
 
 MenuTouch ConsoleUI::getInputTouch() {
-    // Scan for input once per frame and read touch data
-    if (!scanned) {
-        VPADRead(VPAD_CHAN_0, &vpad, 1, nullptr);
-        VPADGetTPCalibratedPoint(VPAD_CHAN_0, &touch, &vpad.tpNormal);
-        scanned = true;
-    }
+    // Return touch data from the GamePad
+    scanInput();
     return MenuTouch(touch.touched, touch.x, touch.y);
 }
 
@@ -272,6 +343,8 @@ int main() {
     ProcUIInit(OSSavesDone_ReadyToRelease);
     WHBGfxInit();
     VPADInit();
+    KPADInit();
+    WPADEnableURCC(TRUE);
     WHBMountSdCard();
     gpLayout.update(854, 480, false);
 
