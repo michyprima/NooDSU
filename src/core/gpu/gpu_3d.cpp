@@ -601,22 +601,19 @@ void Gpu3D::runCommands() {
         int count = paramCounts[entry.command];
         uint32_t params[32];
 
-        // If the command has multiple parameters, fetch them all
+        // Fetch the command's parameters; commands without any still take up an entry
         if (count > 1) {
-            for (int i = 0; i < count; i++) {
-                params[i] = fifo.front().param;
-                fifo.pop_front();
-            }
+            fifo.pop_params(params, count);
         }
         else {
             count = 1;
+            params[0] = entry.param;
             fifo.pop_front();
         }
 
         // Apply the parts of the command that the FIFO handles, and then execute it, on the worker if running
-        // Single-parameter commands take theirs from the first slot
-        if (count == 1) params[0] = entry.param;
-        int passed = takeCommand(entry.command, params, count);
+        // Most commands don't involve the FIFO's state, so they skip checking for the ones that do
+        int passed = (entry.command >= 0x20 && entry.command < 0x50) ? count : takeCommand(entry.command, params, count);
         if (worker) queueCommand(entry.command, params, passed);
         else execute(entry.command, params);
 

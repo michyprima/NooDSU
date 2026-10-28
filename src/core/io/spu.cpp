@@ -434,13 +434,15 @@ void Spu::runSample() {
     if (!Settings::emulateAudio) return pushSample(0, 0);
 
     // Mix the sound channels
-    int64_t mixerLeft = 0, mixerRight = 0;
-    int64_t channelsLeft[2] = {}, channelsRight[2] = {};
+    // Samples are at most 16 bits, so channel values stay within 27 bits and the mix of 16 within 32;
+    // only the products for panning and master volume need 64 bits
+    int32_t mixerLeft = 0, mixerRight = 0;
+    int32_t channelsLeft[2] = {}, channelsRight[2] = {};
     for (int i = 0; enabled >> i; i++) {
         // Skip disabled channels
         if (!(enabled & BIT(i))) continue;
         uint8_t format = (soundCnt[i] >> 29) & 0x3;
-        int64_t data = 0;
+        int32_t data = 0;
 
         // Read the sample data
         switch (format) {
@@ -571,17 +573,17 @@ void Spu::runSample() {
         data <<= 4 - divShift;
 
         // Apply the volume factor
-        // The sample now has 11 fractional bits
+        // The sample now has 11 fractional bits; (data << 7) * factor / 128 is exactly data * factor
         int mulFactor = (soundCnt[i] & 0x0000007F);
         if (mulFactor == 127) mulFactor++;
-        data = (data << 7) * mulFactor / 128;
+        data *= mulFactor;
 
         // Apply panning
         // The samples are now rounded to 8 fractional bits
         int panValue = (soundCnt[i] & 0x007F0000) >> 16;
         if (panValue == 127) panValue++;
-        int64_t dataLeft = (data * (128 - panValue) / 128) >> 3;
-        int64_t dataRight = (data * panValue / 128) >> 3;
+        int32_t dataLeft = (int64_t(data) * (128 - panValue) / 128) >> 3;
+        int32_t dataRight = (int64_t(data) * panValue / 128) >> 3;
 
         // Redirect channels 1 and 3 if enabled
         if (i == 1 || i == 3) {
@@ -613,7 +615,7 @@ void Spu::runSample() {
             overflow = (sndCapTimers[i] < soundTmr[1 + (i << 1)]);
 
             // Get a sample from the mixer, clamped to be within range
-            int64_t sample = ((i == 0) ? mixerLeft : mixerRight);
+            int32_t sample = ((i == 0) ? mixerLeft : mixerRight);
             if (sample > 0x7FFFFF) sample = 0x7FFFFF;
             if (sample < -0x800000) sample = -0x800000;
 

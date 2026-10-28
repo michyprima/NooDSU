@@ -56,6 +56,15 @@ public:
     Entry &front() { return data[head]; }
     Entry &operator[](size_t i) { return data[(head + i) & (data.size() - 1)]; }
     void pop_front() { head = (head + 1) & (data.size() - 1); count--; }
+
+    void pop_params(uint32_t *params, size_t n) {
+        // Take the parameters of the next n entries
+        size_t mask = data.size() - 1;
+        for (size_t i = 0; i < n; i++)
+            params[i] = data[(head + i) & mask].param;
+        head = (head + n) & mask;
+        count -= n;
+    }
     void clear() { head = count = 0; }
 
     void push_back(const Entry &entry) {
