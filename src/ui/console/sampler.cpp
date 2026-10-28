@@ -55,6 +55,7 @@ namespace Sampler {
     static uint32_t os[OS_SIZE >> 8]; // System library code, in 256-byte buckets
     static uint32_t stubs[0x1000 >> 4]; // The JIT's shared routines at the start of the codegen area
     static uint32_t blocked[TEXT_SIZE >> 4]; // Where the sampled thread called into the system when it was blocked
+    static uint32_t sysCallers[TEXT_SIZE >> 4]; // Where the app called into the system, for samples in system code
     static uint32_t jitBlocks, other, total, idle;
     static OSThread *sampled;
     static uint32_t codegenStart, codegenSize;
@@ -70,6 +71,31 @@ namespace Sampler {
         return 0;
     }
 
+    static const char *symbolAt(uint32_t addr) {
+        // Get the name of the function containing an address in the app's code, from its link-time address
+        uint32_t index = std::upper_bound(symAddrs, symAddrs + symCount, LINK_START + (addr - textStart)) - symAddrs;
+        return (index > 0) ? symNames[index - 1] : "";
+    }
+
+    static uint32_t findCaller(uint32_t lr, uint32_t sp) {
+        // Follow a stack back to the app's code, starting from a return address that might not be saved yet
+        // Runtime library frames like a condition variable itself are skipped, to find the emulator code
+        for (int i = 0; i < 17; i++) {
+            if (lr - textStart < TEXT_SIZE) {
+                const char *name = symbolAt(lr);
+                if (strncmp(name, "std::", 5) && strncmp(name, "pthread_", 8) && strncmp(name, "__", 2) &&
+                    strncmp(name, "void std::", 10) && strcmp(name, "sched_yield"))
+                    return lr;
+            }
+            if (sp - 0x10000000 >= 0x40000000) break;
+            uint32_t frame = *(uint32_t*)(uintptr_t)sp;
+            if (frame - 0x10000000 >= 0x40000000) break;
+            lr = *(uint32_t*)(uintptr_t)(frame + 4);
+            sp = frame;
+        }
+        return 0;
+    }
+
     static void callback(OSAlarm *alarm, OSContext *context) {
         // Count where the emulator's core was interrupted
         uint32_t pc = context->srr0;
@@ -77,26 +103,17 @@ namespace Sampler {
         if ((pc - (uint32_t)(uintptr_t)(&idleSpin)) < 0x20) {
             // When the core is idle, the sampled thread is blocked, so follow its stack back to the app's code
             // to find what it was waiting for
-            // Runtime library frames like the condition variable itself are skipped, to find the emulator code that waited
             idle++;
-            uint32_t sp = sampled->context.gpr[1];
-            for (int i = 0; i < 16 && sp - 0x10000000 < 0x40000000; i++) {
-                uint32_t frame = *(uint32_t*)(uintptr_t)sp;
-                if (frame - 0x10000000 >= 0x40000000) break;
-                uint32_t lr = *(uint32_t*)(uintptr_t)(frame + 4);
-                sp = frame;
-                if (lr - textStart >= TEXT_SIZE) continue;
-                uint32_t index = std::upper_bound(symAddrs, symAddrs + symCount, LINK_START + (lr - textStart)) - symAddrs;
-                const char *name = (index > 0) ? symNames[index - 1] : "";
-                if (!strncmp(name, "std::", 5) || !strncmp(name, "pthread_", 8) || !strncmp(name, "__", 2) ||
-                    !strncmp(name, "void std::", 10))
-                    continue;
+            if (uint32_t lr = findCaller(0, sampled->context.gpr[1]))
                 blocked[(lr - textStart) >> 4]++;
-                break;
-            }
         }
         else if (pc - textStart < TEXT_SIZE) text[(pc - textStart) >> 4]++;
-        else if (pc - OS_START < OS_SIZE) os[(pc - OS_START) >> 8]++;
+        else if (pc - OS_START < OS_SIZE) {
+            // Also find which app code called into the system
+            os[(pc - OS_START) >> 8]++;
+            if (uint32_t lr = findCaller(context->lr, context->gpr[1]))
+                sysCallers[(lr - textStart) >> 4]++;
+        }
         else if (pc - codegenStart < 0x1000) stubs[(pc - codegenStart) >> 4]++;
         else if (pc - codegenStart < codegenSize) jitBlocks++;
         else other++;
@@ -115,6 +132,7 @@ namespace Sampler {
         memset(os, 0, sizeof(os));
         memset(stubs, 0, sizeof(stubs));
         memset(blocked, 0, sizeof(blocked));
+        memset(sysCallers, 0, sizeof(sysCallers));
         jitBlocks = other = total = idle = 0;
         sampled = OSGetCurrentThread();
         OSCreateAlarm(&alarm);
@@ -139,68 +157,70 @@ namespace Sampler {
         return top;
     }
 
-    std::string report() {
-        // Summarize the samples by where they were
-        double percent = std::max(total, 1U) / 100.0;
-        uint32_t textTotal = 0, osTotal = 0, stubTotal = 0;
-        for (uint32_t count : text) textTotal += count;
-        for (uint32_t count : os) osTotal += count;
-        for (uint32_t count : stubs) stubTotal += count;
-        char line[256];
-        snprintf(line, sizeof(line), "%u samples: app %.1f%%, idle %.1f%%, system %.1f%%, JIT blocks %.1f%%, JIT stubs %.1f%%\n",
-            total, textTotal / percent, idle / percent, osTotal / percent, jitBlocks / percent, stubTotal / percent);
-        std::string result = line;
+    static std::vector<std::pair<uint32_t, uint32_t>> topSymbols(const uint32_t *counts) {
+        // Add up 16-byte buckets of the app's code by the function they're in, highest first
+        std::vector<uint32_t> perSymbol(symCount);
+        for (uint32_t i = 0; i < (TEXT_SIZE >> 4); i++) {
+            if (!counts[i]) continue;
+            uint32_t index = std::upper_bound(symAddrs, symAddrs + symCount, LINK_START + (i << 4)) - symAddrs;
+            if (index > 0) perSymbol[index - 1] += counts[i];
+        }
+        return topCounts(perSymbol.data(), symCount, 1);
+    }
 
-        // Show the busiest functions, or code addresses if there are no symbols
-        std::vector<std::pair<uint32_t, uint32_t>> top;
-        if (symCount) {
-            std::vector<uint32_t> perSymbol(symCount);
-            for (uint32_t i = 0; i < (TEXT_SIZE >> 4); i++) {
-                if (!text[i]) continue;
-                uint32_t addr = LINK_START + (i << 4);
-                uint32_t index = std::upper_bound(symAddrs, symAddrs + symCount, addr) - symAddrs;
-                if (index > 0) perSymbol[index - 1] += text[i];
-            }
-            top = topCounts(perSymbol.data(), symCount, 1);
-        }
-        else {
-            top = topCounts(text, TEXT_SIZE >> 4, 16);
-        }
-        for (size_t i = 0; i < 16 && i < top.size(); i++) {
-            if (symCount)
-                snprintf(line, sizeof(line), "%5.1f%% %-34.34s", top[i].first / percent, symNames[top[i].second]);
+    static void addList(std::string &result, const char *label, const std::vector<std::pair<uint32_t, uint32_t>> &top,
+        size_t count, size_t perLine, double percent, uint32_t base, bool names) {
+        // Add a labeled list of the top entries, as function names or as addresses offset from a base
+        char line[128];
+        result += label;
+        for (size_t i = 0; i < count && i < top.size(); i++) {
+            if (i && !(i % perLine)) result += "\n ";
+            if (names)
+                snprintf(line, sizeof(line), " %.1f%% %.24s", top[i].first / percent, symNames[top[i].second]);
             else
-                snprintf(line, sizeof(line), "%5.1f%% %08X%-26s", top[i].first / percent, textStart + top[i].second, "");
-            result += line;
-            result += (i & 1) ? "\n" : "  ";
-        }
-
-        // Show which app functions the thread was in when it blocked
-        if (symCount) {
-            std::vector<uint32_t> perSymbol(symCount);
-            for (uint32_t i = 0; i < (TEXT_SIZE >> 4); i++) {
-                if (!blocked[i]) continue;
-                uint32_t index = std::upper_bound(symAddrs, symAddrs + symCount, LINK_START + (i << 4)) - symAddrs;
-                if (index > 0) perSymbol[index - 1] += blocked[i];
-            }
-            std::vector<std::pair<uint32_t, uint32_t>> blockedTop = topCounts(perSymbol.data(), symCount, 1);
-            result += "Blocked in:";
-            for (size_t i = 0; i < 4 && i < blockedTop.size(); i++) {
-                snprintf(line, sizeof(line), "%s %.1f%% %.30s", (i == 2) ? "\n" : "", blockedTop[i].first / percent,
-                    symNames[blockedTop[i].second]);
-                result += line;
-            }
-            result += "\n";
-        }
-
-        // Also show exactly where it blocked, as link-time addresses to look up in the ELF
-        std::vector<std::pair<uint32_t, uint32_t>> blockedAddrs = topCounts(blocked, TEXT_SIZE >> 4, 16);
-        result += "Blocked at:";
-        for (size_t i = 0; i < 4 && i < blockedAddrs.size(); i++) {
-            snprintf(line, sizeof(line), " %08X %.1f%%", LINK_START + blockedAddrs[i].second, blockedAddrs[i].first / percent);
+                snprintf(line, sizeof(line), " %X %.1f%%", base + top[i].second, top[i].first / percent);
             result += line;
         }
         result += "\n";
+    }
+
+    std::string report(int page) {
+        // The message box can only draw so much text, so the report is split into 2 pages
+        double percent = std::max(total, 1U) / 100.0;
+        char line[256];
+        std::string result;
+
+        if (page == 0) {
+            // Summarize the samples by where they were
+            uint32_t textTotal = 0, osTotal = 0, stubTotal = 0;
+            for (uint32_t count : text) textTotal += count;
+            for (uint32_t count : os) osTotal += count;
+            for (uint32_t count : stubs) stubTotal += count;
+            snprintf(line, sizeof(line), "%u samples: app %.1f%%, idle %.1f%%, system %.1f%%, JIT blocks %.1f%%, JIT stubs %.1f%%\n",
+                total, textTotal / percent, idle / percent, osTotal / percent, jitBlocks / percent, stubTotal / percent);
+            result = line;
+
+            // Show the busiest functions, or code addresses if there are no symbols
+            std::vector<std::pair<uint32_t, uint32_t>> top = symCount ? topSymbols(text) : topCounts(text, TEXT_SIZE >> 4, 16);
+            for (size_t i = 0; i < 18 && i < top.size(); i++) {
+                if (symCount)
+                    snprintf(line, sizeof(line), "%5.1f%% %-34.34s", top[i].first / percent, symNames[top[i].second]);
+                else
+                    snprintf(line, sizeof(line), "%5.1f%% %08X%-26s", top[i].first / percent, textStart + top[i].second, "");
+                result += line;
+                result += (i & 1) ? "\n" : "  ";
+            }
+            return result;
+        }
+
+        // Show the busiest code addresses, as link-time addresses to look up in the ELF
+        addList(result, "Hot at:", topCounts(text, TEXT_SIZE >> 4, 16), 12, 6, percent, LINK_START, false);
+
+        // Show where the thread blocked, by function and by address
+        if (idle) {
+            if (symCount) addList(result, "Blocked in:", topSymbols(blocked), 4, 2, percent, 0, true);
+            addList(result, "Blocked at:", topCounts(blocked, TEXT_SIZE >> 4, 16), 4, 4, percent, LINK_START, false);
+        }
 
         // Find the system library's exported functions, to name the busiest system code by the nearest one before it
         std::vector<std::pair<uint32_t, const char*>> known;
@@ -215,16 +235,24 @@ namespace Sampler {
         }
         std::sort(known.begin(), known.end());
         std::vector<std::pair<uint32_t, uint32_t>> osTop = topCounts(os, OS_SIZE >> 8, 256);
-        for (size_t i = 0; i < 1 && i < osTop.size(); i++) {
+        result += "System:";
+        for (size_t i = 0; i < 3 && i < osTop.size(); i++) {
             uint32_t addr = OS_START + osTop[i].second;
             size_t index = std::upper_bound(known.begin(), known.end(), std::make_pair(addr, (const char*)nullptr)) - known.begin();
             if (index > 0)
-                snprintf(line, sizeof(line), "System %08X %.1f%%: after %s+%X\n", addr, osTop[i].first / percent,
-                    known[index - 1].second, addr - known[index - 1].first);
+                snprintf(line, sizeof(line), " %.1f%% %.20s+%X", osTop[i].first / percent, known[index - 1].second,
+                    addr - known[index - 1].first);
             else
-                snprintf(line, sizeof(line), "System %08X %.1f%%\n", addr, osTop[i].first / percent);
+                snprintf(line, sizeof(line), " %.1f%% %08X", osTop[i].first / percent, addr);
             result += line;
         }
+        result += "\n";
+
+        // Show which app functions called into the system the most
+        if (symCount) addList(result, "System from:", topSymbols(sysCallers), 4, 2, percent, 0, true);
+
+        // Show the busiest JIT stubs by offset into the code area, to match with a dump of the generated code
+        addList(result, "Stubs:", topCounts(stubs, 0x1000 >> 4, 16), 16, 8, percent, 0, false);
         return result;
     }
 }

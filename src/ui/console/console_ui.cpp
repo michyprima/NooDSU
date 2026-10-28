@@ -1220,7 +1220,9 @@ void ConsoleUI::pauseMenu() {
 #ifdef PROFILE_SAMPLER
             case Sampler::MENU_INDEX: // CPU Samples
                 // Show where the emulator's core spent its time since emulation last resumed
-                message("CPU Samples", Sampler::report());
+                // The details are on a second page, shown after the first is dismissed
+                if (message("CPU Samples", Sampler::report(0)))
+                    message("CPU Samples: details", Sampler::report(1));
                 break;
 #endif
             }

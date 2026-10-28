@@ -34,5 +34,5 @@ namespace Sampler {
 
     void start();
     void stop();
-    std::string report();
+    std::string report(int page);
 }
