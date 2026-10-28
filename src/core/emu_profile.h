@@ -59,6 +59,30 @@ enum EmuProfileSlot {
     EP_COUNT
 };
 
+enum RenderProfileSlot {
+    RP_DRAW, // 3D threads clearing scanlines and drawing polygons
+    RP_FINISH, // 3D threads finishing scanlines with edge marking, fog and anti-aliasing
+    RP_WAIT, // 3D threads waiting for neighboring scanlines
+    RP_COUNT
+};
+
+enum PixelProfileSlot {
+    PX_CLEAR, // Clearing a 3D scanline
+    PX_SPAN, // Setting up a polygon's span on a scanline
+    PX_DEPTH, // Per pixel: interpolation factor, depth and depth test
+    PX_INTERP, // Per pixel: color and texture coordinate interpolation
+    PX_TEXEL, // Per pixel: reading a texel
+    PX_WRITE, // Per pixel: blending and writing
+    PX_COUNT
+};
+
+enum CpuProfileSlot {
+    CPU_3D, // 3D renderer threads
+    CPU_2D, // 2D thread
+    CPU_GEOM, // Geometry worker
+    CPU_COUNT
+};
+
 enum EmuCountSlot {
     EC_LINES_EMU, // 2D scanlines drawn fully on the emulator thread
     EC_LINES_HALF, // 2D scanlines where the emulator thread drew engine B
@@ -67,13 +91,35 @@ enum EmuCountSlot {
 };
 
 #ifdef PROFILE_EMU
+#include <atomic>
 #include <coreinit/core.h>
+#include <coreinit/thread.h>
 #include <coreinit/time.h>
 
 namespace EmuProfile {
     extern uint64_t ticks[EP_COUNT];
     extern uint64_t taskTicks[64];
     extern uint32_t counts[EC_COUNT];
+    extern uint64_t renderTicks[4][RP_COUNT]; // Kept separately for each 3D thread
+    extern uint64_t pixelTicks[3][PX_COUNT]; // Kept separately for each CPU core
+    extern std::atomic<uint32_t> cpuUs[CPU_COUNT]; // CPU time used by helper threads in microseconds, as counted by the OS
+
+    // Read the time base directly, which is cheaper than calling the OS for timing inside pixel loops
+    inline uint32_t tick() {
+        uint32_t t;
+        __asm__ volatile("mftb %0" : "=r"(t));
+        return t;
+    }
+
+    // Times the phases of drawing a pixel, adding the rest to the current phase when the pixel is skipped
+    struct PixelTimer {
+        uint64_t *slots;
+        int phase;
+        uint32_t last;
+        PixelTimer(uint64_t *slots, int phase): slots(slots), phase(phase), last(tick()) {}
+        void next() { uint32_t t = tick(); slots[phase++] += t - last; last = t; }
+        ~PixelTimer() { slots[phase] += tick() - last; }
+    };
     inline uint32_t now() { return OSGetSystemTick(); }
 }
 
@@ -81,6 +127,14 @@ namespace EmuProfile {
 #define EP_START_EMU(name) uint32_t name = (OSGetCoreId() == 1) ? EmuProfile::now() : 0
 #define EP_ADD_EMU(slot, start) do { if (OSGetCoreId() == 1) EP_ADD(slot, start); } while (0)
 #define EP_INC(slot) (EmuProfile::counts[slot]++)
+#define RP_ADD(thread, slot, start) (EmuProfile::renderTicks[(thread) & 3][slot] += EmuProfile::now() - (start))
+#define PX_SLOTS uint64_t *pxSlots = EmuProfile::pixelTicks[OSGetCoreId() % 3]
+#define PX_TIMER(phase) EmuProfile::PixelTimer pxTimer(pxSlots, phase)
+#define PX_NEXT() pxTimer.next()
+#define PX_START(name) uint32_t name = EmuProfile::tick()
+#define CPU_ADD_THREAD(slot) (EmuProfile::cpuUs[slot] += uint32_t(OSGetCurrentThread()->coreTimeConsumedNs / 1000))
+#define CPU_SET_THREAD(slot) (EmuProfile::cpuUs[slot] = uint32_t(OSGetCurrentThread()->coreTimeConsumedNs / 1000))
+#define PX_ADD(slot, start) (pxSlots[slot] += EmuProfile::tick() - (start))
 
 #define EP_START(name) uint32_t name = EmuProfile::now()
 #define EP_ADD(slot, start) EmuProfile::ticks[slot] += EmuProfile::now() - (start)
@@ -92,6 +146,14 @@ namespace EmuProfile {
 #define EP_START_EMU(name) do {} while (0)
 #define EP_ADD_EMU(slot, start) do {} while (0)
 #define EP_INC(slot) do {} while (0)
+#define RP_ADD(thread, slot, start) do {} while (0)
+#define PX_SLOTS do {} while (0)
+#define PX_TIMER(phase) do {} while (0)
+#define PX_NEXT() do {} while (0)
+#define PX_START(name) do {} while (0)
+#define CPU_ADD_THREAD(slot) do {} while (0)
+#define CPU_SET_THREAD(slot) do {} while (0)
+#define PX_ADD(slot, start) do {} while (0)
 #ifdef HEARTBEAT
 #define EP_TASK(core) do { HB_SET(HB_EMU_TASK, (core).events[0].task); (core).tasks[(core).events[0].task](); \
     HB_SET(HB_EMU_TASK, 0xFF); } while (0)

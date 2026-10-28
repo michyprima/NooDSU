@@ -187,11 +187,14 @@ void Gpu3DRenderer::drawThreaded(int thread) {
     int i, end = 192 << resShift;
     for (i = thread; i < end; i += activeThreads) {
         switch (ready[i].exchange(1)) {
-        case 0:
+        case 0: {
             // Draw a scanline if it hasn't been started, save for the final pass
+            EP_START(draw);
             drawScanline1(i);
+            RP_ADD(thread, RP_DRAW, draw);
             ready[i].store(2);
             break;
+        }
 
         case 2:
             // Restore the scanline's state if it was already drawn
@@ -203,11 +206,15 @@ void Gpu3DRenderer::drawThreaded(int thread) {
         int prev = i - activeThreads;
 
         // Wait for this thread's previous scanline and its surrounding scanlines to be drawn
+        EP_START(wait);
         while ((prev > 0 && ready[prev - 1].load() < 2) || ready[prev].load() < 2 || ready[prev + 1].load() < 2)
             std::this_thread::yield();
+        RP_ADD(thread, RP_WAIT, wait);
 
         // Finish this thread's previous scanline
+        EP_START(finish);
         finishScanline(prev);
+        RP_ADD(thread, RP_FINISH, finish);
         ready[prev].store(3);
     }
 
@@ -221,9 +228,13 @@ void Gpu3DRenderer::drawThreaded(int thread) {
     HB_INC(HB_3D_LINES);
     finishScanline(prev);
     ready[prev].store(3);
+    CPU_ADD_THREAD(CPU_3D);
 }
 
 void Gpu3DRenderer::drawScanline1(int line) {
+    PX_SLOTS;
+    {
+    PX_TIMER(PX_CLEAR);
     // Convert the clear values
     // The attribute buffer contains the polygon IDs (0-5, 6-11), transparency bit (12), fog bit (13), edge bit (14), and edge alpha (15-20)
     uint32_t color = BIT(26) | rgba5ToRgba6(((clearColor & 0x001F0000) >> 1) | (clearColor & 0x00007FFF));
@@ -250,6 +261,7 @@ void Gpu3DRenderer::drawScanline1(int line) {
     }
 
     stencilClear[line] = false;
+    }
 
     uint16_t translucent[2048];
     int translucentCount = 0;
@@ -473,7 +485,7 @@ uint32_t Gpu3DRenderer::interpolateColor(uint32_t c1, uint32_t c2, uint32_t x1, 
     return (a << 18) | (b << 12) | (g << 6) | r;
 }
 
-uint32_t Gpu3DRenderer::readTexture(_Polygon *polygon, int s, int t) {
+NO_INLINE uint32_t Gpu3DRenderer::readTexture(_Polygon *polygon, int s, int t) {
     // Handle S-coordinate overflows
     if (polygon->repeatS) {
         // Flip the S-coordinate every second repeat
@@ -673,6 +685,8 @@ uint32_t Gpu3DRenderer::readTexture(_Polygon *polygon, int s, int t) {
 }
 
 void Gpu3DRenderer::drawPolygon(int line, int polygonIndex) {
+    PX_SLOTS;
+    PX_START(spanStart);
     _Polygon *polygon = &core->gpu3D.polygonsOut[polygonIndex];
 
     // Get the polygon vertices
@@ -999,14 +1013,62 @@ void Gpu3DRenderer::drawPolygon(int line, int polygonIndex) {
     // Instead, simply consider the entire span across the top and bottom of a polygon to be an edge
     bool horizontal = (line == polygonTop[polygonIndex] || line == polygonBot[polygonIndex] - 1);
 
+    PX_ADD(PX_SPAN, spanStart);
+
+    // Draw the span with a version of the loop specialized for the polygon's main settings
+    Span span = { polygon, line, x1, x2, x3, x4, x1e, x4e, x1a, x2a, x3a, x4a, horizontal,
+        { ze[0], ze[1] }, { we[0], we[1] }, { re[0], re[1] }, { ge[0], ge[1] }, { be[0], be[1] }, { se[0], se[1] }, { te[0], te[1] } };
+    switch ((polygon->wBuffer << 2) | (bool(disp3DCnt & BIT(4)) << 1) | (polygon->textureFmt != 0)) {
+        case 0: drawSpan<false, false, false>(span); break;
+        case 1: drawSpan<false, false, true>(span); break;
+        case 2: drawSpan<false, true, false>(span); break;
+        case 3: drawSpan<false, true, true>(span); break;
+        case 4: drawSpan<true, false, false>(span); break;
+        case 5: drawSpan<true, false, true>(span); break;
+        case 6: drawSpan<true, true, false>(span); break;
+        case 7: drawSpan<true, true, true>(span); break;
+    }
+}
+
+template <bool wBuffer, bool antiAlias, bool textured> void Gpu3DRenderer::drawSpan(const Span &span) {
+    // Unpack the span, so the loop reads like it did inside the polygon setup
+    PX_SLOTS;
+    _Polygon *polygon = span.polygon;
+    int line = span.line;
+    uint32_t x1 = span.x1, x2 = span.x2, x3 = span.x3, x4 = span.x4, x1e = span.x1e, x4e = span.x4e;
+    uint32_t x1a = span.x1a, x2a = span.x2a, x3a = span.x3a, x4a = span.x4a;
+    bool horizontal = span.horizontal;
+    const uint32_t *ze = span.ze, *we = span.we, *re = span.re, *ge = span.ge, *be = span.be, *se = span.se, *te = span.te;
+
     int lastS = 0xFFFF, lastT = 0xFFFF;
     uint32_t texel;
     LinearStepper zStep(ze[0], ze[1], x1, x4);
 
+    // Keep polygon settings in locals, since buffer stores would otherwise make them be reloaded for every pixel
+    const uint8_t alpha = polygon->alpha, mode = polygon->mode, id = polygon->id, textureFmt = polygon->textureFmt;
+    const bool depthTestEqual = polygon->depthTestEqual;
+    const bool transNewDepth = polygon->transNewDepth, fog = polygon->fog;
+    const int8_t wShift = polygon->wShift;
+
+    // Calculate the interpolation factor with a precision of 8 bits for polygon fills
+    auto getFactor = [&](uint32_t x) -> uint32_t {
+        if (we[0] == we[1] && !(we[0] & 0x7F)) // Linear fallback
+            return -1;
+        else if (x <= x1) // Clamp min
+            return 0;
+        else if (x >= x4) // Clamp max
+            return (1 << 8);
+        else if (resShift && ((x - x1) >> 8)) // 64-bit for upscaling
+            return (uint64_t(we[0] * (x - x1)) << 8) / (we[1] * (x4 - x) + we[0] * (x - x1));
+        else // 32-bit
+            return ((we[0] * (x - x1)) << 8) / (we[1] * (x4 - x) + we[0] * (x - x1));
+    };
+
     // Draw a line segment
     for (uint32_t x = x1; x < x4; x++) {
+        PX_TIMER(PX_DEPTH);
         // Skip the polygon interior for wireframe polygons
-        if (!horizontal && polygon->alpha == 0 && x == x2 + 1 && x3 > x2)
+        if (!horizontal && alpha == 0 && x == x2 + 1 && x3 > x2)
             x = x3;
 
         // Invalid viewports can cause out-of-bounds vertices, so only draw within bounds
@@ -1016,28 +1078,19 @@ void Gpu3DRenderer::drawPolygon(int line, int polygonIndex) {
         bool layer = 0;
         int i = line * 256 * 2 + x;
 
-        // Calculate the interpolation factor with a precision of 8 bits for polygon fills
-        uint32_t factor;
-        if (we[0] == we[1] && !(we[0] & 0x7F)) // Linear fallback
-            factor = -1;
-        else if (x <= x1) // Clamp min
-            factor = 0;
-        else if (x >= x4) // Clamp max
-            factor = (1 << 8);
-        else if (resShift && ((x - x1) >> 8)) // 64-bit for upscaling
-            factor = (uint64_t(we[0] * (x - x1)) << 8) / (we[1] * (x4 - x) + we[0] * (x - x1));
-        else // 32-bit
-            factor = ((we[0] * (x - x1)) << 8) / (we[1] * (x4 - x) + we[0] * (x - x1));
-
         // Calculate the depth value of the current pixel
+        // With W-buffering it comes from the interpolation factor, which is otherwise only worked out for pixels that
+        // pass the depth test, since it needs a division
+        uint32_t factor;
         int32_t depth;
-        if (polygon->wBuffer) {
+        if (wBuffer) {
+            factor = getFactor(x);
             depth = (factor == -1) ? interpolateLinear(we[0], we[1], x1, x, x4) :
                 interpolateFactor(factor, 8, we[0], we[1]);
-            if (polygon->wShift > 0)
-                depth <<= polygon->wShift;
-            else if (polygon->wShift < 0)
-                depth >>= -polygon->wShift;
+            if (wShift > 0)
+                depth <<= wShift;
+            else if (wShift < 0)
+                depth >>= -wShift;
         }
         else {
             depth = zStep.get(x);
@@ -1045,28 +1098,28 @@ void Gpu3DRenderer::drawPolygon(int line, int polygonIndex) {
 
         // Depth test the pixel on the front layer, and on the back layer if under an anti-aliased edge
         bool depthPass[2];
-        if (polygon->depthTestEqual) {
-            uint32_t margin = (polygon->wBuffer ? 0xFF : 0x200);
+        if (depthTestEqual) {
+            uint32_t margin = (wBuffer ? 0xFF : 0x200);
             depthPass[0] = (depthBuffer[0][i] >= depth - margin && depthBuffer[0][i] <= depth + margin);
-            depthPass[1] = (disp3DCnt & BIT(4)) && (attribBuffer[0][i] & BIT(14)) &&
+            depthPass[1] = antiAlias && (attribBuffer[0][i] & BIT(14)) &&
                 (depthBuffer[1][i] >= depth - margin && depthBuffer[1][i] <= depth + margin);
         }
         else {
             depthPass[0] = (depthBuffer[0][i] > depth);
-            depthPass[1] = (disp3DCnt & BIT(4)) && (attribBuffer[0][i] & BIT(14)) && (depthBuffer[1][i] > depth);
+            depthPass[1] = antiAlias && (attribBuffer[0][i] & BIT(14)) && (depthBuffer[1][i] > depth);
         }
 
         // Check if the pixel should be drawn
-        if (polygon->mode == 3) { // Shadow
-            if (polygon->id == 0) { // Mask
+        if (mode == 3) { // Shadow
+            if (id == 0) { // Mask
                 // Don't render shadow mask pixels, but set a stencil buffer bit for ones that fail the depth test
                 if (!depthPass[0]) stencilBuffer[i] |= BIT(0);
                 if (!depthPass[1]) stencilBuffer[i] |= BIT(1);
                 continue;
             }
-            else if (!depthPass[0] || !(stencilBuffer[i] & BIT(0)) || (attribBuffer[0][i] & 0x3F) == polygon->id) {
+            else if (!depthPass[0] || !(stencilBuffer[i] & BIT(0)) || (attribBuffer[0][i] & 0x3F) == id) {
                 // Only render non-mask shadow pixels if the stencil bit is set and the old pixel's polygon ID differs
-                if (!depthPass[1] || !(stencilBuffer[i] & BIT(1)) || (attribBuffer[1][i] & 0x3F) == polygon->id)
+                if (!depthPass[1] || !(stencilBuffer[i] & BIT(1)) || (attribBuffer[1][i] & 0x3F) == id)
                     continue;
 
                 // Draw the pixel on the back layer
@@ -1083,6 +1136,8 @@ void Gpu3DRenderer::drawPolygon(int line, int polygonIndex) {
         }
 
         // Interpolate the vertex color at the current pixel
+        PX_NEXT();
+        if (!wBuffer) factor = getFactor(x);
         uint32_t rv, gv, bv;
         if (factor == -1) {
             rv = interpolateLinear(re[0], re[1], x1, x, x4) >> 3;
@@ -1094,10 +1149,10 @@ void Gpu3DRenderer::drawPolygon(int line, int polygonIndex) {
             gv = interpolateFactor(factor, 8, ge[0], ge[1]) >> 3;
             bv = interpolateFactor(factor, 8, be[0], be[1]) >> 3;
         }
-        uint32_t color = ((polygon->alpha ? polygon->alpha : 0x3F) << 18) | (bv << 12) | (gv << 6) | rv;
+        uint32_t color = ((alpha ? alpha : 0x3F) << 18) | (bv << 12) | (gv << 6) | rv;
 
         // Blend the texture with the vertex color
-        if (polygon->textureFmt != 0) {
+        if (textured) {
             // Interpolate the texture coordinates at the current pixel
             int s, t;
             if (factor == -1) {
@@ -1110,14 +1165,16 @@ void Gpu3DRenderer::drawPolygon(int line, int polygonIndex) {
             }
 
             // Read a new texel from the texture if the coordinates changed
+            PX_NEXT();
             if (s != lastS || t != lastT) {
                 lastS = s; lastT = t;
                 texel = readTexture(polygon, s, t);
             }
+            PX_NEXT();
 
             // Apply texture blending
             // These formulas are a translation of the pseudocode from GBATEK to C++
-            switch (polygon->mode) {
+            switch (mode) {
             case 0: { // Modulation
                 uint8_t r = ((((texel >> 0) & 0x3F) + 1) * (((color >> 0) & 0x3F) + 1) - 1) / 64;
                 uint8_t g = ((((texel >> 6) & 0x3F) + 1) * (((color >> 6) & 0x3F) + 1) - 1) / 64;
@@ -1161,7 +1218,7 @@ void Gpu3DRenderer::drawPolygon(int line, int polygonIndex) {
                 break;
             }}
         }
-        else if (polygon->mode == 2) { // Toon/Highlight (no texture)
+        else if (mode == 2) { // Toon/Highlight (no texture)
             uint32_t toon = rgba5ToRgba6(toonTable[(color & 0x3F) / 2]);
             uint8_t r, g, b;
 
@@ -1189,7 +1246,7 @@ void Gpu3DRenderer::drawPolygon(int line, int polygonIndex) {
             bool edge = (x <= x2 || x >= x3 || horizontal);
 
             // Push the previous pixel to the back layer if drawing a front anti-aliased edge pixel
-            if ((disp3DCnt & BIT(4)) && layer == 0 && edge) {
+            if (antiAlias && layer == 0 && edge) {
                 framebuffer[1][i] = framebuffer[0][i];
                 depthBuffer[1][i] = depthBuffer[0][i];
                 attribBuffer[1][i] = attribBuffer[0][i];
@@ -1204,21 +1261,21 @@ void Gpu3DRenderer::drawPolygon(int line, int polygonIndex) {
             framebuffer[layer][i] = BIT(26) | color;
             depthBuffer[layer][i] = depth;
             attribBuffer[layer][i] = (attribBuffer[layer][i] & 0x0FC0) | (edgeAlpha << 15) |
-                (edge << 14) | (polygon->fog << 13) | polygon->id;
+                (edge << 14) | (fog << 13) | id;
         }
-        else if (!(attribBuffer[layer][i] & BIT(12)) || ((attribBuffer[layer][i] >> 6) & 0x3F) != polygon->id) { // Transparent
+        else if (!(attribBuffer[layer][i] & BIT(12)) || ((attribBuffer[layer][i] >> 6) & 0x3F) != id) { // Transparent
             // Transparent pixels are only drawn if the old pixel isn't transparent or the polygon ID differs
             framebuffer[layer][i] = BIT(26) | (((disp3DCnt & BIT(3)) && (framebuffer[layer][i] & 0xFC0000)) ?
                 interpolateColor(framebuffer[layer][i], color, 0, color >> 18, 63) : color);
-            if (polygon->transNewDepth) depthBuffer[layer][i] = depth;
-            attribBuffer[layer][i] = (attribBuffer[layer][i] & (0x1FC03F | (polygon->fog << 13))) | BIT(12) | (polygon->id << 6);
+            if (transNewDepth) depthBuffer[layer][i] = depth;
+            attribBuffer[layer][i] = (attribBuffer[layer][i] & (0x1FC03F | (fog << 13))) | BIT(12) | (id << 6);
 
             // Blend with the back layer as well if drawing over a front anti-aliased edge pixel
-            if ((disp3DCnt & BIT(4)) && layer == 0 && (attribBuffer[0][i] & BIT(14))) {
+            if (antiAlias && layer == 0 && (attribBuffer[0][i] & BIT(14))) {
                 framebuffer[1][i] = BIT(26) | (((disp3DCnt & BIT(3)) && (framebuffer[1][i] & 0xFC0000)) ?
                     interpolateColor(framebuffer[1][i], color, 0, color >> 18, 63) : color);
-                if (polygon->transNewDepth) depthBuffer[1][i] = depth;
-                attribBuffer[1][i] = (attribBuffer[1][i] & (0x1FC03F | (polygon->fog << 13))) | BIT(12) | (polygon->id << 6);
+                if (transNewDepth) depthBuffer[1][i] = depth;
+                attribBuffer[1][i] = (attribBuffer[1][i] & (0x1FC03F | (fog << 13))) | BIT(12) | (id << 6);
             }
         }
     }

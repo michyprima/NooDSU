@@ -30,6 +30,16 @@ class Core;
 struct Vertex;
 struct _Polygon;
 
+// The values for drawing one polygon's span on a scanline
+struct Span {
+    _Polygon *polygon;
+    int line;
+    uint32_t x1, x2, x3, x4, x1e, x4e;
+    uint32_t x1a, x2a, x3a, x4a;
+    bool horizontal;
+    uint32_t ze[2], we[2], re[2], ge[2], be[2], se[2], te[2];
+};
+
 class Gpu3DRenderer {
 public:
     Gpu3DRenderer(Core *core);
@@ -97,4 +107,5 @@ private:
 
     uint32_t readTexture(_Polygon *polygon, int s, int t);
     void drawPolygon(int line, int polygonIndex);
+    template <bool wBuffer, bool antiAlias, bool textured> void drawSpan(const Span &span);
 };

@@ -337,6 +337,7 @@ void Gpu3D::runWorker() {
             published = head;
 
             // Sleep until more commands are published; it doesn't spin, since it would hold up the 3D renderer
+            CPU_SET_THREAD(CPU_GEOM);
             std::unique_lock<std::mutex> lock(workerMutex);
             workerSleeping.store(true);
             while ((tail = queueTail.load()) == head) {
