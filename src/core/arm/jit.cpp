@@ -27,6 +27,25 @@
 // The most instructions to put in one block, to limit how much is recompiled when code changes
 static const int MAX_INSTRS = 64;
 
+#ifdef JIT_LOG
+#include <cstdarg>
+#include <coreinit/thread.h>
+
+void jitLog(const char *format, ...) {
+    // Append a line and close the file every time, so it survives a freeze
+    static int lines = 0;
+    if (++lines > 2000) return;
+    FILE *file = fopen((Settings::basePath + "/jit.log").c_str(), lines == 1 ? "w" : "a");
+    if (!file) return;
+    va_list args;
+    va_start(args, format);
+    vfprintf(file, format, args);
+    va_end(args);
+    fputc('\n', file);
+    fclose(file);
+}
+#endif
+
 Jit::Jit(Core *core): core(core) {}
 
 Jit::~Jit() {
@@ -46,7 +65,6 @@ void Jit::enable(bool value) {
     enabled = value;
     if (enabled && table.empty())
         table.resize((RAM_SIZE + ITCM_SIZE + BIOS_SIZE) / 2);
-    if (enabled) initCodegen();
 }
 
 void Jit::reset() {
@@ -262,6 +280,19 @@ bool Jit::run(const uint32_t *limit) {
         delete graveyard[i];
     graveyard.clear();
 
+    // Set up code generation the first time it's possible, since it only works from one CPU core
+    // This happens here so it's done by the thread that runs the emulator
+#ifdef JIT_LOG
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        JLOG("run: core %u, thread %p, priority %d, affinity %X", OSGetCoreId(), OSGetCurrentThread(),
+            OSGetThreadPriority(OSGetCurrentThread()), OSGetThreadAffinity(OSGetCurrentThread()));
+    }
+#endif
+    if (!codeArea && !codeFailed)
+        initCodegen();
+
     // Find the host memory for the next instruction, if it's somewhere code can be compiled from
     Interpreter &arm = core->interpreter[0];
     bool thumb = arm.cpsr & BIT(5);
@@ -276,7 +307,7 @@ bool Jit::run(const uint32_t *limit) {
     // If generated code is close to filling its area, start over to make room
     JitBlock *block = table[index];
     if (!block || block->address != address || block->thumb != thumb) {
-        if (codeArea && codeEnd - codePtr < MAX_INSTRS * 36 * 4 + 16) {
+        if (codeFull()) {
             reset();
             for (size_t i = 0; i < graveyard.size(); i++)
                 delete graveyard[i];
@@ -304,8 +335,16 @@ void Jit::execute(JitBlock *block, const uint32_t *limit) {
 #ifdef __WIIU__
     // Run generated code if there is any, which only works on the codegen core
     if (block->code && OSGetCoreId() == codeCore) {
+#ifdef JIT_LOG
+        static uint32_t entries = 0;
+        bool log = (++entries <= 200) || (entries % 100000) == 0;
+        if (log) JLOG("enter %u: %08X %s code %p", entries, block->address, block->thumb ? "T" : "A", block->code);
+#endif
         ((void(*)(Interpreter*, std::vector<SchedEvent>*, const uint32_t*, void*, uint32_t*, JitCacheEntry*))
             codeEnter)(&arm, &core->events, limit, block->code, &core->globalCycles, cache);
+#ifdef JIT_LOG
+        if (log) JLOG("exit %u: pc %08X cycles %u", entries, arm.registersUsr[15], arm.cycles);
+#endif
         block = nullptr;
     }
 #endif

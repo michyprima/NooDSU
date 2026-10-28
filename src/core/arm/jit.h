@@ -24,6 +24,15 @@
 
 class Core;
 class Interpreter;
+class PpcEmitter;
+
+// Diagnostic logging for builds made with JIT_LOG, written to the SD card a line at a time
+#ifdef JIT_LOG
+void jitLog(const char *format, ...);
+#define JLOG(...) jitLog(__VA_ARGS__)
+#else
+#define JLOG(...) do {} while (0)
+#endif
 
 // A decoded instruction, with the interpreter handler that executes it
 struct JitInstr {
@@ -63,6 +72,7 @@ struct JitPage {
 // fetch and dispatch overhead, and are the base for generating native code later
 class Jit {
 public:
+    friend bool jitTestEmit(Jit &jit, uint8_t *buf, uint32_t op, uint32_t pc, uint32_t *size);
     bool enabled = false;
 
     Jit(Core *core);
@@ -103,8 +113,13 @@ private:
     // Generated code, starting with shared entry, exit, dispatch and per-instruction routines
     uint8_t *codeArea = nullptr, *codeStart = nullptr, *codePtr = nullptr, *codeEnd = nullptr;
     void *codeEnter = nullptr, *codeExit = nullptr, *codeDispatch = nullptr, *codePost[2] = {};
-    int offPc = 0, offCpsr = 0, offCycles = 0, offEventCycles = 0;
+    int offPc = 0, offCpsr = 0, offCycles = 0, offEventCycles = 0, offUsr = 0, offRegs = 0;
     uint32_t codeCore = 0;
+    bool codeFailed = false;
+
+    // Addresses that native instructions use, which tests can point elsewhere
+    uint32_t addrCondition = 0, addrMemory = 0, addrReadMap = 0, addrWriteMap = 0;
+    uint32_t addrLoad32 = 0, addrLoad8 = 0, addrStore32 = 0, addrStore8 = 0;
 
     int tableIndex(uint8_t *host);
     int pageIndex(uint8_t *host);
@@ -118,7 +133,15 @@ private:
 
     void initCodegen();
     void freeCodegen();
+    bool codeFull();
     void finishCode(uint8_t *start, size_t size);
     void *generate(JitBlock *block);
+    bool emitNative(PpcEmitter &e, uint32_t op, uint32_t pc);
+    void emitChecked(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool &ok);
+    void emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc);
+    void emitBranch(PpcEmitter &e, uint32_t op, uint32_t pc);
+    void emitTransfer(PpcEmitter &e, uint32_t op, uint32_t pc);
+    void readReg(PpcEmitter &e, int rt, int reg, uint32_t pc);
+    void writeReg(PpcEmitter &e, int rs, int reg);
     void clearCache();
 };

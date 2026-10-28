@@ -20,12 +20,15 @@
 #pragma once
 
 #include <cstdint>
+#include <ctime>
 #include "../defines.h"
 
 class Core;
 
 class Rtc {
 public:
+    static std::time_t fixedTime; // Used instead of the current time if set, for deterministic testing
+
     Rtc(Core *core): core(core) {}
     void saveState(FILE *file);
     void loadState(FILE *file);

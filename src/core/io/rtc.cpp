@@ -20,6 +20,8 @@
 #include <ctime>
 #include "../core.h"
 
+std::time_t Rtc::fixedTime = 0;
+
 void Rtc::saveState(FILE *file) {
     // Write state data to the file
     fwrite(&csCur, sizeof(csCur), 1, file);
@@ -90,7 +92,7 @@ void Rtc::updateRtc(bool cs, bool sck, bool sio) {
 
 void Rtc::updateDateTime() {
     // Get the local time
-    std::time_t t = std::time(nullptr);
+    std::time_t t = fixedTime ? fixedTime : std::time(nullptr);
     std::tm *time = std::localtime(&t);
     time->tm_year %= 100; // The DS only counts years 2000-2099
     time->tm_mon++; // The DS starts month values at 1, not 0

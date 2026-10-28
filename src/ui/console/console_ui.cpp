@@ -25,7 +25,13 @@
 
 #include "console_ui.h"
 #ifdef __WIIU__
+#include <malloc.h>
 #include <coreinit/thread.h>
+
+// With the JIT on, the emulator runs on its own thread bound to the core that can run generated code
+static OSThread jitThread __attribute__((aligned(16)));
+static uint8_t *jitStack = nullptr;
+static bool jitThreadUsed = false;
 #endif
 #include "../nds_icon.h"
 #include "../../core/settings.h"
@@ -1143,10 +1149,7 @@ void ConsoleUI::jitSelfTest() {
     Settings::threaded3D = 0;
     Settings::emulateAudio = 0;
     Settings::frameskip = 5;
-#ifdef __WIIU__
-    OSSetThreadAffinity(OSGetCurrentThread(), OS_THREAD_ATTRIB_AFFINITY_CPU1);
-    OSYieldThread();
-#endif
+    Rtc::fixedTime = std::time(nullptr); // Both cores must read the same clock
     Core *cores[2] = {};
     try {
         Settings::jit = 0;
@@ -1164,6 +1167,7 @@ void ConsoleUI::jitSelfTest() {
         Settings::emulateAudio = saved[2];
         Settings::frameskip = saved[3];
         Settings::jit = saved[4];
+        Rtc::fixedTime = 0;
     };
     if (!cores[1]) {
         restore();
@@ -1171,7 +1175,7 @@ void ConsoleUI::jitSelfTest() {
         return;
     }
     Core &a = *cores[0], &b = *cores[1];
-    std::string mode = !b.jit.enabled ? "JIT off" : (b.jit.isNative() ? "native code" : "portable executor");
+    std::string mode;
 
     // Compare CPU and scheduler state every time the cores stop, and the screens of every drawn frame
     static uint32_t frameA[256 * 192 * 8], frameB[256 * 192 * 8];
@@ -1186,6 +1190,7 @@ void ConsoleUI::jitSelfTest() {
         auto t1 = std::chrono::steady_clock::now();
         b.runCore();
         auto t2 = std::chrono::steady_clock::now();
+        mode = !b.jit.enabled ? "JIT off" : (b.jit.isNative() ? "native code" : "portable executor");
         timeA += std::chrono::duration<double>(t1 - t0).count();
         timeB += std::chrono::duration<double>(t2 - t1).count();
         steps++;
@@ -1209,8 +1214,11 @@ void ConsoleUI::jitSelfTest() {
             if (diff != "") result = std::string(i ? "ARM7 " : "ARM9 ") + diff;
         }
         if (result != "") {
+            char pcs[96];
+            snprintf(pcs, sizeof(pcs), "\nARM9 PC %08X/%08X, ARM7 PC %08X/%08X", a.interpreter[0].getPC(),
+                b.interpreter[0].getPC(), a.interpreter[1].getPC(), b.interpreter[1].getPC());
             result = "MISMATCH after " + std::to_string(steps) + " stops, around frame " +
-                std::to_string(frames) + ":\n" + result;
+                std::to_string(frames) + ":\n" + result + pcs;
             break;
         }
         if (frames >= targetFrames) {
@@ -1300,6 +1308,29 @@ void ConsoleUI::startCore() {
     if (running) return;
     running = true;
 
+#ifdef __WIIU__
+    // Generated code only runs on core 1, and running threads can't be moved between cores, so create
+    // the emulator thread there; it shares the core with the UI, so it runs just below the UI's priority
+#ifdef JIT_LOG
+    // Diagnostic builds always use this thread, to compare the JIT with the interpreter on the same core
+    if (true) {
+#else
+    if (Settings::jit) {
+#endif
+        const int stackSize = 0x100000;
+        if (!jitStack) jitStack = (uint8_t*)memalign(16, stackSize);
+        int priority = std::min(OSGetThreadPriority(OSGetCurrentThread()) + 1, 31);
+        OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int { runCore(); return 0; };
+        if (jitStack && OSCreateThread(&jitThread, entry, 0, nullptr, jitStack + stackSize,
+                stackSize, priority, OS_THREAD_ATTRIB_AFFINITY_CPU1)) {
+            OSResumeThread(&jitThread);
+            jitThreadUsed = true;
+            saveThread = new std::thread(checkSave);
+            return;
+        }
+    }
+#endif
+
     // Start the threads
     coreThread = new std::thread(runCore);
     saveThread = new std::thread(checkSave);
@@ -1315,19 +1346,22 @@ void ConsoleUI::stopCore() {
     else return;
 
     // Wait for the threads to stop
-    coreThread->join();
-    delete coreThread;
+#ifdef __WIIU__
+    if (jitThreadUsed) {
+        OSJoinThread(&jitThread, nullptr);
+        jitThreadUsed = false;
+    }
+    else
+#endif
+    {
+        coreThread->join();
+        delete coreThread;
+    }
     saveThread->join();
     delete saveThread;
 }
 
 void ConsoleUI::runCore() {
-#ifdef __WIIU__
-    // Run on the core that can use JIT code, which is also the one with the most cache
-    if (Settings::jit)
-        OSSetThreadAffinity(OSGetCurrentThread(), OS_THREAD_ATTRIB_AFFINITY_CPU1);
-#endif
-
     // Run the emulator
     while (running)
         core->runCore();
