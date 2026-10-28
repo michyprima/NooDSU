@@ -49,6 +49,7 @@ public:
     static int screenFilter;
     static int dsiMode;
     static int arm7Hle;
+    static int jit;
 
     static std::string gbaBiosPath;
     static std::string ndsBios9Path;

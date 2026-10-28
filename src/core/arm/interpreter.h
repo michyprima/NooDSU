@@ -20,6 +20,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include "../defines.h"
 
 class Core;
@@ -27,6 +28,7 @@ class HleBios;
 
 class Interpreter {
 public:
+    friend class Jit;
     HleBios *bios = nullptr;
     uint32_t entryAddr = 0;
     uint8_t halted = 0;
@@ -55,6 +57,7 @@ public:
     bool isThumb() { return cpsr & BIT(5); }
     uint32_t getPC() { return *registers[15]; }
     int handleHleIrq();
+    std::string compare(Interpreter &other);
 
     uint8_t readIme() { return ime; }
     uint32_t readIe(int i) { return ie >> (i * 32); }
@@ -72,6 +75,8 @@ private:
 
     uint8_t *pcData = nullptr;
     uint32_t pipeline[2] = {};
+    bool pipelineStale = false; // Set when the JIT ran instructions without filling the pipeline
+    bool lazyPipeline = false; // Set while the JIT runs, so jumps don't fill the pipeline
 
     uint32_t *registers[32] = {};
     uint32_t registersUsr[16] = {};
@@ -100,6 +105,7 @@ private:
     int runOpcode();
     int exception(uint8_t vector);
     void flushPipeline();
+    void refillPipeline();
     void swapRegisters(uint32_t value);
     void setCpsr(uint32_t value, bool save = false);
     int handleReserved(uint32_t opcode);

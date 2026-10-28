@@ -16,6 +16,8 @@ add_library(noods-core SHARED
             ../../core/arm/interpreter_branch.cpp
             ../../core/arm/interpreter_lookup.cpp
             ../../core/arm/interpreter_transfer.cpp
+            ../../core/arm/jit.cpp
+            ../../core/arm/jit_ppc.cpp
             ../../core/arm/timers.cpp
             ../../core/gpu/gpu.cpp
             ../../core/gpu/gpu_2d.cpp

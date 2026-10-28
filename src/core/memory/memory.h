@@ -35,6 +35,8 @@ struct VramMapping {
 
 class Memory {
 public:
+    friend class Jit;
+
     // 32-bit address space, split into 4KB blocks
     uint8_t *readMap9A[0x100000] = {};
     uint8_t *readMap9B[0x100000] = {};
@@ -142,7 +144,9 @@ private:
     uint32_t mbk8[2] = {};
 
     template <typename T> T readFallback(bool arm7, uint32_t address);
-    template <typename T> void writeFallback(bool arm7, uint32_t address, T value);
+    template <typename T> void writeFallback(bool arm7, uint32_t address, T value, bool tcm);
+    template <typename T> bool writeJit(bool arm7, uint32_t address, T value, bool tcm);
+    void protectJit(uint8_t **writeMap, uint32_t start, uint32_t end);
 
     template <typename T> T ioRead9(uint32_t address);
     template <typename T> T ioRead7(uint32_t address);
@@ -175,5 +179,5 @@ template <typename T> FORCE_INLINE void Memory::write(bool arm7, uint32_t addres
         return writeLsb<T>(&data[address & (0x1000 - sizeof(T))], value);
 
     // Handle special write cases that can't be mapped
-    return writeFallback<T>(arm7, address, value);
+    return writeFallback<T>(arm7, address, value, tcm);
 }

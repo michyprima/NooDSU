@@ -136,6 +136,9 @@ private:
         int &index, std::string actionX = "", std::string actionPlus = "");
     static uint32_t message(std::string title, std::string text, int type = 0);
 
+#ifdef JIT_SELFTEST
+    static void jitSelfTest();
+#endif
     static void settingsMenu();
     static void controlsMenu();
     static void pauseMenu();

@@ -26,7 +26,8 @@ Interpreter::Interpreter(Core *core, bool arm7): core(core), arm7(arm7) {
 }
 
 void Interpreter::saveState(FILE *file) {
-    // Write state data to the file
+    // Write state data to the file, with the pipeline filled in case the JIT left it empty
+    if (pipelineStale) refillPipeline();
     fwrite(pipeline, 4, sizeof(pipeline) / 4, file);
     fwrite(registersUsr, 4, sizeof(registersUsr) / 4, file);
     fwrite(registersFiq, 4, sizeof(registersFiq) / 4, file);
@@ -124,11 +125,22 @@ template void Interpreter::runCoreSingle<true, 1>(Core &core);
 template <bool _arm7, int shift> void Interpreter::runCoreSingle(Core &core) {
     // Run the core with one active CPU
     Interpreter &arm = core.interpreter[_arm7];
+    static const uint32_t noLimit = 0xFFFFFFFF;
     while (core.running.exchange(true)) {
         // Run a CPU until the next scheduled task
         core.globalCycles = std::max(core.globalCycles, arm.cycles);
-        while (core.events[0].cycles > arm.cycles)
+        while (core.events[0].cycles > arm.cycles) {
+            // Run compiled ARM9 code if possible, falling back to the interpreter
+            // Blocks leave the global cycles at the start of their last instruction, so catch up after
+            if (!_arm7 && core.jit.enabled) {
+                if (core.jit.run(&noLimit)) {
+                    core.globalCycles = arm.cycles;
+                    continue;
+                }
+                if (arm.pipelineStale) arm.refillPipeline();
+            }
             arm.cycles = (core.globalCycles += arm.runOpcode() << shift);
+        }
 
         // Jump to the next task and run all that are scheduled now
         core.globalCycles = core.events[0].cycles;
@@ -146,8 +158,11 @@ void Interpreter::runCoreNds(Core &core) {
     while (core.running.exchange(true)) {
         // Run the ARM9 and half-speed ARM7 until the next scheduled task
         while (core.events[0].cycles > core.globalCycles) {
-            if (core.globalCycles >= arm9.cycles)
+            // Run compiled ARM9 code if possible, stopping before the ARM7 is due, or fall back to the interpreter
+            if (core.globalCycles >= arm9.cycles && !(core.jit.enabled && core.jit.run(&arm7.cycles))) {
+                if (arm9.pipelineStale) arm9.refillPipeline();
                 arm9.cycles = core.globalCycles + arm9.runOpcode();
+            }
             if (core.globalCycles >= arm7.cycles)
                 arm7.cycles = core.globalCycles + (arm7.runOpcode() << 1);
             core.globalCycles = std::min<uint32_t>(arm9.cycles, arm7.cycles);
@@ -233,6 +248,21 @@ uint32_t Interpreter::getOpcode32() {
     return U8TO32(pcData, 0);
 }
 
+std::string Interpreter::compare(Interpreter &other) {
+    // Describe the first difference in visible CPU state from another interpreter, for testing the JIT
+    char text[64];
+    for (int i = 0; i < 16; i++) {
+        if (*registers[i] == *other.registers[i]) continue;
+        snprintf(text, sizeof(text), "r%d %08X vs %08X", i, *registers[i], *other.registers[i]);
+        return text;
+    }
+    if (cpsr != other.cpsr) snprintf(text, sizeof(text), "CPSR %08X vs %08X", cpsr, other.cpsr);
+    else if (cycles != other.cycles) snprintf(text, sizeof(text), "cycles %u vs %u", cycles, other.cycles);
+    else if (halted != other.halted) snprintf(text, sizeof(text), "halted %d vs %d", halted, other.halted);
+    else return "";
+    return text;
+}
+
 void Interpreter::halt(int bit) {
     // Set a halt bit and disable the CPU if newly halted
     bool before = halted;
@@ -287,15 +317,25 @@ int Interpreter::exception(uint8_t vector) {
     return 3;
 }
 
+void Interpreter::refillPipeline() {
+    // Fill the pipeline for the current program counter, after the JIT ran instructions without it
+    *registers[15] -= (cpsr & BIT(5)) ? 2 : 4;
+    flushPipeline();
+}
+
 void Interpreter::flushPipeline() {
     // Adjust the program counter and refill the pipeline after a jump
+    // While the JIT is running, the pipeline is only marked for refilling if the interpreter needs it
+    pipelineStale = lazyPipeline;
     if (cpsr & BIT(5)) { // THUMB mode
         *registers[15] = (*registers[15] & ~0x1) + 2;
+        if (lazyPipeline) return;
         pipeline[0] = core->memory.read<uint16_t>(arm7, *registers[15] - 2);
         pipeline[1] = getOpcode16();
     }
     else { // ARM mode
         *registers[15] = (*registers[15] & ~0x3) + 4;
+        if (lazyPipeline) return;
         pipeline[0] = core->memory.read<uint32_t>(arm7, *registers[15] - 4);
         pipeline[1] = getOpcode32();
     }

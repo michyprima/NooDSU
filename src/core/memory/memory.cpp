@@ -202,6 +202,7 @@ void Memory::copyBiosLogo(uint8_t *logo) {
 
 void Memory::updateMap9(uint32_t start, uint32_t end, bool tcm) {
     // Update the ARM9 read and write memory maps in the given range
+    core->jit.mapChanged(start);
     for (uint64_t address = start; address < end; address += 0x1000) {
         // Get the current read and write pointers; there are TCM and non-TCM maps
         uint8_t *&read = (tcm ? readMap9A : readMap9B)[address >> 12];
@@ -295,6 +296,10 @@ void Memory::updateMap9(uint32_t start, uint32_t end, bool tcm) {
                 write = &dataTcm[(address - core->cp15.dtcmAddr) & 0x3FFF];
         }
     }
+
+    // Keep pages with compiled code unmapped for writes
+    if (core->jit.hasCode())
+        protectJit(tcm ? writeMap9A : writeMap9B, start, end);
 
     // For non-TCM updates, update the TCM map as well
     if (!tcm)
@@ -413,6 +418,10 @@ void Memory::updateMap7(uint32_t start, uint32_t end) {
             }
         }
     }
+
+    // Keep pages with compiled code unmapped for writes
+    if (core->jit.hasCode())
+        protectJit(writeMap7, start, end);
 
     // Update the ARM7 opcode pointer in case it was remapped
     core->interpreter[1].getOpcode16();
@@ -799,10 +808,41 @@ template <typename T> T Memory::readFallback(bool arm7, uint32_t address) {
     return read<T>(arm7, core->interpreter[1].getPC());
 }
 
-template <typename T> void Memory::writeFallback(bool arm7, uint32_t address, T value) {
+template <typename T> bool Memory::writeJit(bool arm7, uint32_t address, T value, bool tcm) {
+    // Find where a write should go if the JIT unmapped it, which only happens to main RAM and ITCM
+    uint8_t *base;
+    if ((address >> 24) == 0x2)
+        base = &ram[address & 0x3FF000];
+    else if (!arm7 && tcm && address < core->cp15.itcmSize && core->cp15.itcmCanWrite)
+        base = &instrTcm[address & 0x7000];
+    else
+        return false;
+
+    // Let the JIT drop overwritten code, and map the page back once it has none left
+    uint8_t *data = &base[address & (0x1000 - sizeof(T))];
+    if (!core->jit.writeCode(data, sizeof(T)))
+        (arm7 ? writeMap7 : (tcm ? writeMap9A : writeMap9B))[address >> 12] = base;
+    writeLsb<T>(data, value);
+    return true;
+}
+
+void Memory::protectJit(uint8_t **writeMap, uint32_t start, uint32_t end) {
+    // Unmap pages with compiled code again after a remap, so writes to them still reach the JIT
+    for (uint64_t address = start; address < end; address += 0x1000) {
+        uint8_t *&write = writeMap[address >> 12];
+        if (write && core->jit.isCodePage(write))
+            write = nullptr;
+    }
+}
+
+template <typename T> void Memory::writeFallback(bool arm7, uint32_t address, T value, bool tcm) {
     // Align the address
     address &= ~(sizeof(T) - 1);
     uint8_t *data = nullptr;
+
+    // Handle writes to pages that were unmapped because they have compiled code
+    if (core->jit.hasCode() && writeJit<T>(arm7, address, value, tcm))
+        return;
 
     // Handle special memory writes such as I/O registers, overlapping VRAM, or areas smaller than 4KB
     if (!arm7) { // ARM9

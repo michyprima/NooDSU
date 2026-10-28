@@ -121,6 +121,9 @@ bool SaveStates::loadState() {
     if (!file) return false;
     fseek(file, 8, SEEK_SET);
 
+    // Drop compiled code, since memory is about to change underneath it
+    core->jit.reset();
+
     // Load the state of every component
     core->loadState(file);
     core->aes.loadState(file);

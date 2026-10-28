@@ -30,6 +30,7 @@
 #include "settings.h"
 #include "arm/cp15.h"
 #include "arm/interpreter.h"
+#include "arm/jit.h"
 #include "arm/timers.h"
 #include "gpu/gpu.h"
 #include "gpu/gpu_2d.h"
@@ -138,6 +139,7 @@ public:
     Input input;
     Interpreter interpreter[2];
     Ipc ipc;
+    Jit jit;
     Memory memory;
     Ndma ndma[2];
     Rtc rtc;

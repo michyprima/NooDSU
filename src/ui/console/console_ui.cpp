@@ -18,11 +18,15 @@
 */
 
 #include <algorithm>
+#include <cstring>
 #include <chrono>
 #include <dirent.h>
 #include <sys/stat.h>
 
 #include "console_ui.h"
+#ifdef __WIIU__
+#include <coreinit/thread.h>
+#endif
 #include "../nds_icon.h"
 #include "../../core/settings.h"
 
@@ -362,6 +366,13 @@ int ConsoleUI::setPath(std::string path) {
 
         // Set the NDS ROM path
         ndsPath = path;
+
+#ifdef JIT_SELFTEST
+        // Test the JIT against the interpreter instead of playing
+        jitSelfTest();
+        ndsPath = "";
+        return 1;
+#endif
 
         // Attempt to boot the core with the set ROMs
         if (createCore()) {
@@ -812,6 +823,12 @@ void ConsoleUI::settingsMenu() {
             MenuItem("GBA Crop", toggle[ScreenLayout::gbaCrop])
         };
 
+#ifdef __WIIU__
+        // Add Wii U settings at the end, so the indices of the others stay the same
+        settings.push_back(MenuItem("Wii U Settings", true));
+        settings.push_back(MenuItem("JIT (Experimental)", toggle[Settings::jit]));
+#endif
+
         // Create the settings menu
         uint32_t pressed = menu("Settings", settings, index, "Controls");
 
@@ -844,6 +861,7 @@ void ConsoleUI::settingsMenu() {
                 case 29: ScreenLayout::aspectRatio = (ScreenLayout::aspectRatio + 1) % 4; break;
                 case 30: ScreenLayout::integerScale = (ScreenLayout::integerScale + 1) % 2; break;
                 case 31: ScreenLayout::gbaCrop = (ScreenLayout::gbaCrop + 1) % 2; break;
+                case 33: Settings::jit = (Settings::jit + 1) % 2; break;
 
             case 5:
                 // Update the palette when changing themes
@@ -1115,6 +1133,120 @@ bool ConsoleUI::saveTypeMenu() {
     }
 }
 
+#ifdef JIT_SELFTEST
+void ConsoleUI::jitSelfTest() {
+    // Run the interpreter and the JIT side by side with settings that keep them deterministic
+    // Frames are skipped so most of the time goes to CPU emulation, which is what's being compared
+    // The user's settings are restored afterwards, so they aren't saved with the test values
+    int saved[] = { Settings::threaded2D, Settings::threaded3D, Settings::emulateAudio, Settings::frameskip, Settings::jit };
+    Settings::threaded2D = 0;
+    Settings::threaded3D = 0;
+    Settings::emulateAudio = 0;
+    Settings::frameskip = 5;
+#ifdef __WIIU__
+    OSSetThreadAffinity(OSGetCurrentThread(), OS_THREAD_ATTRIB_AFFINITY_CPU1);
+    OSYieldThread();
+#endif
+    Core *cores[2] = {};
+    try {
+        Settings::jit = 0;
+        cores[0] = new Core(ndsPath);
+        Settings::jit = 1;
+        cores[1] = new Core(ndsPath);
+    }
+    catch (CoreError e) {
+        delete cores[0];
+        cores[0] = cores[1] = nullptr;
+    }
+    auto restore = [&]() {
+        Settings::threaded2D = saved[0];
+        Settings::threaded3D = saved[1];
+        Settings::emulateAudio = saved[2];
+        Settings::frameskip = saved[3];
+        Settings::jit = saved[4];
+    };
+    if (!cores[1]) {
+        restore();
+        message("JIT Self-Test", "Couldn't load the game.");
+        return;
+    }
+    Core &a = *cores[0], &b = *cores[1];
+    std::string mode = !b.jit.enabled ? "JIT off" : (b.jit.isNative() ? "native code" : "portable executor");
+
+    // Compare CPU and scheduler state every time the cores stop, and the screens of every drawn frame
+    static uint32_t frameA[256 * 192 * 8], frameB[256 * 192 * 8];
+    const int targetFrames = 6000;
+    std::string result;
+    double timeA = 0, timeB = 0;
+    long steps = 0, frames = 0;
+    auto lastDraw = std::chrono::steady_clock::now();
+    while (result == "") {
+        auto t0 = std::chrono::steady_clock::now();
+        a.runCore();
+        auto t1 = std::chrono::steady_clock::now();
+        b.runCore();
+        auto t2 = std::chrono::steady_clock::now();
+        timeA += std::chrono::duration<double>(t1 - t0).count();
+        timeB += std::chrono::duration<double>(t2 - t1).count();
+        steps++;
+
+        bool readyA = a.gpu.getFrame(frameA, false);
+        bool readyB = b.gpu.getFrame(frameB, false);
+        if (readyA != readyB)
+            result = "Frame timing differs";
+        else if (readyA && memcmp(frameA, frameB, 256 * 192 * 2 * sizeof(uint32_t)))
+            result = "Screens differ";
+        else if (a.globalCycles != b.globalCycles)
+            result = "Global cycles " + std::to_string(a.globalCycles) + " vs " + std::to_string(b.globalCycles);
+        else if (a.events.size() != b.events.size())
+            result = "Scheduler event count differs";
+        if (readyA) frames += 6;
+        for (size_t i = 0; result == "" && i < a.events.size(); i++)
+            if (a.events[i].task != b.events[i].task || a.events[i].cycles != b.events[i].cycles)
+                result = "Scheduler event " + std::to_string(i) + " differs";
+        for (int i = 0; result == "" && i < 2; i++) {
+            std::string diff = a.interpreter[i].compare(b.interpreter[i]);
+            if (diff != "") result = std::string(i ? "ARM7 " : "ARM9 ") + diff;
+        }
+        if (result != "") {
+            result = "MISMATCH after " + std::to_string(steps) + " stops, around frame " +
+                std::to_string(frames) + ":\n" + result;
+            break;
+        }
+        if (frames >= targetFrames) {
+            result = "PASSED";
+            break;
+        }
+
+        // Show progress twice a second, and stop if B is pressed
+        auto now = std::chrono::steady_clock::now();
+        if (now - lastDraw < std::chrono::milliseconds(500)) continue;
+        lastDraw = now;
+        if (getInputPress() & defaultKeys[INPUT_B]) {
+            result = "Stopped early";
+            break;
+        }
+        startFrame(palette[0]);
+        drawString("JIT Self-Test (" + mode + ")", SCALE(72), SCALE(30), SCALE(42), palette[1]);
+        drawString("Frame " + std::to_string(frames) + " of " + std::to_string(targetFrames) +
+            ", no differences so far", SCALE(90), SCALE(124), SCALE(38), palette[1]);
+        drawString("Interpreter: " + std::to_string(int(timeA)) + " s, JIT: " + std::to_string(int(timeB)) + " s",
+            SCALE(90), SCALE(162), SCALE(38), palette[1]);
+        drawString("Press B to stop", SCALE(90), SCALE(238), SCALE(38), palette[1]);
+        endFrame();
+    }
+
+    // Show the result with the time each side took
+    char times[128];
+    snprintf(times, sizeof(times), "\n\nInterpreter: %.1f s\nJIT: %.1f s (%.0f%% of the interpreter's time)",
+        timeA, timeB, timeA > 0 ? timeB * 100 / timeA : 0);
+    delete cores[1];
+    delete cores[0];
+    restore();
+    message("JIT Self-Test (" + mode + ")", result + times);
+}
+#endif
+
 bool ConsoleUI::createCore() {
     try {
         // Attempt to create the core
@@ -1190,6 +1322,12 @@ void ConsoleUI::stopCore() {
 }
 
 void ConsoleUI::runCore() {
+#ifdef __WIIU__
+    // Run on the core that can use JIT code, which is also the one with the most cache
+    if (Settings::jit)
+        OSSetThreadAffinity(OSGetCurrentThread(), OS_THREAD_ATTRIB_AFFINITY_CPU1);
+#endif
+
     // Run the emulator
     while (running)
         core->runCore();
