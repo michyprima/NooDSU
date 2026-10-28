@@ -76,6 +76,8 @@ void Jit::reset() {
     }
     for (int i = 0; i < RAM_PAGES + ITCM_PAGES; i++)
         pages[i] = JitPage();
+    pendingLinks.clear();
+    unlinks.clear();
     clearCache();
     codeChanged = 1;
     codePtr = codeStart;
@@ -116,6 +118,10 @@ void Jit::mapChanged(uint32_t start) {
     if (start >= 0x02000000) return;
     clearCache();
     codeChanged = 1;
+
+    // Linked jumps might go to code for the old mapping, so send them all through the dispatcher again
+    for (size_t i = 0; i < table.size(); i++)
+        if (table[i]) unlinkIncoming(table[i]);
 }
 
 bool Jit::isCodePage(uint8_t *host) {
@@ -170,6 +176,7 @@ JitBlock *Jit::compile(uint32_t address, bool thumb, uint8_t *host, int index) {
             block->instrs.assign(other->instrs.begin() + skip, other->instrs.end());
             block->end = other->end;
             block->code = code;
+            linkEntry(block);
             break;
         }
     }
@@ -245,8 +252,88 @@ void Jit::retire(JitBlock *block) {
     }
     JitCacheEntry &entry = cache[(block->address >> 1) & (CACHE_SIZE - 1)];
     if (entry.block == block) entry = JitCacheEntry();
+    unlinkIncoming(block);
+    removeLinks(block);
     codeChanged = 1;
     graveyard.push_back(block);
+}
+
+void Jit::unlinkIncoming(JitBlock *block) {
+    // Send jumps linked to a block through the dispatcher again, waiting to relink if it's compiled again
+    // Patching code has to wait until nothing is running, so it's queued
+    uint32_t key = block->address | block->thumb;
+    for (size_t i = 0; i < block->incoming.size(); i++) {
+        JitBlock *owner = block->incoming[i].first;
+        uint32_t *site = block->incoming[i].second;
+        for (size_t j = 0; j < owner->links.size(); j++)
+            if (owner->links[j].site == site) owner->links[j].target = nullptr;
+        pendingLinks.insert(std::make_pair(key, block->incoming[i]));
+        unlinks.push_back(site);
+    }
+    block->incoming.clear();
+}
+
+void Jit::removeLinks(JitBlock *block) {
+    // Forget the jumps in a block's code, which won't run again
+    for (size_t i = 0; i < block->links.size(); i++) {
+        JitLink &link = block->links[i];
+        if (link.target) {
+            std::vector<std::pair<JitBlock*, uint32_t*>> &in = link.target->incoming;
+            for (size_t j = 0; j < in.size(); j++) {
+                if (in[j].second != link.site) continue;
+                in.erase(in.begin() + j);
+                break;
+            }
+        }
+        else {
+            auto range = pendingLinks.equal_range(link.key);
+            for (auto it = range.first; it != range.second; it++) {
+                if (it->second.second != link.site) continue;
+                pendingLinks.erase(it);
+                break;
+            }
+        }
+    }
+    block->links.clear();
+}
+
+JitBlock *Jit::lookup(uint32_t address, bool thumb) {
+    // Find a compiled block with generated code for a guest address, if there is one
+    uint8_t *host = core->memory.readMap9A[address >> 12];
+    if (!host) return nullptr;
+    int index = tableIndex(host + (address & 0xFFF));
+    if (index < 0) return nullptr;
+    JitBlock *block = table[index];
+    return (block && block->address == address && block->thumb == thumb && block->code) ? block : nullptr;
+}
+
+void Jit::linkBlock(JitBlock *block, std::vector<uint32_t*> &patched) {
+    // Link a new block's jumps to blocks that already exist, and link waiting jumps to the new block
+    // This is called while the codegen area is writable, and the patched jumps need flushing
+    for (size_t i = 0; i < block->links.size(); i++) {
+        JitLink &link = block->links[i];
+        JitBlock *target = lookup(link.key & ~1, link.key & 1);
+        if (target && target != block) {
+            patchJump(link.site, target->code);
+            link.target = target;
+            target->incoming.push_back(std::make_pair(block, link.site));
+            patched.push_back(link.site);
+        }
+        else {
+            pendingLinks.insert(std::make_pair(link.key, std::make_pair(block, link.site)));
+        }
+    }
+    auto range = pendingLinks.equal_range(block->address | block->thumb);
+    for (auto it = range.first; it != range.second;) {
+        JitBlock *owner = it->second.first;
+        uint32_t *site = it->second.second;
+        patchJump(site, block->code);
+        for (size_t j = 0; j < owner->links.size(); j++)
+            if (owner->links[j].site == site) owner->links[j].target = block;
+        block->incoming.push_back(it->second);
+        patched.push_back(site);
+        it = pendingLinks.erase(it);
+    }
 }
 
 void Jit::protect(int page) {
@@ -293,7 +380,8 @@ bool Jit::writeCode(uint8_t *host, int size) {
 }
 
 bool Jit::run(const uint32_t *limit) {
-    // Delete blocks that were invalidated, now that none are running
+    // Put back unlinked jumps and delete blocks that were invalidated, now that none are running
+    if (!unlinks.empty()) applyUnlinks();
     for (size_t i = 0; i < graveyard.size(); i++)
         delete graveyard[i];
     graveyard.clear();
@@ -376,8 +464,12 @@ void Jit::execute(JitBlock *block, const uint32_t *limit) {
         bool log = (++entries <= 200) || (entries % 100000) == 0;
         if (log) JLOG("enter %u: %08X %s code %p", entries, block->address, block->thumb ? "T" : "A", block->code);
 #endif
+        HB_SET(HB_JIT_BLOCK, block->address);
+        HB_SET(HB_JIT_INSIDE, 1);
+        HB_INC(HB_JIT_ENTRIES);
         ((void(*)(Interpreter*, std::vector<SchedEvent>*, const uint32_t*, void*, uint32_t*, JitCacheEntry*))
             codeEnter)(&arm, &core->events, limit, block->code, &core->globalCycles, cache);
+        HB_SET(HB_JIT_INSIDE, 0);
 #ifdef JIT_LOG
         if (log) JLOG("exit %u: pc %08X cycles %u", entries, arm.registersUsr[15], arm.cycles);
 #endif

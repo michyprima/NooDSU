@@ -258,7 +258,7 @@ void Jit::initCodegen() {
     emitStubs(e);
     codeStart = (uint8_t*)e.here();
     codePtr = codeStart;
-    finishCode(codeArea, codePtr - codeArea);
+    finishCode(codeArea, codePtr - codeArea, std::vector<uint32_t*>());
 }
 
 void Jit::emitStubs(PpcEmitter &e) {
@@ -480,12 +480,37 @@ void Jit::freeCodegen() {
     codeArea = codeStart = codePtr = codeEnd = nullptr;
 }
 
-void Jit::finishCode(uint8_t *start, size_t size) {
+void Jit::patchJump(uint32_t *site, void *target) {
+    // Point a jump in generated code somewhere else
+    PpcEmitter e(site);
+    e.b(target);
+}
+
+void Jit::applyUnlinks() {
+    // Point queued jumps back at the dispatcher, now that no generated code is running
+    if (!codeArea) {
+        unlinks.clear();
+        return;
+    }
 #ifdef __WIIU__
-    // Write the code to memory and make the area executable again
-    DCFlushRange(start, size);
+    if (OSGetCoreId() != codeCore || !OSSwitchSecCodeGenMode(CODEGEN_RW_)) return;
+#endif
+    for (size_t i = 0; i < unlinks.size(); i++)
+        patchJump(unlinks[i], codeDispatch);
+    finishCode(nullptr, 0, unlinks);
+    unlinks.clear();
+}
+
+void Jit::finishCode(uint8_t *start, size_t size, const std::vector<uint32_t*> &patched) {
+#ifdef __WIIU__
+    // Write the code and any patched jumps to memory and make the area executable again
+    if (start) DCFlushRange(start, size);
+    for (size_t i = 0; i < patched.size(); i++)
+        DCFlushRange(patched[i], 4);
     BOOL rx = OSSwitchSecCodeGenMode(CODEGEN_R_X);
-    ICInvalidateRange(start, size);
+    if (start) ICInvalidateRange(start, size);
+    for (size_t i = 0; i < patched.size(); i++)
+        ICInvalidateRange(patched[i], 4);
 #ifdef JIT_LOG
     static uint32_t count = 0;
     if (++count <= 200 || (count % 10000) == 0)
@@ -951,8 +976,22 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
 
     // Count cycles and check whether to stop; the program counter is stored first if it's only in the register
     // Then check for jumps, which leave the program counter in memory different from the register
+    // Branches to known addresses jump through a site that's linked to the target block once it exists
     e.call(codePost[!isPure(op, block->thumb)][!memoryPc]);
-    if (i + 1 < block->instrs.size() && mayJump(op, block->thumb)) {
+    if (native && nativeKind(op) == NK_BRANCH) {
+        uint32_t *same = nullptr;
+        if ((op >> 28) != 0xE) {
+            e.lwz(4, offPc, R_ARM);
+            e.cmplw(4, R_PC);
+            same = e.here();
+            e.beq(nullptr);
+        }
+        uint32_t target = (pc + ((int32_t)(op << 8) >> 6)) & ~0x3;
+        block->links.push_back({ e.here(), target, nullptr });
+        e.b(codeDispatch);
+        if (same) e.patchBc(same);
+    }
+    else if (i + 1 < block->instrs.size() && mayJump(op, block->thumb)) {
         e.lwz(4, offPc, R_ARM);
         e.cmplw(4, R_PC);
         uint32_t *same = e.here();
@@ -984,6 +1023,7 @@ void *Jit::generate(JitBlock *block) {
     uint32_t pc = block->address + step * 2;
     e.loadConst(R_PC, pc);
     block->entries.clear();
+    block->links.clear();
     bool ok = true;
     for (size_t i = 0; i < block->instrs.size() && ok; i++, pc += step) {
         if (i > 0) e.addi(R_PC, R_PC, step);
@@ -994,9 +1034,18 @@ void *Jit::generate(JitBlock *block) {
     // Continue to whatever block comes next
     e.b(codeDispatch);
 
+    // Link jumps between this block and others while the area is writable
     uint8_t *code = codePtr;
     size_t size = (uint8_t*)e.here() - code;
-    finishCode(code, size);
+    std::vector<uint32_t*> patched;
+    if (ok) {
+        block->code = code;
+        linkBlock(block, patched);
+    }
+    else {
+        block->links.clear();
+    }
+    finishCode(code, size, patched);
     if (!ok) return nullptr;
     codePtr += (size + 15) & ~15;
     return code;
@@ -1013,9 +1062,19 @@ void *Jit::generateEntry(JitBlock *host, size_t index) {
     e.b((uint8_t*)host->code + host->entries[index]);
     uint8_t *code = codePtr;
     size_t size = (uint8_t*)e.here() - code;
-    finishCode(code, size);
     codePtr += (size + 15) & ~15;
     return code;
+}
+
+void Jit::linkEntry(JitBlock *block) {
+    // Link waiting jumps to a block that's an entry into another block's code
+    if (!block->code || pendingLinks.find(block->address | block->thumb) == pendingLinks.end()) {
+        finishCode((uint8_t*)block->code, 16, std::vector<uint32_t*>());
+        return;
+    }
+    std::vector<uint32_t*> patched;
+    linkBlock(block, patched);
+    finishCode((uint8_t*)block->code, 16, patched);
 }
 
 #else
@@ -1031,7 +1090,15 @@ bool Jit::codeFull() {
     return false;
 }
 
-void Jit::finishCode(uint8_t *start, size_t size) {}
+void Jit::finishCode(uint8_t *start, size_t size, const std::vector<uint32_t*> &patched) {}
+
+void Jit::patchJump(uint32_t *site, void *target) {}
+
+void Jit::applyUnlinks() {
+    unlinks.clear();
+}
+
+void Jit::linkEntry(JitBlock *block) {}
 
 void *Jit::generate(JitBlock *block) {
     return nullptr;

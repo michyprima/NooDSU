@@ -20,6 +20,7 @@
 #pragma once
 
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 class Core;
@@ -43,6 +44,16 @@ struct JitInstr {
     };
 };
 
+struct JitBlock;
+
+// A jump in generated code to a block at a known address, which goes through the dispatcher until it's
+// patched to jump to the block's code directly
+struct JitLink {
+    uint32_t *site;
+    uint32_t key; // Target address, with bit 0 set for THUMB
+    JitBlock *target;
+};
+
 // A run of consecutive ARM9 instructions from one 4KB page of host memory
 struct JitBlock {
     uint32_t address; // Guest address of the first instruction
@@ -52,6 +63,8 @@ struct JitBlock {
     std::vector<JitInstr> instrs;
     void *code = nullptr; // Generated host code, or null to use the portable executor
     std::vector<uint32_t> entries; // Offsets in the code where each instruction starts
+    std::vector<JitLink> links; // Jumps from this block's code to other blocks
+    std::vector<std::pair<JitBlock*, uint32_t*>> incoming; // Linked jumps to this block, and their blocks
 };
 
 // A direct-mapped cache of recently run blocks by guest address, for jumping between blocks quickly
@@ -107,6 +120,10 @@ private:
     JitCacheEntry *cache = &cacheData[1];
     uint32_t &codeChanged = cacheData[0].key;
 
+    // Links waiting for their target to be compiled, and jumps to put back to the dispatcher before running again
+    std::unordered_multimap<uint32_t, std::pair<JitBlock*, uint32_t*>> pendingLinks;
+    std::vector<uint32_t*> unlinks;
+
     // Blocks can be invalidated while running, so they're deleted later
     std::vector<JitBlock*> graveyard;
     bool running = false;
@@ -129,6 +146,11 @@ private:
     JitBlock *compile(uint32_t address, bool thumb, uint8_t *host, int index);
     void retire(JitBlock *block);
     JitBlock *lookup(uint32_t address, bool thumb);
+    void unlinkIncoming(JitBlock *block);
+    void removeLinks(JitBlock *block);
+    void linkBlock(JitBlock *block, std::vector<uint32_t*> &patched);
+    void applyUnlinks();
+    void patchJump(uint32_t *site, void *target);
     void protect(int page);
     void execute(JitBlock *block, const uint32_t *limit);
     int interleave(const uint32_t *limit);
@@ -139,9 +161,10 @@ private:
     void initCodegen();
     void freeCodegen();
     bool codeFull();
-    void finishCode(uint8_t *start, size_t size);
+    void finishCode(uint8_t *start, size_t size, const std::vector<uint32_t*> &patched);
     void *generate(JitBlock *block);
     void *generateEntry(JitBlock *host, size_t index);
+    void linkEntry(JitBlock *block);
     void emitStubs(PpcEmitter &e);
     bool emitNative(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool &ok);
