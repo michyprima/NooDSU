@@ -31,6 +31,7 @@ volatile uint32_t Heartbeat::values[HB_COUNT];
 #ifdef PROFILE_EMU
 uint64_t EmuProfile::ticks[EP_COUNT];
 uint64_t EmuProfile::taskTicks[64];
+uint32_t EmuProfile::counts[EC_COUNT];
 #endif
 
 Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gbaRomFd,

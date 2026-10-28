@@ -88,11 +88,14 @@ uint32_t *Gpu3DRenderer::getLine1(int line) {
     if (ready[line].load() < 3 && line + activeThreads * 2 < (192 << resShift)) {
         int next = line + activeThreads * 2;
         switch (ready[next].exchange(1)) {
-        case 0:
+        case 0: {
             // Draw the scanline if it hasn't been started yet
+            EP_START_EMU(help);
             drawScanline1(next);
             ready[next].store(2);
+            EP_ADD_EMU(EP_3D_HELP, help);
             break;
+        }
 
         case 2:
             // If the thread somehow caught up, restore the scanline's state
@@ -109,7 +112,9 @@ uint32_t *Gpu3DRenderer::getLine1(int line) {
 
     // Wait until a scanline is ready, and then return it
     HB_SET(HB_EMU_WAIT, 3);
+    EP_START_EMU(wait);
     while (ready[line].load() < 3) std::this_thread::yield();
+    EP_ADD_EMU(EP_3D_WAIT, wait);
     HB_SET(HB_EMU_WAIT, 0);
     return &framebuffer[0][line * 256 * 2];
 }

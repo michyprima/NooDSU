@@ -295,7 +295,7 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         if (showFpsCounter) {
             static uint64_t last[EP_COUNT];
             static OSTime lastTime = OSGetSystemTime();
-            static std::string lines[5];
+            static std::string lines[7];
             OSTime now = OSGetSystemTime();
             if (OSTicksToMilliseconds(now - lastTime) >= 1000) {
                 double wall = double(now - lastTime), frames = std::max(core->fps, 1);
@@ -324,6 +324,20 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
                 snprintf(text, sizeof(text), "3D join %.1fms/f, 2D join %.1fms/f, geometry %.1fms/f, audio %.1fms/f",
                     ms[EP_JOIN3D], ms[EP_JOIN2D], ms[EP_GEOM], ms[EP_SPU]);
                 lines[3] = text;
+                snprintf(text, sizeof(text), "Geometry ms/f: vertex %.1f (clip %.1f), matrix %.1f, texcoord %.1f, other %.1f, "
+                    "FIFO writes %.1f", ms[EP_GEOM_VTX], ms[EP_GEOM_CLIP], ms[EP_GEOM_MTX], ms[EP_GEOM_TEX],
+                    ms[EP_GEOM_OTHER], ms[EP_GXFIFO]);
+                lines[5] = text;
+                static uint32_t lastCount[EC_COUNT];
+                double lineCounts[EC_COUNT];
+                for (int i = 0; i < EC_COUNT; i++) {
+                    lineCounts[i] = (EmuProfile::counts[i] - lastCount[i]) / frames;
+                    lastCount[i] = EmuProfile::counts[i];
+                }
+                snprintf(text, sizeof(text), "2D lines/f: emu %.0f, emu B %.0f, thread %.0f; 3D help %.1fms/f, "
+                    "3D wait %.1fms/f, capture %.1fms/f", lineCounts[EC_LINES_EMU], lineCounts[EC_LINES_HALF],
+                    lineCounts[EC_LINES_THREAD], ms[EP_3D_HELP], ms[EP_3D_WAIT], ms[EP_CAPTURE]);
+                lines[6] = text;
 
                 // List the most expensive scheduled tasks
                 static const char *names[] = { "run", "reset", "cart9", "cart7", "dma9.0", "dma9.1", "dma9.2", "dma9.3",
@@ -346,7 +360,7 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
                 lines[4] = "Tasks ms/f: " + top;
                 lastTime = now;
             }
-            for (int i = 0; i < 5; i++)
+            for (int i = 0; i < 7; i++)
                 drawString(lines[i], SCALE(5), SCALE(48) + SCALE(30) * i, SCALE(30));
         }
 #endif

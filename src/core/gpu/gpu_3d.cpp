@@ -218,48 +218,59 @@ Vertex Gpu3D::intersection(Vertex *vtx1, Vertex *vtx2, int32_t val1, int32_t val
 }
 
 bool Gpu3D::clipPolygon(Vertex *unclipped, Vertex *clipped, uint8_t *size) {
-    // Start with the original unclipped vertices
+    // Clip a polygon using the Sutherland-Hodgman algorithm, alternating between two vertex buffers
+    // The extra buffer is left uninitialized, since clearing it for every polygon is costly
     bool clip = false;
-    Vertex vertices[10];
-    memcpy(vertices, unclipped, *size * sizeof(Vertex));
-
-    // Clip a polygon using the Sutherland-Hodgman algorithm
+    alignas(Vertex) uint8_t bufferData[10 * sizeof(Vertex)];
+    Vertex *buffer = (Vertex*)bufferData;
+    Vertex *vertices = unclipped;
     for (int i = 0; i < 6; i++) {
+        // Choose which coordinate to check based on the current side being clipped against
+        int axis = i >> 1;
+        bool negate = i & 1;
+        auto value = [&](Vertex *v) -> int32_t {
+            int32_t val = (axis == 0) ? v->x : (axis == 1) ? v->y : v->z;
+            return negate ? -val : val;
+        };
+
+        // Skip sides that all vertices are in bounds of, since clipping against them changes nothing
+        // If all vertices are out of bounds, nothing is left of the polygon
+        int inside = 0;
+        for (int j = 0; j < *size; j++)
+            inside += (value(&vertices[j]) >= -vertices[j].w);
+        if (inside == *size) continue;
+        if (inside == 0) {
+            *size = 0;
+            return clip;
+        }
+
+        // Clip into whichever buffer isn't holding the current vertices
+        Vertex *output = (vertices == clipped) ? buffer : clipped;
         int oldSize = *size;
         *size = 0;
         for (int j = 0; j < oldSize; j++) {
-            // Get the unclipped vertices 
+            // Get the unclipped vertices
             Vertex *current = &vertices[j];
             Vertex *previous = &vertices[(j - 1 + oldSize) % oldSize];
-
-            // Choose which coordinates to check based on the current side being clipped against
-            int32_t currentVal, previousVal;
-            switch (i) {
-                case 0: currentVal = current->x; previousVal = previous->x; break;
-                case 1: currentVal = -current->x; previousVal = -previous->x; break;
-                case 2: currentVal = current->y; previousVal = previous->y; break;
-                case 3: currentVal = -current->y; previousVal = -previous->y; break;
-                case 4: currentVal = current->z; previousVal = previous->z; break;
-                case 5: currentVal = -current->z; previousVal = -previous->z; break;
-            }
+            int32_t currentVal = value(current), previousVal = value(previous);
 
             // Add the clipped vertices
             if (currentVal >= -current->w) { // Current vertex in bounds
-                if (previousVal < -previous->w) { // Previous vertex not in bounds
-                    clipped[(*size)++] = intersection(current, previous, currentVal, previousVal);
-                    clip = true;
-                }
-                clipped[(*size)++] = *current;
+                if (previousVal < -previous->w) // Previous vertex not in bounds
+                    output[(*size)++] = intersection(current, previous, currentVal, previousVal);
+                output[(*size)++] = *current;
             }
             else if (previousVal >= -previous->w) { // Previous vertex in bounds
-                clipped[(*size)++] = intersection(current, previous, currentVal, previousVal);
-                clip = true;
+                output[(*size)++] = intersection(current, previous, currentVal, previousVal);
             }
         }
-
-        // Update the current vertices
-        memcpy(vertices, clipped, *size * sizeof(Vertex));
+        vertices = output;
+        clip = true;
     }
+
+    // Make sure the final vertices end up in the clipped buffer
+    if (vertices == buffer)
+        memcpy(clipped, buffer, *size * sizeof(Vertex));
     return clip;
 }
 
@@ -289,6 +300,7 @@ void Gpu3D::runCommands() {
         }
 
         // Execute the geometry command
+        EP_START(cmdStart);
         switch (entry.command) {
             case 0x10: mtxModeCmd(entry.param); break; // MTX_MODE
             case 0x11: mtxPushCmd(); break; // MTX_PUSH
@@ -332,6 +344,8 @@ void Gpu3D::runCommands() {
             LOG_CRIT("Unknown GXFIFO command: 0x%X\n", entry.command);
             break;
         }
+        EP_ADD((entry.command >= 0x23 && entry.command <= 0x28) ? EP_GEOM_VTX : (entry.command == 0x22) ? EP_GEOM_TEX :
+            (entry.command < 0x20) ? EP_GEOM_MTX : EP_GEOM_OTHER, cmdStart);
 
         // On hardware, FIFO entries are moved into a pipe before being executed
         // The pipe can hold 4 entries, and is refilled when it runs half empty (2 entries)
@@ -502,7 +516,9 @@ void Gpu3D::addPolygon() {
     savedPolygon.vertices = vertexCountIn - size;
 
     // Save a copy of the unclipped vertices
-    Vertex unclipped[4];
+    // Temporary vertices are left uninitialized, since clearing them for every polygon is costly
+    alignas(Vertex) uint8_t unclippedData[4 * sizeof(Vertex)], clippedData[10 * sizeof(Vertex)];
+    Vertex *unclipped = (Vertex*)unclippedData, *clipped = (Vertex*)clippedData;
     memcpy(unclipped, &verticesIn[savedPolygon.vertices], size * sizeof(Vertex));
 
     // Rearrange quad strip vertices to be counter-clockwise
@@ -543,9 +559,10 @@ void Gpu3D::addPolygon() {
     }
 
     // Check if the polygon should be culled, and clip it if not
-    Vertex clipped[10];
     bool cull = (!renderFront && dot > 0) || (!renderBack && dot < 0);
+    EP_START(clipStart);
     bool clip = cull ? false : clipPolygon(unclipped, clipped, &savedPolygon.size);
+    EP_ADD(EP_GEOM_CLIP, clipStart);
 
     // Discard polygons that should be culled or are outside of the view area
     if (cull || savedPolygon.size == 0) {
@@ -982,55 +999,60 @@ void Gpu3D::mtxMult33Cmd(uint32_t *params) {
     }
 }
 
-void Gpu3D::mtxScaleCmd(uint32_t *params) {
-    // Convert the parameters to a scale matrix
-    Matrix matrix;
-    for (int i = 0; i < 3; i++)
-        matrix.data[i * 5] = (int32_t)params[i];
+// Multiply a matrix by a scale matrix, which only scales its first 3 rows
+static void scale(Matrix &mtx, uint32_t *params) {
+    for (int y = 0; y < 3; y++)
+        for (int x = 0; x < 4; x++)
+            mtx.data[y * 4 + x] = ((int64_t)(int32_t)params[y] * mtx.data[y * 4 + x]) >> 12;
+}
 
+// Multiply a matrix by a translation matrix, which only changes its last row
+static void translate(Matrix &mtx, uint32_t *params) {
+    for (int x = 0; x < 4; x++)
+        mtx.data[12 + x] = ((int64_t)(int32_t)params[0] * mtx.data[0 + x] + (int64_t)(int32_t)params[1] * mtx.data[4 + x] +
+            (int64_t)(int32_t)params[2] * mtx.data[8 + x] + ((int64_t)mtx.data[12 + x] << 12)) >> 12;
+}
+
+void Gpu3D::mtxScaleCmd(uint32_t *params) {
     // Multiply a matrix by the scale matrix
     switch (matrixMode) {
     case 0: // Projection stack
-        projection = matrix * projection;
+        scale(projection, params);
         clipDirty = true;
         break;
 
     case 1: case 2: // Coordinate stack
-        coordinate = matrix * coordinate;
+        scale(coordinate, params);
         clipDirty = true;
         break;
 
     case 3: // Texture stack
-        texture = matrix * texture;
+        scale(texture, params);
         break;
     }
 }
 
 void Gpu3D::mtxTransCmd(uint32_t *params) {
-    // Convert the parameters to a translation matrix
-    Matrix matrix;
-    memcpy(&matrix.data[12], &params[0], 3 * sizeof(int32_t));
-
     // Multiply a matrix by the translation matrix
     switch (matrixMode) {
     case 0: // Projection stack
-        projection = matrix * projection;
+        translate(projection, params);
         clipDirty = true;
         break;
 
     case 1: // Coordinate stack
-        coordinate = matrix * coordinate;
+        translate(coordinate, params);
         clipDirty = true;
         break;
 
     case 2: // Coordinate and directional stacks
-        coordinate = matrix * coordinate;
-        direction = matrix * direction;
+        translate(coordinate, params);
+        translate(direction, params);
         clipDirty = true;
         break;
 
     case 3: // Texture stack
-        texture = matrix * texture;
+        translate(texture, params);
         break;
     }
 }
@@ -1464,6 +1486,7 @@ void Gpu3D::addEntry(Entry entry) {
 }
 
 void Gpu3D::writeGxFifo(uint32_t mask, uint32_t value) {
+    EP_START(fifoStart);
     if (gxFifo == 0) {
         // Read new packed commands
         gxFifo = value & mask;
@@ -1487,6 +1510,7 @@ void Gpu3D::writeGxFifo(uint32_t mask, uint32_t value) {
         addEntry(entry);
         gxFifo >>= 8;
     }
+    EP_ADD(EP_GXFIFO, fifoStart);
 }
 
 void Gpu3D::writeMtxMode(uint32_t mask, uint32_t value) {

@@ -350,6 +350,7 @@ void Gpu::scanline256() {
             core->gpu2D[1].drawScanline(vCount);
             drawing.store(0);
             EP_ADD(EP_DRAW2D, draw);
+            EP_INC(EC_LINES_EMU);
         }
         else if (thread) {
             switch (drawing.exchange(3)) {
@@ -358,6 +359,7 @@ void Gpu::scanline256() {
                 EP_START(draw);
                 core->gpu2D[1].drawScanline(vCount);
                 EP_ADD(EP_DRAW2D, draw);
+                EP_INC(EC_LINES_HALF);
             }
 
             case 3: {
@@ -387,6 +389,7 @@ void Gpu::scanline256() {
 
         // Perform a display capture
         if (displayCapture) {
+            EP_START(capture);
             // Determine the capture size
             static const uint16_t sizes[] = { 128, 128, 256, 64, 256, 128, 256, 192 };
             const uint16_t *size = &sizes[(dispCapCnt >> 19) & 0x6];
@@ -468,6 +471,7 @@ void Gpu::scanline256() {
                 displayCapture = false;
                 dispCapCnt &= ~BIT(31);
             }
+            EP_ADD(EP_CAPTURE, capture);
         }
     }
 
@@ -649,8 +653,10 @@ void Gpu::drawThreaded() {
         core->gpu2D[0].drawScanline(vCount);
 
         // Draw engine B's scanline if it hasn't started yet
-        if (drawing.exchange(3) == 2)
+        if (drawing.exchange(3) == 2) {
             core->gpu2D[1].drawScanline(vCount);
+            EP_INC(EC_LINES_THREAD);
+        }
 
         // Signal that the scanlines are finished
         drawing.store(0);

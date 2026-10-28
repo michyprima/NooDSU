@@ -66,9 +66,12 @@ void Dma::transfer(int channel) {
         LOG_INFO("ARM%d DMA channel %d transferring %d words from 0x%X to 0x%X in mode %d\n",
             cpu ? 7 : 9, channel, wordCounts[channel], srcAddrs[channel], dstAddrs[channel], mode);
         for (unsigned int i = 0; i < wordCounts[channel]; i++) {
-            // Transfer a word
+            // Transfer a word, sending it straight to the 3D engine if it's for the GXFIFO
             uint32_t value = core->memory.read<uint32_t>(cpu, srcAddrs[channel], false);
-            core->memory.write<uint32_t>(cpu, dstAddrs[channel], value, false);
+            if (!cpu && (dstAddrs[channel] & ~0x3F) == 0x4000400)
+                core->gpu3D.writeGxFifo(0xFFFFFFFF, value);
+            else
+                core->memory.write<uint32_t>(cpu, dstAddrs[channel], value, false);
 
             // Adjust the source address
             if (srcAddrCnt == 0) // Increment
