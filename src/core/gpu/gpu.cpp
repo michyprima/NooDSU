@@ -363,8 +363,10 @@ void Gpu::scanline256() {
             case 3: {
                 // Wait for the thread to finish the scanlines
                 EP_START(wait);
+                HB_SET(HB_EMU_WAIT, 2);
                 while (drawing.load() != 0)
                     std::this_thread::yield();
+                HB_SET(HB_EMU_WAIT, 0);
                 EP_ADD(EP_WAIT2D, wait);
                 break;
             }
@@ -643,6 +645,7 @@ void Gpu::drawThreaded() {
         }
 
         // Draw engine A's scanline
+        HB_INC(HB_2D_LINES);
         core->gpu2D[0].drawScanline(vCount);
 
         // Draw engine B's scanline if it hasn't started yet

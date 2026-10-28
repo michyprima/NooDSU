@@ -693,7 +693,9 @@ void Spu::pushSample(int16_t sampleLeft, int16_t sampleRight) {
     }
     else if (Settings::fpsLimiter == 1) { // Light
         std::unique_lock<std::mutex> lock(mutex1);
+        HB_SET(HB_EMU_WAIT, 4);
         cond1.wait_for(lock, std::chrono::microseconds(1000000), [&]{ return !ready.load(); });
+        HB_SET(HB_EMU_WAIT, 0);
     }
 
     // Swap the buffers

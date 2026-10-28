@@ -26,8 +26,8 @@
 #include <gx2/mem.h>
 #include <gx2/registers.h>
 #include <gx2r/draw.h>
-#include <malloc.h>
 #include <coreinit/thread.h>
+#include <coreinit/time.h>
 #include <padscore/kpad.h>
 #include <padscore/wpad.h>
 #include <proc_ui/procui.h>
@@ -39,6 +39,8 @@
 
 #include "console_ui.h"
 #include "../core/settings.h"
+#include "../core/worker_thread.h"
+#include "../core/heartbeat.h"
 
 #define MAX_DRAWS 1024
 #define NO_INVALIDATE GX2RResourceFlags(GX2R_RESOURCE_DISABLE_CPU_INVALIDATE | GX2R_RESOURCE_DISABLE_GPU_INVALIDATE)
@@ -445,22 +447,39 @@ int runUi(int argc, const char **argv) {
     return 0;
 }
 
+#ifdef HEARTBEAT
+int logHeartbeat(int argc, const char **argv) {
+    // Append the progress counters to a file a few times a second, closing it every time so it survives a freeze
+    std::string path = std::string(WHBGetSdCardMountPath()) + "/wiiu/apps/noods/heartbeat.log";
+    FILE *file = fopen(path.c_str(), "w");
+    if (file) fclose(file);
+    for (uint32_t tick = 0;; tick++) {
+        OSSleepTicks(OSMillisecondsToTicks(250));
+        volatile uint32_t *v = Heartbeat::values;
+        if (!(file = fopen(path.c_str(), "a"))) continue;
+        fprintf(file, "%u: frames %u task %u wait %u | jit %08X in %u entries %u | 2D %u 3D %u | ui %u stage %u | audio %u\n",
+            tick, v[HB_EMU_FRAMES], v[HB_EMU_TASK], v[HB_EMU_WAIT], v[HB_JIT_BLOCK], v[HB_JIT_INSIDE],
+            v[HB_JIT_ENTRIES], v[HB_2D_LINES], v[HB_3D_LINES], v[HB_UI_FRAMES], v[HB_UI_STAGE], v[HB_AUDIO]);
+        fclose(file);
+    }
+    return 0;
+}
+#endif
+
 int main() {
     ProcUIInit(OSSavesDone_ReadyToRelease);
 
     // Run the UI on core 2 so it doesn't compete with the JIT's emulator thread, which has to use core 1
     // The main thread can't be moved there, since running threads can't change cores
-    const int stackSize = 0x100000;
-    static OSThread uiThread __attribute__((aligned(16)));
-    uint8_t *stack = (uint8_t*)memalign(16, stackSize);
-    if (stack && OSCreateThread(&uiThread, runUi, 0, nullptr, stack + stackSize, stackSize,
-            OSGetThreadPriority(OSGetCurrentThread()), OS_THREAD_ATTRIB_AFFINITY_CPU2)) {
-        OSResumeThread(&uiThread);
-        OSJoinThread(&uiThread, nullptr);
-    }
-    else {
+#ifdef HEARTBEAT
+    WHBMountSdCard();
+    WorkerThread::createThread(logHeartbeat, nullptr, 0x10000, 20, OS_THREAD_ATTRIB_AFFINITY_CPU0);
+#endif
+    if (OSThread *uiThread = WorkerThread::createThread(runUi, nullptr, 0x100000,
+            OSGetThreadPriority(OSGetCurrentThread()), OS_THREAD_ATTRIB_AFFINITY_CPU2))
+        OSJoinThread(uiThread, nullptr);
+    else
         runUi(0, nullptr);
-    }
     SYSLaunchMenu();
 
     // Respond to system messages appropriately to allow exiting

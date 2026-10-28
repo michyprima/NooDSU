@@ -108,7 +108,9 @@ uint32_t *Gpu3DRenderer::getLine1(int line) {
     }
 
     // Wait until a scanline is ready, and then return it
+    HB_SET(HB_EMU_WAIT, 3);
     while (ready[line].load() < 3) std::this_thread::yield();
+    HB_SET(HB_EMU_WAIT, 0);
     return &framebuffer[0][line * 256 * 2];
 }
 
@@ -211,6 +213,7 @@ void Gpu3DRenderer::drawThreaded(int thread) {
         std::this_thread::yield();
 
     // Finish this thread's final scanline
+    HB_INC(HB_3D_LINES);
     finishScanline(prev);
     ready[prev].store(3);
 }

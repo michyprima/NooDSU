@@ -24,6 +24,8 @@
 
 #include <cstdint>
 
+#include "heartbeat.h"
+
 enum EmuProfileSlot {
     EP_ARM9, // Only the ARM9 running
     EP_ARM7, // Only the ARM7 running
@@ -54,7 +56,12 @@ namespace EmuProfile {
 #define EP_TASK(core) do { uint32_t t = EmuProfile::now(); int id = (core).events[0].task; (core).tasks[id](); \
     EmuProfile::taskTicks[id] += EmuProfile::now() - t; } while (0)
 #else
-#define EP_TASK(core) (core).tasks[(core).events[0].task]()
 #define EP_START(name) do {} while (0)
 #define EP_ADD(slot, start) do {} while (0)
+#ifdef HEARTBEAT
+#define EP_TASK(core) do { HB_SET(HB_EMU_TASK, (core).events[0].task); (core).tasks[(core).events[0].task](); \
+    HB_SET(HB_EMU_TASK, 0xFF); } while (0)
+#else
+#define EP_TASK(core) (core).tasks[(core).events[0].task]()
+#endif
 #endif

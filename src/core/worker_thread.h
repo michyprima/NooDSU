@@ -24,6 +24,7 @@
 
 #ifdef __WIIU__
 #include <cstdlib>
+#include <cstring>
 #include <malloc.h>
 #include <coreinit/thread.h>
 #endif
@@ -33,30 +34,38 @@
 // threads can't change cores once running, so this has to be set when they're created
 class WorkerThread {
 public:
+#ifdef __WIIU__
+    // Create and start a thread on Wii U with its memory in one block, freed by the OS once the thread has
+    // fully exited, like std::thread does; freeing it right after joining isn't safe, since the thread can
+    // still be exiting on its stack at that point
+    static OSThread *createThread(OSThreadEntryPointFn entry, void *arg, int stackSize, int priority,
+            uint32_t affinity) {
+        uint8_t *block = (uint8_t*)memalign(16, sizeof(OSThread) + stackSize);
+        if (!block) return nullptr;
+        memset(block, 0, sizeof(OSThread));
+        OSThread *thread = (OSThread*)block;
+        if (!OSCreateThread(thread, entry, 0, (char*)arg, block + sizeof(OSThread) + stackSize, stackSize,
+                priority, (OSThreadAttributes)affinity)) {
+            free(block);
+            return nullptr;
+        }
+        OSSetThreadDeallocator(thread, [](OSThread *thread, void *stack) { free(thread); });
+        OSSetThreadRunQuantum(thread, 1000);
+        OSResumeThread(thread);
+        return thread;
+    }
+#endif
+
     template <typename... Args> WorkerThread(Args&&... args): func(std::bind(std::forward<Args>(args)...)) {
 #ifdef __WIIU__
         // Create the thread like std::thread does on Wii U, but only allowed on cores 0 and 2
-        thread = (OSThread*)memalign(16, sizeof(OSThread));
-        stack = (uint8_t*)memalign(16, STACK_SIZE);
-        if (thread && stack && OSCreateThread(thread, entry, 0, (char*)this, stack + STACK_SIZE,
-                STACK_SIZE, 16, OS_THREAD_ATTRIB_AFFINITY_CPU0 | OS_THREAD_ATTRIB_AFFINITY_CPU2)) {
-            OSSetThreadRunQuantum(thread, 1000);
-            OSResumeThread(thread);
-            return;
-        }
-        free(thread);
-        free(stack);
-        thread = nullptr;
-        stack = nullptr;
+        thread = createThread(entry, this, STACK_SIZE, 16, OS_THREAD_ATTRIB_AFFINITY_CPU0 | OS_THREAD_ATTRIB_AFFINITY_CPU2);
+        if (thread) return;
 #endif
         fallback = new std::thread(func);
     }
 
     ~WorkerThread() {
-#ifdef __WIIU__
-        free(thread);
-        free(stack);
-#endif
         delete fallback;
     }
 
@@ -64,6 +73,7 @@ public:
 #ifdef __WIIU__
         if (thread) {
             OSJoinThread(thread, nullptr);
+            thread = nullptr;
             return;
         }
 #endif
@@ -77,7 +87,6 @@ private:
 #ifdef __WIIU__
     static const int STACK_SIZE = 0x20000;
     OSThread *thread = nullptr;
-    uint8_t *stack = nullptr;
 
     static int entry(int argc, const char **argv) {
         ((WorkerThread*)argv)->func();

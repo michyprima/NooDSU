@@ -27,18 +27,17 @@
 
 #include "console_ui.h"
 #ifdef __WIIU__
-#include <malloc.h>
 #include <coreinit/core.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
 
-// With the JIT on, the emulator runs on its own thread bound to the core that can run generated code
-static OSThread jitThread __attribute__((aligned(16)));
-static uint8_t *jitStack = nullptr;
-static bool jitThreadUsed = false;
+// The emulator runs on its own thread, bound to the core that can run generated code
+static OSThread *emuThread = nullptr;
 #endif
 #include "../nds_icon.h"
 #include "../../core/settings.h"
+#include "../../core/heartbeat.h"
+#include "../../core/worker_thread.h"
 #include "../../core/emu_profile.h"
 
 #define SCALEH(x, h) (((x) * (h)) / 720)
@@ -118,6 +117,7 @@ void ConsoleUI::drawString(std::string string, float x, float y, float size, uin
 }
 
 void ConsoleUI::fillAudioBuffer(uint32_t *buffer, int count, int rate) {
+    HB_INC(HB_AUDIO);
     // Fill the buffer with the last played sample if not running
     static uint32_t lastSample = 0;
     if (!running) {
@@ -247,10 +247,13 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
 
         // Update the framebuffer and start rendering
         bool shift = (Settings::highRes3D || Settings::screenFilter == 1);
+        HB_SET(HB_UI_STAGE, 1);
         bool update = core->gpu.getFrame(framebuffer, gbaMode) || shift != texShift || gbaMode != texGba;
         texShift = shift;
         texGba = gbaMode;
+        HB_SET(HB_UI_STAGE, 2);
         startFrame(0);
+        HB_SET(HB_UI_STAGE, 3);
 
         if (gbaMode) {
             // Draw the GBA screen
@@ -348,6 +351,8 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         }
 #endif
 
+        HB_SET(HB_UI_STAGE, 5);
+        HB_INC(HB_UI_FRAMES);
         // Scan for key input
         uint32_t pressed = getInputPress();
         uint32_t held = getInputHeld();
@@ -382,6 +387,7 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         }
 
         // Finish drawing
+        HB_SET(HB_UI_STAGE, 4);
         endFrame();
 
         // Restore the FPS limiter when pausing or releasing fast-forward hold
@@ -1245,7 +1251,7 @@ void ConsoleUI::jitSelfTest() {
 
     // Compare CPU and scheduler state every time the cores stop, and the screens of every drawn frame
     static uint32_t frameA[256 * 192 * 8], frameB[256 * 192 * 8];
-    const int targetFrames = 6000;
+    const int targetFrames = 15000;
     std::string result;
     double timeA = 0, timeB = 0;
     long steps = 0;
@@ -1297,16 +1303,12 @@ void ConsoleUI::jitSelfTest() {
         done.store(true);
     };
 #ifdef __WIIU__
-    static OSThread testThread __attribute__((aligned(16)));
-    const int stackSize = 0x100000;
-    uint8_t *stack = (uint8_t*)memalign(16, stackSize);
     OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int {
         (*(std::function<void()>*)argv)();
         return 0;
     };
-    OSCreateThread(&testThread, entry, 0, (char*)&work, stack + stackSize, stackSize,
+    OSThread *testThread = WorkerThread::createThread(entry, &work, 0x100000,
         OSGetThreadPriority(OSGetCurrentThread()), OS_THREAD_ATTRIB_AFFINITY_CPU1);
-    OSResumeThread(&testThread);
 #else
     std::thread testThread(work);
 #endif
@@ -1326,8 +1328,7 @@ void ConsoleUI::jitSelfTest() {
         endFrame();
     }
 #ifdef __WIIU__
-    OSJoinThread(&testThread, nullptr);
-    free(stack);
+    OSJoinThread(testThread, nullptr);
 #else
     testThread.join();
 #endif
@@ -1401,20 +1402,13 @@ void ConsoleUI::startCore() {
     // Generated code only runs on core 1, and running threads can't be moved between cores, so create
     // the emulator thread there
     // The UI and helper threads stay off core 1, so the emulator has it to itself with or without the JIT
-    {
-        const int stackSize = 0x100000;
-        if (!jitStack) jitStack = (uint8_t*)memalign(16, stackSize);
-        // Only stay below the UI's priority if it's on the same core
-        int priority = OSGetThreadPriority(OSGetCurrentThread());
-        if (OSGetCoreId() == 1) priority = std::min(priority + 1, 31);
-        OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int { runCore(); return 0; };
-        if (jitStack && OSCreateThread(&jitThread, entry, 0, nullptr, jitStack + stackSize,
-                stackSize, priority, OS_THREAD_ATTRIB_AFFINITY_CPU1)) {
-            OSResumeThread(&jitThread);
-            jitThreadUsed = true;
-            saveThread = new std::thread(checkSave);
-            return;
-        }
+    // Only stay below the UI's priority if it's on the same core
+    int priority = OSGetThreadPriority(OSGetCurrentThread());
+    if (OSGetCoreId() == 1) priority = std::min(priority + 1, 31);
+    OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int { runCore(); return 0; };
+    if ((emuThread = WorkerThread::createThread(entry, nullptr, 0x100000, priority, OS_THREAD_ATTRIB_AFFINITY_CPU1))) {
+        saveThread = new std::thread(checkSave);
+        return;
     }
 #endif
 
@@ -1434,9 +1428,9 @@ void ConsoleUI::stopCore() {
 
     // Wait for the threads to stop
 #ifdef __WIIU__
-    if (jitThreadUsed) {
-        OSJoinThread(&jitThread, nullptr);
-        jitThreadUsed = false;
+    if (emuThread) {
+        OSJoinThread(emuThread, nullptr);
+        emuThread = nullptr;
     }
     else
 #endif

@@ -24,6 +24,10 @@
 #include "core.h"
 #include "emu_profile.h"
 
+#ifdef HEARTBEAT
+volatile uint32_t Heartbeat::values[HB_COUNT];
+#endif
+
 #ifdef PROFILE_EMU
 uint64_t EmuProfile::ticks[EP_COUNT];
 uint64_t EmuProfile::taskTicks[64];
@@ -419,6 +423,7 @@ void Core::enterGbaMode() {
 
 void Core::endFrame() {
     // Break execution at the end of a frame and count it
+    HB_INC(HB_EMU_FRAMES);
     running.store(false);
     fpsCount++;
 
