@@ -19,6 +19,7 @@
 
 #include <cstring>
 #include "../core.h"
+#include "../emu_profile.h"
 
 Matrix Matrix::operator*(Matrix &mtx) {
     // Multiply 2 matrices
@@ -263,6 +264,10 @@ bool Gpu3D::clipPolygon(Vertex *unclipped, Vertex *clipped, uint8_t *size) {
 }
 
 void Gpu3D::runCommands() {
+#ifdef PROFILE_EMU
+    EP_START(geom);
+    struct GeomTimer { uint32_t start; ~GeomTimer() { EP_ADD(EP_GEOM, start); } } geomTimer = { geom };
+#endif
     // Run a batch of geometry commands
     uint32_t cycles = 0;
     while (cycles < GPU3D_BATCH) {

@@ -22,6 +22,12 @@
 #include <thread>
 
 #include "core.h"
+#include "emu_profile.h"
+
+#ifdef PROFILE_EMU
+uint64_t EmuProfile::ticks[EP_COUNT];
+uint64_t EmuProfile::taskTicks[64];
+#endif
 
 Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gbaRomFd,
     int ndsSaveFd, int gbaSaveFd, int ndsStateFd, int gbaStateFd, int ndsCheatFd):

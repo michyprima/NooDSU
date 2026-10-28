@@ -22,6 +22,8 @@
 #include <atomic>
 #include <cstdint>
 #include <thread>
+
+#include "../worker_thread.h"
 #include <mutex>
 #include <queue>
 
@@ -70,7 +72,7 @@ private:
 
     std::atomic<bool> running;
     std::atomic<int> drawing;
-    std::thread *thread = nullptr;
+    WorkerThread *thread = nullptr;
 
     int frames = 0;
     bool gbaBlock = true;

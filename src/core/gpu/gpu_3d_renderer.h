@@ -24,6 +24,8 @@
 #include <cstdio>
 #include <thread>
 
+#include "../worker_thread.h"
+
 class Core;
 struct Vertex;
 struct _Polygon;
@@ -65,7 +67,7 @@ private:
     int polygonBot[2048] = {};
 
     uint8_t activeThreads = 0;
-    std::vector<std::thread*> threads;
+    std::vector<WorkerThread*> threads;
     std::atomic<int> ready[192 * 2];
 
     uint16_t disp3DCnt = 0;

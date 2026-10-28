@@ -21,6 +21,7 @@
 #include <cstring>
 
 #include "../core.h"
+#include "../emu_profile.h"
 
 const int Spu::indexTable[] = {
     -1, -1, -1, -1, 2, 4, 6, 8
@@ -424,6 +425,10 @@ void Spu::runGbaSample() {
 }
 
 void Spu::runSample() {
+#ifdef PROFILE_EMU
+    EP_START(spu);
+    struct SpuTimer { uint32_t start; ~SpuTimer() { EP_ADD(EP_SPU, start); } } spuTimer = { spu };
+#endif
     // Push a dummy sample if disabled and schedule the next one
     core->schedule(NDS_SPU_SAMPLE, 512 * 2);
     if (!Settings::emulateAudio) return pushSample(0, 0);

@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "../core.h"
+#include "../emu_profile.h"
 
 Gpu3DRenderer::Gpu3DRenderer(Core *core): core(core) {
     // Mark the scanlines as ready to start
@@ -133,6 +134,7 @@ void Gpu3DRenderer::drawScanline(int line) {
         resShift = Settings::highRes3D;
 
         // Clean up any existing threads
+        EP_START(join);
         for (size_t i = 0; i < threads.size(); i++) {
             threads[i]->join();
             delete threads[i];
@@ -147,8 +149,9 @@ void Gpu3DRenderer::drawScanline(int line) {
 
             // Create threads to draw the scanlines
             for (uint8_t i = 0; i < activeThreads; i++)
-                threads.push_back(new std::thread(&Gpu3DRenderer::drawThreaded, this, i));
+                threads.push_back(new WorkerThread(&Gpu3DRenderer::drawThreaded, this, i));
         }
+        EP_ADD(EP_JOIN3D, join);
     }
 
     // Draw scanlines normally when threading is disabled

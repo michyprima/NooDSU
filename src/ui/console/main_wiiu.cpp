@@ -26,6 +26,8 @@
 #include <gx2/mem.h>
 #include <gx2/registers.h>
 #include <gx2r/draw.h>
+#include <malloc.h>
+#include <coreinit/thread.h>
 #include <padscore/kpad.h>
 #include <padscore/wpad.h>
 #include <proc_ui/procui.h>
@@ -338,9 +340,8 @@ void outputAudio(void *data, uint8_t *buffer, int length) {
     ConsoleUI::fillAudioBuffer((uint32_t*)buffer, length / sizeof(uint32_t), 32768);
 }
 
-int main() {
+int runUi(int argc, const char **argv) {
     // Initialize various things
-    ProcUIInit(OSSavesDone_ReadyToRelease);
     WHBGfxInit();
     VPADInit();
     KPADInit();
@@ -441,6 +442,25 @@ int main() {
 
     // Run the emulator until it exits
     ConsoleUI::mainLoop(nullptr, &gpLayout);
+    return 0;
+}
+
+int main() {
+    ProcUIInit(OSSavesDone_ReadyToRelease);
+
+    // Run the UI on core 2 so it doesn't compete with the JIT's emulator thread, which has to use core 1
+    // The main thread can't be moved there, since running threads can't change cores
+    const int stackSize = 0x100000;
+    static OSThread uiThread __attribute__((aligned(16)));
+    uint8_t *stack = (uint8_t*)memalign(16, stackSize);
+    if (stack && OSCreateThread(&uiThread, runUi, 0, nullptr, stack + stackSize, stackSize,
+            OSGetThreadPriority(OSGetCurrentThread()), OS_THREAD_ATTRIB_AFFINITY_CPU2)) {
+        OSResumeThread(&uiThread);
+        OSJoinThread(&uiThread, nullptr);
+    }
+    else {
+        runUi(0, nullptr);
+    }
     SYSLaunchMenu();
 
     // Respond to system messages appropriately to allow exiting

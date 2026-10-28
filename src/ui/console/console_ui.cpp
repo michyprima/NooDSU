@@ -18,6 +18,8 @@
 */
 
 #include <algorithm>
+#include <atomic>
+#include <functional>
 #include <cstring>
 #include <chrono>
 #include <dirent.h>
@@ -26,7 +28,9 @@
 #include "console_ui.h"
 #ifdef __WIIU__
 #include <malloc.h>
+#include <coreinit/core.h>
 #include <coreinit/thread.h>
+#include <coreinit/time.h>
 
 // With the JIT on, the emulator runs on its own thread bound to the core that can run generated code
 static OSThread jitThread __attribute__((aligned(16)));
@@ -35,6 +39,7 @@ static bool jitThreadUsed = false;
 #endif
 #include "../nds_icon.h"
 #include "../../core/settings.h"
+#include "../../core/emu_profile.h"
 
 #define SCALEH(x, h) (((x) * (h)) / 720)
 #define SCALE(x) SCALEH(x, uiHeight)
@@ -281,6 +286,67 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         // Draw the FPS counter if enabled
         if (showFpsCounter)
             drawString(std::to_string(core->fps) + " FPS", SCALE(5), 0, SCALE(48));
+
+#ifdef PROFILE_EMU
+        // With PROFILE_EMU, show where the emulator thread spends its time, as a share of each second and per frame
+        if (showFpsCounter) {
+            static uint64_t last[EP_COUNT];
+            static OSTime lastTime = OSGetSystemTime();
+            static std::string lines[5];
+            OSTime now = OSGetSystemTime();
+            if (OSTicksToMilliseconds(now - lastTime) >= 1000) {
+                double wall = double(now - lastTime), frames = std::max(core->fps, 1);
+                double pct[EP_COUNT], ms[EP_COUNT];
+                for (int i = 0; i < EP_COUNT; i++) {
+                    uint64_t t = EmuProfile::ticks[i];
+                    pct[i] = (t - last[i]) * 100.0 / wall;
+                    ms[i] = (t - last[i]) * 1000.0 / OSTimerClockSpeed / frames;
+                    last[i] = t;
+                }
+                double arm9 = pct[EP_ARM9] + pct[EP_BOTH] - pct[EP_BOTH_ARM7];
+                double arm7 = pct[EP_ARM7] + pct[EP_BOTH_ARM7];
+                double arm9ms = ms[EP_ARM9] + ms[EP_BOTH] - ms[EP_BOTH_ARM7];
+                double arm7ms = ms[EP_ARM7] + ms[EP_BOTH_ARM7];
+                double other = 100 - pct[EP_ARM9] - pct[EP_ARM7] - pct[EP_BOTH] - pct[EP_TASKS];
+                char text[128];
+                snprintf(text, sizeof(text), "ARM9 %.0f%% %.1fms/f (alone %.0f%%, with ARM7 %.0f%%)", arm9, arm9ms,
+                    pct[EP_ARM9], pct[EP_BOTH] - pct[EP_BOTH_ARM7]);
+                lines[0] = text;
+                snprintf(text, sizeof(text), "ARM7 %.0f%% %.1fms/f, tasks %.0f%% %.1fms/f, other %.0f%%",
+                    arm7, arm7ms, pct[EP_TASKS], ms[EP_TASKS], other);
+                lines[1] = text;
+                snprintf(text, sizeof(text), "2D wait %.0f%% %.1fms/f, 2D draw %.0f%%, compile %.0f%%",
+                    pct[EP_WAIT2D], ms[EP_WAIT2D], pct[EP_DRAW2D], pct[EP_COMPILE]);
+                lines[2] = text;
+                snprintf(text, sizeof(text), "3D join %.1fms/f, 2D join %.1fms/f, geometry %.1fms/f, audio %.1fms/f",
+                    ms[EP_JOIN3D], ms[EP_JOIN2D], ms[EP_GEOM], ms[EP_SPU]);
+                lines[3] = text;
+
+                // List the most expensive scheduled tasks
+                static const char *names[] = { "run", "reset", "cart9", "cart7", "dma9.0", "dma9.1", "dma9.2", "dma9.3",
+                    "dma7.0", "dma7.1", "dma7.2", "dma7.3", "line256", "line355", "gba240", "gba308", "gx", "irq9",
+                    "irq7", "spu", "gbaspu", "tm9.0", "tm9.1", "tm9.2", "tm9.3", "tm7.0", "tm7.1", "tm7.2", "tm7.3",
+                    "wifi", "wifi2", "wifi3", "aes", "ndma9", "ndma7", "sd1", "sd2" };
+                static uint64_t lastTask[64];
+                double taskMs[MAX_TASKS];
+                for (int i = 0; i < MAX_TASKS; i++) {
+                    taskMs[i] = (EmuProfile::taskTicks[i] - lastTask[i]) * 1000.0 / OSTimerClockSpeed / frames;
+                    lastTask[i] = EmuProfile::taskTicks[i];
+                }
+                std::string top;
+                for (int j = 0; j < 5; j++) {
+                    int best = std::max_element(taskMs, taskMs + MAX_TASKS) - taskMs;
+                    snprintf(text, sizeof(text), "%s %.1f  ", names[best], taskMs[best]);
+                    top += text;
+                    taskMs[best] = -1;
+                }
+                lines[4] = "Tasks ms/f: " + top;
+                lastTime = now;
+            }
+            for (int i = 0; i < 5; i++)
+                drawString(lines[i], SCALE(5), SCALE(48) + SCALE(30) * i, SCALE(30));
+        }
+#endif
 
         // Scan for key input
         uint32_t pressed = getInputPress();
@@ -1182,67 +1248,90 @@ void ConsoleUI::jitSelfTest() {
     const int targetFrames = 6000;
     std::string result;
     double timeA = 0, timeB = 0;
-    long steps = 0, frames = 0;
-    auto lastDraw = std::chrono::steady_clock::now();
-    while (result == "") {
-        auto t0 = std::chrono::steady_clock::now();
-        a.runCore();
-        auto t1 = std::chrono::steady_clock::now();
-        b.runCore();
-        auto t2 = std::chrono::steady_clock::now();
+    long steps = 0;
+    std::atomic<long> frames(0);
+    std::atomic<bool> stop(false), done(false);
+
+    // Run the comparison on its own thread, which has to be on core 1 on Wii U to use generated code
+    std::function<void()> work = [&]() {
+        while (result == "" && !stop.load()) {
+            auto t0 = std::chrono::steady_clock::now();
+            a.runCore();
+            auto t1 = std::chrono::steady_clock::now();
+            b.runCore();
+            auto t2 = std::chrono::steady_clock::now();
+            timeA += std::chrono::duration<double>(t1 - t0).count();
+            timeB += std::chrono::duration<double>(t2 - t1).count();
+            steps++;
+
+            bool readyA = a.gpu.getFrame(frameA, false);
+            bool readyB = b.gpu.getFrame(frameB, false);
+            if (readyA != readyB)
+                result = "Frame timing differs";
+            else if (readyA && memcmp(frameA, frameB, 256 * 192 * 2 * sizeof(uint32_t)))
+                result = "Screens differ";
+            else if (a.globalCycles != b.globalCycles)
+                result = "Global cycles " + std::to_string(a.globalCycles) + " vs " + std::to_string(b.globalCycles);
+            else if (a.events.size() != b.events.size())
+                result = "Scheduler event count differs";
+            if (readyA) frames += 6;
+            for (size_t i = 0; result == "" && i < a.events.size(); i++)
+                if (a.events[i].task != b.events[i].task || a.events[i].cycles != b.events[i].cycles)
+                    result = "Scheduler event " + std::to_string(i) + " differs";
+            for (int i = 0; result == "" && i < 2; i++) {
+                std::string diff = a.interpreter[i].compare(b.interpreter[i]);
+                if (diff != "") result = std::string(i ? "ARM7 " : "ARM9 ") + diff;
+            }
+            if (result != "") {
+                char pcs[96];
+                snprintf(pcs, sizeof(pcs), "\nARM9 PC %08X/%08X, ARM7 PC %08X/%08X", a.interpreter[0].getPC(),
+                    b.interpreter[0].getPC(), a.interpreter[1].getPC(), b.interpreter[1].getPC());
+                result = "MISMATCH after " + std::to_string(steps) + " stops, around frame " +
+                    std::to_string(frames.load()) + ":\n" + result + pcs;
+            }
+            else if (frames.load() >= targetFrames) {
+                result = "PASSED";
+            }
+        }
+        if (result == "") result = "Stopped early";
+        done.store(true);
+    };
+#ifdef __WIIU__
+    static OSThread testThread __attribute__((aligned(16)));
+    const int stackSize = 0x100000;
+    uint8_t *stack = (uint8_t*)memalign(16, stackSize);
+    OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int {
+        (*(std::function<void()>*)argv)();
+        return 0;
+    };
+    OSCreateThread(&testThread, entry, 0, (char*)&work, stack + stackSize, stackSize,
+        OSGetThreadPriority(OSGetCurrentThread()), OS_THREAD_ATTRIB_AFFINITY_CPU1);
+    OSResumeThread(&testThread);
+#else
+    std::thread testThread(work);
+#endif
+
+    // Show progress twice a second, and stop if B is pressed
+    while (!done.load()) {
+        if (getInputPress() & defaultKeys[INPUT_B])
+            stop.store(true);
         mode = !b.jit.enabled ? "JIT off" : (b.jit.isNative() ? "native code" : "portable executor");
-        timeA += std::chrono::duration<double>(t1 - t0).count();
-        timeB += std::chrono::duration<double>(t2 - t1).count();
-        steps++;
-
-        bool readyA = a.gpu.getFrame(frameA, false);
-        bool readyB = b.gpu.getFrame(frameB, false);
-        if (readyA != readyB)
-            result = "Frame timing differs";
-        else if (readyA && memcmp(frameA, frameB, 256 * 192 * 2 * sizeof(uint32_t)))
-            result = "Screens differ";
-        else if (a.globalCycles != b.globalCycles)
-            result = "Global cycles " + std::to_string(a.globalCycles) + " vs " + std::to_string(b.globalCycles);
-        else if (a.events.size() != b.events.size())
-            result = "Scheduler event count differs";
-        if (readyA) frames += 6;
-        for (size_t i = 0; result == "" && i < a.events.size(); i++)
-            if (a.events[i].task != b.events[i].task || a.events[i].cycles != b.events[i].cycles)
-                result = "Scheduler event " + std::to_string(i) + " differs";
-        for (int i = 0; result == "" && i < 2; i++) {
-            std::string diff = a.interpreter[i].compare(b.interpreter[i]);
-            if (diff != "") result = std::string(i ? "ARM7 " : "ARM9 ") + diff;
-        }
-        if (result != "") {
-            char pcs[96];
-            snprintf(pcs, sizeof(pcs), "\nARM9 PC %08X/%08X, ARM7 PC %08X/%08X", a.interpreter[0].getPC(),
-                b.interpreter[0].getPC(), a.interpreter[1].getPC(), b.interpreter[1].getPC());
-            result = "MISMATCH after " + std::to_string(steps) + " stops, around frame " +
-                std::to_string(frames) + ":\n" + result + pcs;
-            break;
-        }
-        if (frames >= targetFrames) {
-            result = "PASSED";
-            break;
-        }
-
-        // Show progress twice a second, and stop if B is pressed
-        auto now = std::chrono::steady_clock::now();
-        if (now - lastDraw < std::chrono::milliseconds(500)) continue;
-        lastDraw = now;
-        if (getInputPress() & defaultKeys[INPUT_B]) {
-            result = "Stopped early";
-            break;
-        }
         startFrame(palette[0]);
         drawString("JIT Self-Test (" + mode + ")", SCALE(72), SCALE(30), SCALE(42), palette[1]);
-        drawString("Frame " + std::to_string(frames) + " of " + std::to_string(targetFrames) +
+        drawString("Frame " + std::to_string(frames.load()) + " of " + std::to_string(targetFrames) +
             ", no differences so far", SCALE(90), SCALE(124), SCALE(38), palette[1]);
         drawString("Interpreter: " + std::to_string(int(timeA)) + " s, JIT: " + std::to_string(int(timeB)) + " s",
             SCALE(90), SCALE(162), SCALE(38), palette[1]);
         drawString("Press B to stop", SCALE(90), SCALE(238), SCALE(38), palette[1]);
         endFrame();
     }
+#ifdef __WIIU__
+    OSJoinThread(&testThread, nullptr);
+    free(stack);
+#else
+    testThread.join();
+#endif
+    mode = !b.jit.enabled ? "JIT off" : (b.jit.isNative() ? "native code" : "portable executor");
 
     // Show the result with the time each side took
     char times[128];
@@ -1310,16 +1399,14 @@ void ConsoleUI::startCore() {
 
 #ifdef __WIIU__
     // Generated code only runs on core 1, and running threads can't be moved between cores, so create
-    // the emulator thread there; it shares the core with the UI, so it runs just below the UI's priority
-#ifdef JIT_LOG
-    // Diagnostic builds always use this thread, to compare the JIT with the interpreter on the same core
-    if (true) {
-#else
-    if (Settings::jit) {
-#endif
+    // the emulator thread there
+    // The UI and helper threads stay off core 1, so the emulator has it to itself with or without the JIT
+    {
         const int stackSize = 0x100000;
         if (!jitStack) jitStack = (uint8_t*)memalign(16, stackSize);
-        int priority = std::min(OSGetThreadPriority(OSGetCurrentThread()) + 1, 31);
+        // Only stay below the UI's priority if it's on the same core
+        int priority = OSGetThreadPriority(OSGetCurrentThread());
+        if (OSGetCoreId() == 1) priority = std::min(priority + 1, 31);
         OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int { runCore(); return 0; };
         if (jitStack && OSCreateThread(&jitThread, entry, 0, nullptr, jitStack + stackSize,
                 stackSize, priority, OS_THREAD_ATTRIB_AFFINITY_CPU1)) {

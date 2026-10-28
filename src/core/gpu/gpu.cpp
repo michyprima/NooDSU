@@ -19,6 +19,7 @@
 
 #include <cstring>
 #include "../core.h"
+#include "../emu_profile.h"
 
 Gpu::Gpu(Core *core): core(core) {
     // Mark the thread as not drawing to start
@@ -309,7 +310,7 @@ void Gpu::gbaScanline308() {
         // Start the 2D thread if enabled
         if (Settings::threaded2D && frames == 0 && !thread) {
             running.store(true);
-            thread = new std::thread(&Gpu::drawGbaThreaded, this);
+            thread = new WorkerThread(&Gpu::drawGbaThreaded, this);
         }
         break;
     }
@@ -341,21 +342,32 @@ void Gpu::gbaScanline308() {
 
 void Gpu::scanline256() {
     if (vCount < 192) {
-        if (thread) {
-            // Make sure the thread has started before changing the state
-            while (drawing.load() == 1)
-                std::this_thread::yield();
-
+        int expected = 1;
+        if (thread && drawing.compare_exchange_strong(expected, 4)) {
+            // If the thread hasn't started the scanlines yet, draw them here instead of waiting for it
+            EP_START(draw);
+            core->gpu2D[0].drawScanline(vCount);
+            core->gpu2D[1].drawScanline(vCount);
+            drawing.store(0);
+            EP_ADD(EP_DRAW2D, draw);
+        }
+        else if (thread) {
             switch (drawing.exchange(3)) {
-            case 2:
+            case 2: {
                 // Draw engine B's scanline if it hasn't started yet (and purposely fall through)
+                EP_START(draw);
                 core->gpu2D[1].drawScanline(vCount);
+                EP_ADD(EP_DRAW2D, draw);
+            }
 
-            case 3:
+            case 3: {
                 // Wait for the thread to finish the scanlines
+                EP_START(wait);
                 while (drawing.load() != 0)
                     std::this_thread::yield();
+                EP_ADD(EP_WAIT2D, wait);
                 break;
+            }
             }
         }
         else if (frames == 0) {
@@ -485,10 +497,12 @@ void Gpu::scanline355() {
     case 192: // End of visible scanlines
         // Stop the thread now that the frame has been drawn
         if (thread) {
+            EP_START(join);
             running.store(false);
             thread->join();
             delete thread;
             thread = nullptr;
+            EP_ADD(EP_JOIN2D, join);
         }
 
         for (int i = 0; i < 2; i++) {
@@ -563,8 +577,10 @@ void Gpu::scanline355() {
 
         // Start the 2D thread if enabled
         if (Settings::threaded2D && frames == 0 && !thread) {
+            EP_START(start);
             running.store(true);
-            thread = new std::thread(&Gpu::drawThreaded, this);
+            thread = new WorkerThread(&Gpu::drawThreaded, this);
+            EP_ADD(EP_JOIN2D, start);
         }
         break;
     }
@@ -618,14 +634,15 @@ void Gpu::drawGbaThreaded() {
 
 void Gpu::drawThreaded() {
     while (running.load()) {
-        // Wait until the next scanline should start
-        while (drawing.load() != 1) {
+        // Wait until the next scanline should start, and claim it unless the emulator thread already did
+        int expected = 1;
+        while (!drawing.compare_exchange_weak(expected, 2)) {
             if (!running.load()) return;
             std::this_thread::yield();
+            expected = 1;
         }
 
         // Draw engine A's scanline
-        drawing.store(2);
         core->gpu2D[0].drawScanline(vCount);
 
         // Draw engine B's scanline if it hasn't started yet
