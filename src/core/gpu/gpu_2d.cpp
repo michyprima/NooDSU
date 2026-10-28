@@ -118,11 +118,17 @@ void Gpu2D::drawGbaScanline(int line) {
     memset(priorities, 4, sizeof(priorities));
     memset(blendBits, 5, sizeof(blendBits));
 
-    // Draw the objects, object window first if enabled
-    if (dispCnt & BIT(12)) {
-        if (dispCnt & BIT(15)) drawObjects<1>(line, true);
+    // Draw the object window first if enabled, since it affects which layers are drawn
+    if ((dispCnt & BIT(12)) && (dispCnt & BIT(15)))
+        drawObjects<1>(line, true);
+
+    // Work out which layers the windows enable for each pixel, if windows are enabled
+    if (dispCnt & 0xE000)
+        calcWinMasks(line, 240);
+
+    // Draw the objects
+    if (dispCnt & BIT(12))
         drawObjects<1>(line, false);
-    }
 
     // Draw the background layers depending on the BG mode
     switch (uint8_t mode = (dispCnt & 0x7)) {
@@ -169,18 +175,8 @@ void Gpu2D::drawGbaScanline(int line) {
         }
 
         // Skip blending if the pixel is in the bounds of a window that has it disabled
-        if (dispCnt & 0xE000) { // Windows enabled
-            uint8_t enabled;
-            if ((dispCnt & BIT(13)) && winVFlag[0] && (i >= winX1[0] && i < winX2[0]) != winHFlip[0])
-                enabled = winIn >> 0; // Window 0
-            else if ((dispCnt & BIT(14)) && winVFlag[1] && (i >= winX1[1] && i < winX2[1]) != winHFlip[1])
-                enabled = winIn >> 8; // Window 1
-            else if ((dispCnt & BIT(15)) && (framebuffer[line * 256 + i] & BIT(24)))
-                enabled = winOut >> 8; // Object window
-            else
-                enabled = winOut >> 0; // Outside of windows
-            if (!(enabled & BIT(5))) continue;
-        }
+        if ((dispCnt & 0xE000) && !(winMasks[i] & BIT(5)))
+            continue;
 
         // Apply blending, using 15-bit colors in GBA mode
         switch (mode) {
@@ -227,11 +223,17 @@ void Gpu2D::drawScanline(int line) {
     memset(priorities, 4, sizeof(priorities));
     memset(blendBits, 5, sizeof(blendBits));
 
-    // Draw the objects, object window first if enabled
-    if (dispCnt & BIT(12)) {
-        if (dispCnt & BIT(15)) drawObjects<0>(line, true);
+    // Draw the object window first if enabled, since it affects which layers are drawn
+    if ((dispCnt & BIT(12)) && (dispCnt & BIT(15)))
+        drawObjects<0>(line, true);
+
+    // Work out which layers the windows enable for each pixel, if windows are enabled
+    if (dispCnt & 0xE000)
+        calcWinMasks(line, 256);
+
+    // Draw the objects
+    if (dispCnt & BIT(12))
         drawObjects<0>(line, false);
-    }
 
     // Draw the background layers depending on the BG mode
     switch (uint8_t mode = (dispCnt & 0x7)) {
@@ -326,18 +328,8 @@ void Gpu2D::drawScanline(int line) {
         }
 
         // Skip blending if the pixel is in the bounds of a window that has it disabled
-        if (dispCnt & 0xE000) { // Windows enabled
-            uint8_t enabled;
-            if ((dispCnt & BIT(13)) && winVFlag[0] && (i >= winX1[0] && i < winX2[0]) != winHFlip[0])
-                enabled = winIn >> 0; // Window 0
-            else if ((dispCnt & BIT(14)) && winVFlag[1] && (i >= winX1[1] && i < winX2[1]) != winHFlip[1])
-                enabled = winIn >> 8; // Window 1
-            else if ((dispCnt & BIT(15)) && (framebuffer[line * 256 + i] & BIT(24)))
-                enabled = winOut >> 8; // Object window
-            else
-                enabled = winOut >> 0; // Outside of windows
-            if (!(enabled & BIT(5))) continue;
-        }
+        if ((dispCnt & 0xE000) && !(winMasks[i] & BIT(5)))
+            continue;
 
         // Apply blending, using 18-bit colors in DS mode
         switch (mode) {
@@ -423,20 +415,24 @@ void Gpu2D::drawScanline(int line) {
     }
 }
 
-void Gpu2D::drawBgPixel(int bg, int line, int x, uint32_t pixel) {
-    // Skip the pixel if it's in the bounds of a window that has its layer disabled
-    if (dispCnt & 0xE000) { // Windows enabled
-        uint8_t enabled;
+void Gpu2D::calcWinMasks(int line, int width) {
+    // Get the layers enabled for each pixel of a scanline, based on which window it's in, if any
+    for (int x = 0; x < width; x++) {
         if ((dispCnt & BIT(13)) && winVFlag[0] && (x >= winX1[0] && x < winX2[0]) != winHFlip[0])
-            enabled = winIn >> 0; // Window 0
+            winMasks[x] = winIn >> 0; // Window 0
         else if ((dispCnt & BIT(14)) && winVFlag[1] && (x >= winX1[1] && x < winX2[1]) != winHFlip[1])
-            enabled = winIn >> 8; // Window 1
+            winMasks[x] = winIn >> 8; // Window 1
         else if ((dispCnt & BIT(15)) && (framebuffer[line * 256 + x] & BIT(24)))
-            enabled = winOut >> 8; // Object window
+            winMasks[x] = winOut >> 8; // Object window
         else
-            enabled = winOut >> 0; // Outside of windows
-        if (!(enabled & BIT(bg))) return;
+            winMasks[x] = winOut >> 0; // Outside of windows
     }
+}
+
+FORCE_INLINE void Gpu2D::drawBgPixel(int bg, int line, int x, uint32_t pixel) {
+    // Skip the pixel if it's in the bounds of a window that has its layer disabled
+    if ((dispCnt & 0xE000) && !(winMasks[x] & BIT(bg)))
+        return;
 
     // Draw the pixel to one of 2 layers, depending on priority, for later blending
     if ((bgCnt[bg] & 0x3) <= priorities[0][x]) { // Higher than topmost
@@ -458,20 +454,10 @@ void Gpu2D::drawBgPixel(int bg, int line, int x, uint32_t pixel) {
     }
 }
 
-void Gpu2D::drawObjPixel(int line, int x, uint32_t pixel, int8_t priority) {
+FORCE_INLINE void Gpu2D::drawObjPixel(int line, int x, uint32_t pixel, int8_t priority) {
     // Skip the pixel if it's in the bounds of a window that has objects disabled
-    if (dispCnt & 0xE000) { // Windows enabled
-        uint8_t enabled;
-        if ((dispCnt & BIT(13)) && winVFlag[0] && (x >= winX1[0] && x < winX2[0]) != winHFlip[0])
-            enabled = winIn >> 0; // Window 0
-        else if ((dispCnt & BIT(14)) && winVFlag[1] && (x >= winX1[1] && x < winX2[1]) != winHFlip[1])
-            enabled = winIn >> 8; // Window 1
-        else if ((dispCnt & BIT(15)) && (framebuffer[line * 256 + x] & BIT(24)))
-            enabled = winOut >> 8; // Object window
-        else
-            enabled = winOut >> 0; // Outside of windows
-        if (!(enabled & BIT(4))) return;
-    }
+    if ((dispCnt & 0xE000) && !(winMasks[x] & BIT(4)))
+        return;
 
     // Draw a pixel to the top layer if the old one is transparent or lower priority
     // Objects are drawn first, and are treated as one layer, so they don't push pixels down

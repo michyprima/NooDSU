@@ -78,6 +78,7 @@ private:
     uint32_t layers[2][256] = {};
     int8_t priorities[2][256] = {};
     int8_t blendBits[2][256] = {};
+    uint8_t winMasks[256] = {};
 
     int internalX[2] = {};
     int internalY[2] = {};
@@ -108,6 +109,7 @@ private:
 
     static uint32_t rgb5ToRgb6(uint32_t color);
 
+    void calcWinMasks(int line, int width);
     void drawBgPixel(int bg, int line, int x, uint32_t pixel);
     void drawObjPixel(int line, int x, uint32_t pixel, int8_t priority);
 
