@@ -40,6 +40,10 @@ static OSThread *emuThread = nullptr;
 #include "../../core/worker_thread.h"
 #include "../../core/emu_profile.h"
 
+#ifdef PROFILE_SAMPLER
+#include "sampler.h"
+#endif
+
 #define SCALEH(x, h) (((x) * (h)) / 720)
 #define SCALE(x) SCALEH(x, uiHeight)
 
@@ -1090,6 +1094,9 @@ void ConsoleUI::pauseMenu() {
 #ifdef PROFILE_EMU
     items.push_back(MenuItem("3D Benchmark"));
 #endif
+#ifdef PROFILE_SAMPLER
+    items.push_back(MenuItem("CPU Samples"));
+#endif
 
     int index = 0;
     while (true) {
@@ -1209,6 +1216,12 @@ void ConsoleUI::pauseMenu() {
                 message("3D Benchmark", text);
                 break;
             }
+#endif
+#ifdef PROFILE_SAMPLER
+            case Sampler::MENU_INDEX: // CPU Samples
+                // Show where the emulator's core spent its time since emulation last resumed
+                message("CPU Samples", Sampler::report());
+                break;
 #endif
             }
         }
@@ -1491,7 +1504,16 @@ void ConsoleUI::startCore() {
     // Only stay below the UI's priority if it's on the same core
     int priority = OSGetThreadPriority(OSGetCurrentThread());
     if (OSGetCoreId() == 1) priority = std::min(priority + 1, 31);
+#ifdef PROFILE_SAMPLER
+    OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int {
+        Sampler::start();
+        runCore();
+        Sampler::stop();
+        return 0;
+    };
+#else
     OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int { runCore(); return 0; };
+#endif
     if ((emuThread = WorkerThread::createThread(entry, nullptr, 0x100000, priority, OS_THREAD_ATTRIB_AFFINITY_CPU1))) {
         saveThread = new std::thread(checkSave);
         return;
