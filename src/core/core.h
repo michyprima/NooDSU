@@ -19,8 +19,10 @@
 
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <string>
 #include <vector>
@@ -113,6 +115,56 @@ struct SchedEvent {
     bool operator<(const SchedEvent &event) const { return cycles < event.cycles; }
 };
 
+// The scheduler's events, sorted by when they're due, with events due at the same time kept in the order they were added
+// Emulation takes events from the front thousands of times per frame, so that only moves a pointer, and new events
+// shift whichever side of the queue is shorter
+class EventQueue {
+public:
+    SchedEvent *head; // The first event, which generated code reads through the queue's address, so it comes first
+
+    EventQueue(): storage(64, SchedEvent(MAX_TASKS, 0)) { clear(); }
+
+    size_t size() const { return count; }
+    SchedEvent &operator[](size_t i) { return head[i]; }
+    void clear() { count = 0; head = &storage[storage.size() / 2]; }
+
+    void popFront() {
+        // Remove the first event, moving back to the middle when empty
+        if (--count == 0) head = &storage[storage.size() / 2];
+        else head++;
+    }
+
+    void insert(const SchedEvent &event) {
+        // Make room on both sides if needed, then shift the shorter side to fit the event in order
+        if (head == storage.data() || head + count == storage.data() + storage.size())
+            recenter();
+        SchedEvent *pos = std::upper_bound(head, head + count, event);
+        size_t before = pos - head;
+        if (before < count - before) {
+            memmove(head - 1, head, before * sizeof(SchedEvent));
+            (--head)[before] = event;
+        }
+        else {
+            memmove(pos + 1, pos, (count - before) * sizeof(SchedEvent));
+            *pos = event;
+        }
+        count++;
+    }
+
+private:
+    std::vector<SchedEvent> storage;
+    size_t count = 0;
+
+    void recenter() {
+        // Move the events to the middle of storage, growing it if it's getting full
+        std::vector<SchedEvent> bigger(std::max<size_t>(storage.size(), count * 4), SchedEvent(MAX_TASKS, 0));
+        SchedEvent *start = &bigger[(bigger.size() - count) / 2];
+        memcpy(start, head, count * sizeof(SchedEvent));
+        storage.swap(bigger);
+        head = start;
+    }
+};
+
 class Core {
 public:
     int id = 0;
@@ -151,7 +203,7 @@ public:
     Wifi wifi;
 
     std::atomic<bool> running;
-    std::vector<SchedEvent> events;
+    EventQueue events;
     std::function<void()> tasks[MAX_TASKS];
     uint32_t globalCycles = 0;
 

@@ -219,7 +219,7 @@ void Jit::initCodegen() {
     if (!area || size < 0x100000 || codeOwner) return;
 
     // Make sure the event vector can be read directly, as generated code does
-    if (*(SchedEvent**)&core->events != core->events.data()) return;
+    if ((void*)&core->events.head != (void*)&core->events) return;
     BOOL rw = OSSwitchSecCodeGenMode(CODEGEN_RW_);
     JLOG("init: switch to RW returned %X, sec %X", rw, OSGetSecCodeGenMode());
     if (!rw) return;
@@ -558,6 +558,7 @@ enum NativeKind {
     NK_BRANCH_REG, // BX/BLX
     NK_HALF, // LDRH/STRH/LDRSB/LDRSH at an offset
     NK_BLOCK, // LDM/STM
+    NK_BLOCK_PC, // LDM that loads the program counter, like a function return
     NK_SWAP // SWP/SWPB
 };
 
@@ -596,8 +597,9 @@ static int nativeKind(uint32_t op) {
     }
     if ((op & 0x0E000000) == 0x08000000) { // LDM/STM
         uint32_t list = op & 0xFFFF;
-        if (!list || (list & BIT(15)) || (op & BIT(22)) || rn == 15) return NK_NONE;
+        if (!list || (op & BIT(22)) || rn == 15) return NK_NONE;
         if ((op & BIT(20)) && (op & BIT(21)) && (list & BIT(rn))) return NK_NONE; // Loading the base with writeback
+        if (list & BIT(15)) return (op & BIT(20)) ? NK_BLOCK_PC : NK_NONE; // Only loads of the program counter
         return NK_BLOCK;
     }
     return NK_NONE;
@@ -605,7 +607,7 @@ static int nativeKind(uint32_t op) {
 
 static bool nativeJumps(int kind) {
     // Check if a native instruction kind can change the program counter
-    return kind == NK_BRANCH || kind == NK_BRANCH_REG;
+    return kind == NK_BRANCH || kind == NK_BRANCH_REG || kind == NK_BLOCK_PC;
 }
 
 bool Jit::emitNative(PpcEmitter &e, uint32_t op, uint32_t pc) {
@@ -628,7 +630,7 @@ bool Jit::emitNative(PpcEmitter &e, uint32_t op, uint32_t pc) {
         case NK_TRANSFER: emitTransfer(e, op, pc); break;
         case NK_BRANCH_REG: emitBranchReg(e, op, pc); break;
         case NK_HALF: emitHalf(e, op, pc); break;
-        case NK_BLOCK: emitBlock(e, op, pc); break;
+        case NK_BLOCK: case NK_BLOCK_PC: emitBlock(e, op, pc); break;
         case NK_SWAP: emitSwap(e, op, pc); break;
     }
 
@@ -852,7 +854,8 @@ void Jit::emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc) {
         e.rlwinm(5, 5, 0, 0, 29);
         if (load) {
             e.call(codeMemory[0]);
-            writeReg(e, 8, i);
+            if (i == 15) emitJump(e, 8);
+            else writeReg(e, 8, i);
         }
         else {
             readReg(e, 8, i, pc);
@@ -863,7 +866,7 @@ void Jit::emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc) {
         e.addi(9, R_TMP1, end);
         writeReg(e, 9, rn);
     }
-    e.li(3, count + (count < 2));
+    e.li(3, (list & BIT(15)) ? (count + 4) : (count + (count < 2)));
 }
 
 void Jit::emitSwap(PpcEmitter &e, uint32_t op, uint32_t pc) {
@@ -887,6 +890,13 @@ void Jit::emitBranchReg(PpcEmitter &e, uint32_t op, uint32_t pc) {
         e.loadConst(6, pc - 4);
         writeReg(e, 6, 14);
     }
+    emitJump(e, 5);
+    e.li(3, 3);
+}
+
+void Jit::emitJump(PpcEmitter &e, int rs) {
+    // Jump to an address in a register, switching to THUMB if bit 0 is set, like BX and loads of the program counter
+    if (rs != 5) e.mr(5, rs);
     e.lwz(6, offCpsr, R_ARM);
     e.rlwinm(7, 5, 5, 26, 26);
     e.or_(6, 6, 7);
@@ -905,7 +915,6 @@ void Jit::emitBranchReg(PpcEmitter &e, uint32_t op, uint32_t pc) {
     e.addi(8, 8, 4);
     e.patchB(done);
     e.stw(8, offPc, R_ARM);
-    e.li(3, 3);
 }
 
 static bool isPure(uint32_t op, bool thumb) {

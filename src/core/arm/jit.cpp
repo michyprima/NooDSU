@@ -473,7 +473,7 @@ void Jit::execute(JitBlock *block, const uint32_t *limit) {
         HB_SET(HB_JIT_BLOCK, block->address);
         HB_SET(HB_JIT_INSIDE, 1);
         HB_INC(HB_JIT_ENTRIES);
-        ((void(*)(Interpreter*, std::vector<SchedEvent>*, const uint32_t*, void*, uint32_t*, JitCacheEntry*))
+        ((void(*)(Interpreter*, EventQueue*, const uint32_t*, void*, uint32_t*, JitCacheEntry*))
             codeEnter)(&arm, &core->events, limit, block->code, &core->globalCycles, cache);
         HB_SET(HB_JIT_INSIDE, 0);
 #ifdef JIT_LOG

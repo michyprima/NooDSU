@@ -117,7 +117,7 @@ void Interpreter::runCoreNone(Core &core) {
         core.globalCycles = core.events[0].cycles;
         while (core.events[0].cycles <= core.globalCycles) {
             EP_TASK(core);
-            core.events.erase(core.events.begin());
+            core.events.popFront();
         }
         EP_ADD(EP_TASKS, tasks);
     }
@@ -153,7 +153,7 @@ template <bool _arm7, int shift> void Interpreter::runCoreSingle(Core &core) {
         core.globalCycles = core.events[0].cycles;
         while (core.events[0].cycles <= core.globalCycles) {
             EP_TASK(core);
-            core.events.erase(core.events.begin());
+            core.events.popFront();
         }
         EP_ADD(EP_TASKS, tasks);
     }
@@ -191,7 +191,7 @@ void Interpreter::runCoreNds(Core &core) {
         core.globalCycles = core.events[0].cycles;
         while (core.events[0].cycles <= core.globalCycles) {
             EP_TASK(core);
-            core.events.erase(core.events.begin());
+            core.events.popFront();
         }
         EP_ADD(EP_TASKS, tasks);
     }
@@ -237,7 +237,7 @@ void Interpreter::runCoreNdsFast(Core &core) {
         core.globalCycles = core.events[0].cycles;
         while (core.events[0].cycles <= core.globalCycles) {
             EP_TASK(core);
-            core.events.erase(core.events.begin());
+            core.events.popFront();
         }
         EP_ADD(EP_TASKS, tasks);
     }
@@ -296,7 +296,7 @@ void Interpreter::runCoreDsi(Core &core) {
         core.globalCycles = core.events[0].cycles;
         while (core.events[0].cycles <= core.globalCycles) {
             EP_TASK(core);
-            core.events.erase(core.events.begin());
+            core.events.popFront();
         }
     }
 }

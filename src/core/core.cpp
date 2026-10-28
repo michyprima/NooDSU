@@ -347,7 +347,7 @@ void Core::loadState(FILE *file) {
     fread(&count, sizeof(count), 1, file);
     for (uint32_t i = 0; i < count; i++) {
         fread(&event, sizeof(event), 1, file);
-        events.push_back(event);
+        events.insert(event);
     }
 
     // Update the run function pointer
@@ -383,9 +383,7 @@ void Core::resetCycles() {
 
 void Core::schedule(SchedTask task, uint32_t cycles) {
     // Add a task to the scheduler, sorted by least to most cycles until execution
-    SchedEvent event(task, globalCycles + cycles);
-    auto it = std::upper_bound(events.cbegin(), events.cend(), event);
-    events.insert(it, event);
+    events.insert(SchedEvent(task, globalCycles + cycles));
 }
 
 void Core::enterGbaMode() {
