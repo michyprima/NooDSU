@@ -219,11 +219,93 @@ void Gpu2D::drawGbaScanline(int line) {
 }
 
 void Gpu2D::drawScanline(int line) {
+    // Build the layers unless nothing would see them, when the display shows something else and engine A's
+    // display capture doesn't take them
+    uint32_t capCnt = core->gpu.readDispCapCnt();
+    if (((dispCnt >> 16) & 0x3) == 1 || (engine == 0 && !(capCnt & BIT(24)) && ((capCnt >> 29) & 0x3) != 1))
+        drawLayers(line);
+    else
+        skipLayers();
+
+    EP_START_EMU(out);
+
+    // Copy the final image to the framebuffer
+    switch ((dispCnt >> 16) & 0x3) { // Display mode
+    case 0: // Display off
+        // Fill the display with white
+        memset(&framebuffer[line * 256], 0xFF, 256 * sizeof(uint32_t));
+        break;
+
+    case 1: { // Layers
+        // Claim the destination's cache blocks without reading them from memory first, since they're fully overwritten
+        uint32_t *dst = &framebuffer[line * 256];
+        if (!((uintptr_t)dst & 31))
+            for (int i = 0; i < 256; i += 8)
+                claimBlock(&dst[i]);
+        memcpy(dst, layers[0], 256 * sizeof(uint32_t));
+        break;
+    }
+
+    case 2: { // VRAM display
+        // Draw raw bitmap data from a VRAM block, reading it directly if it's mapped
+        // A line is 512 bytes, so it never crosses a 4KB page
+        uint32_t addr = 0x6800000 + ((dispCnt >> 1) & 0x60000) + line * 256 * 2;
+        uint32_t *dst = &framebuffer[line * 256];
+        if (!((uintptr_t)dst & 31))
+            for (int i = 0; i < 256; i += 8)
+                claimBlock(&dst[i]);
+        if (const uint8_t *src = core->memory.getReadPtr(0, addr)) {
+            for (int i = 0; i < 256; i++)
+                dst[i] = rgb5ToRgb6(readLsb<uint16_t>(&src[i * 2]));
+        }
+        else {
+            for (int i = 0; i < 256; i++)
+                dst[i] = rgb5ToRgb6(core->memory.read<uint16_t>(0, addr + i * 2));
+        }
+        break;
+    }
+
+    case 3: // Main memory display
+        LOG_CRIT("Unimplemented engine %c display mode: display FIFO\n", (engine == 0) ? 'A' : 'B');
+        break;
+    }
+
+    // Apply master brightness (DS-only, 18-bit)
+    switch ((masterBright >> 14) & 0x3) { // Mode
+    case 1: // Increase
+        if (uint8_t factor = std::min(masterBright & 0x1F, 16)) {
+            for (int i = 0; i < 256; i++) {
+                uint32_t *pixel = &framebuffer[line * 256 + i];
+                uint8_t r = (*pixel >> 0) & 0x3F; r += (63 - r) * factor / 16;
+                uint8_t g = (*pixel >> 6) & 0x3F; g += (63 - g) * factor / 16;
+                uint8_t b = (*pixel >> 12) & 0x3F; b += (63 - b) * factor / 16;
+                *pixel = (b << 12) | (g << 6) | r;
+            }
+        }
+        break;
+
+    case 2: // Decrease
+        if (uint8_t factor = std::min(masterBright & 0x1F, 16)) {
+            for (int i = 0; i < 256; i++) {
+                uint32_t *pixel = &framebuffer[line * 256 + i];
+                uint8_t r = (*pixel >> 0) & 0x3F; r -= r * factor / 16;
+                uint8_t g = (*pixel >> 6) & 0x3F; g -= g * factor / 16;
+                uint8_t b = (*pixel >> 12) & 0x3F; b -= b * factor / 16;
+                *pixel = (b << 12) | (g << 6) | r;
+            }
+        }
+        break;
+    }
+    EP_ADD_EMU(EP_2D_OUT, out);
+}
+
+void Gpu2D::drawLayers(int line) {
     EP_START_EMU(clear);
     // Clear layers with the backdrop (first palette index)
     uint32_t backdrop = U8TO16(palette, 0) & ~BIT(15);
+    // The second layer is only needed if blending can read it
     for (int i = 0; i < 256; i++) layers[0][i] = backdrop;
-    memcpy(layers[1], layers[0], sizeof(layers[0]));
+    if (bldCnt & 0x3F00) memcpy(layers[1], layers[0], sizeof(layers[0]));
     memset(priorities, 4, sizeof(priorities));
     memset(blendBits, 5, sizeof(blendBits));
 
@@ -303,6 +385,16 @@ void Gpu2D::drawScanline(int line) {
     EP_ADD_EMU(EP_2D_BG, bg);
     EP_START_EMU(blend);
 
+    // Without a second target, alpha blending can't happen, so the final image is the top layer in 18-bit color
+    // 3D pixels are already 18-bit, and other pixels are converted
+    if (!(bldCnt & 0x3F00) && ((bldCnt >> 6) & 0x3) < 2) {
+        for (int i = 0; i < 256; i++)
+            if (!(layers[0][i] & BIT(26)))
+                layers[0][i] = rgb5ToRgb6(layers[0][i]);
+        EP_ADD_EMU(EP_2D_BLEND, blend);
+        return;
+    }
+
     // Blend the layers to form the final image
     for (int mode = (bldCnt >> 6) & 0x3, i = 0; i < 256; i++) {
         // Check if blending can/should be performed
@@ -381,63 +473,18 @@ void Gpu2D::drawScanline(int line) {
     }
 
     EP_ADD_EMU(EP_2D_BLEND, blend);
-    EP_START_EMU(out);
+}
 
-    // Copy the final image to the framebuffer
-    switch ((dispCnt >> 16) & 0x3) { // Display mode
-    case 0: // Display off
-        // Fill the display with white
-        memset(&framebuffer[line * 256], 0xFF, 256 * sizeof(uint32_t));
-        break;
-
-    case 1: { // Layers
-        // Claim the destination's cache blocks without reading them from memory first, since they're fully overwritten
-        uint32_t *dst = &framebuffer[line * 256];
-        if (!((uintptr_t)dst & 31))
-            for (int i = 0; i < 256; i += 8)
-                claimBlock(&dst[i]);
-        memcpy(dst, layers[0], 256 * sizeof(uint32_t));
-        break;
+void Gpu2D::skipLayers() {
+    // Move the reference points of affine backgrounds like drawing them would, since that's the only state
+    // drawing the layers changes; each BG mode has a mask of which backgrounds are affine
+    static const uint8_t affineBgs[] = { 0x0, 0x8, 0xC, 0x8, 0xC, 0xC, 0x4, 0x0 };
+    uint8_t bgs = affineBgs[dispCnt & 0x7] & (dispCnt >> 8);
+    for (int bg = 2; bg < 4; bg++) {
+        if (!(bgs & BIT(bg))) continue;
+        internalX[bg - 2] += bgPB[bg - 2];
+        internalY[bg - 2] += bgPD[bg - 2];
     }
-
-    case 2: // VRAM display
-        // Draw raw bitmap data from a VRAM block
-        for (uint32_t addr = 0x6800000 + ((dispCnt >> 1) & 0x60000) + line * 256 * 2, i = 0; i < 256; i++)
-            framebuffer[line * 256 + i] = rgb5ToRgb6(core->memory.read<uint16_t>(0, addr + i * 2));
-        break;
-
-    case 3: // Main memory display
-        LOG_CRIT("Unimplemented engine %c display mode: display FIFO\n", (engine == 0) ? 'A' : 'B');
-        break;
-    }
-
-    // Apply master brightness (DS-only, 18-bit)
-    switch ((masterBright >> 14) & 0x3) { // Mode
-    case 1: // Increase
-        if (uint8_t factor = std::min(masterBright & 0x1F, 16)) {
-            for (int i = 0; i < 256; i++) {
-                uint32_t *pixel = &framebuffer[line * 256 + i];
-                uint8_t r = (*pixel >> 0) & 0x3F; r += (63 - r) * factor / 16;
-                uint8_t g = (*pixel >> 6) & 0x3F; g += (63 - g) * factor / 16;
-                uint8_t b = (*pixel >> 12) & 0x3F; b += (63 - b) * factor / 16;
-                *pixel = (b << 12) | (g << 6) | r;
-            }
-        }
-        break;
-
-    case 2: // Decrease
-        if (uint8_t factor = std::min(masterBright & 0x1F, 16)) {
-            for (int i = 0; i < 256; i++) {
-                uint32_t *pixel = &framebuffer[line * 256 + i];
-                uint8_t r = (*pixel >> 0) & 0x3F; r -= r * factor / 16;
-                uint8_t g = (*pixel >> 6) & 0x3F; g -= g * factor / 16;
-                uint8_t b = (*pixel >> 12) & 0x3F; b -= b * factor / 16;
-                *pixel = (b << 12) | (g << 6) | r;
-            }
-        }
-        break;
-    }
-    EP_ADD_EMU(EP_2D_OUT, out);
 }
 
 void Gpu2D::calcWinMasks(int line, int width) {
@@ -493,76 +540,131 @@ FORCE_INLINE void Gpu2D::drawObjPixel(int line, int x, uint32_t pixel, int8_t pr
     }
 }
 
+template <bool windows, bool is3D, bool topOnly> void Gpu2D::insertBgLine(int bg, const uint32_t *pixels, int width, int shift) {
+    // Draw a line of background pixels to the 2 layers, keeping the layer settings and arrays in registers
+    // Transparent pixels are 0, or have no alpha for 3D
+    // If blending can't read the second layer, only the topmost one is kept
+    int8_t priority = bgCnt[bg] & 0x3;
+    uint32_t *layer0 = layers[0], *layer1 = layers[1];
+    int8_t *priority0 = priorities[0], *priority1 = priorities[1];
+    int8_t *blend0 = blendBits[0], *blend1 = blendBits[1];
+    const uint8_t *masks = winMasks;
+    for (int x = 0; x < width; x++) {
+        uint32_t pixel = pixels[x << shift];
+        if (is3D ? !(pixel & 0xFC0000) : !pixel) continue;
+
+        // Skip the pixel if it's in the bounds of a window that has its layer disabled
+        if (windows && !(masks[x] & BIT(bg))) continue;
+
+        // Draw the pixel to one of 2 layers, depending on priority, for later blending
+        if (topOnly) {
+            if (priority <= priority0[x]) {
+                layer0[x] = pixel;
+                priority0[x] = priority;
+                blend0[x] = bg;
+            }
+        }
+        else if (priority <= priority0[x]) { // Higher than topmost
+            // Move the topmost pixel to the second topmost, and update the topmost pixel
+            layer1[x] = layer0[x];
+            priority1[x] = priority0[x];
+            blend1[x] = blend0[x];
+            layer0[x] = pixel;
+            priority0[x] = priority;
+            blend0[x] = bg;
+        }
+        else if (priority <= priority1[x]) { // Higher than second topmost
+            // Update the second topmost pixel
+            layer1[x] = pixel;
+            priority1[x] = priority;
+            blend1[x] = bg;
+        }
+    }
+}
+
+template <bool is3D> void Gpu2D::drawBgLine(int bg, const uint32_t *pixels, int width, int shift) {
+    // Draw a line of background pixels, with window checks only if windows are enabled
+    // The second layer is only read by blending when a second target is enabled
+    bool topOnly = !(bldCnt & 0x3F00);
+    if (dispCnt & 0xE000)
+        topOnly ? insertBgLine<true, is3D, true>(bg, pixels, width, shift) : insertBgLine<true, is3D, false>(bg, pixels, width, shift);
+    else
+        topOnly ? insertBgLine<false, is3D, true>(bg, pixels, width, shift) : insertBgLine<false, is3D, false>(bg, pixels, width, shift);
+}
+
 template <bool gbaMode> void Gpu2D::drawText(int bg, int line) {
     // If 3D is enabled, override BG0 in text mode
     if (!gbaMode && bg == 0 && (dispCnt & BIT(3))) {
         // In high-res 3D mode, skip every other pixel
-        uint32_t *data = core->gpu3DRenderer.getLine(line);
-        bool resShift = Settings::highRes3D;
-
-        // Draw a scanline of 3D pixels
-        for (int i = 0; i < 256; i++)
-            if (data[i << resShift] & 0xFC0000)
-                drawBgPixel(bg, line, i, data[i << resShift]);
+        drawBgLine<true>(bg, core->gpu3DRenderer.getLine(line), 256, Settings::highRes3D);
         return;
     }
 
     // Get the base data addresses
-    uint32_t tileBase = bgVramAddr + ((dispCnt >> 11) & 0x70000) + ((bgCnt[bg] << 3) & 0x0F800);
-    uint32_t indexBase = bgVramAddr + ((dispCnt >> 8) & 0x70000) + ((bgCnt[bg] << 12) & 0x3C000);
+    uint16_t cnt = bgCnt[bg];
+    uint32_t tileBase = bgVramAddr + ((dispCnt >> 11) & 0x70000) + ((cnt << 3) & 0x0F800);
+    uint32_t indexBase = bgVramAddr + ((dispCnt >> 8) & 0x70000) + ((cnt << 12) & 0x3C000);
 
     // Adjust the Y-coordinate within the background based on vertical mosaic
-    int yOffset = (((bgCnt[bg] & BIT(6)) ? (line - (line % (((mosaic >> 4) & 0xF) + 1))) : line) + bgVOfs[bg]) & 0x1FF;
+    int yOffset = (((cnt & BIT(6)) ? (line - (line % (((mosaic >> 4) & 0xF) + 1))) : line) + bgVOfs[bg]) & 0x1FF;
     tileBase += (yOffset & 0xF8) << 3;
 
     // If the Y-offset exceeds 256 and the background is 512 pixels tall, move to the next 256x256 section
     // If the background is 512 pixels wide, move 2 sections to skip the second X section
-    if (yOffset >= 256 && (bgCnt[bg] & BIT(15)))
-        tileBase += (bgCnt[bg] & BIT(14)) ? 0x1000 : 0x800;
+    if (yOffset >= 256 && (cnt & BIT(15)))
+        tileBase += (cnt & BIT(14)) ? 0x1000 : 0x800;
 
-    // Draw a line
-    int width = (gbaMode ? 240 : 256) + (bgHOfs[bg] & 0x7);
-    if (bgCnt[bg] & BIT(7)) { // 8-bit
+    // Decode the tiles covering the line into a buffer, with 0 for transparent pixels
+    // Each tile's 8 pixels are written whole, starting up to 7 pixels before the line, so the buffer is offset by 8
+    uint32_t pixels[256 + 16];
+    int scroll = bgHOfs[bg], fine = scroll & 0x7;
+    int width = (gbaMode ? 240 : 256) + fine;
+    Memory &memory = core->memory;
+    if (cnt & BIT(7)) { // 8-bit
         // Set the extended palette slot if enabled; BG 0/1 can optionally use slot 2/3
-        uint8_t *extPal = (dispCnt & BIT(30)) ? extPalettes[bg + (bg < 2 && (bgCnt[bg] & BIT(13))) * 2] : nullptr;
+        uint8_t *extPal = (dispCnt & BIT(30)) ? extPalettes[bg + (bg < 2 && (cnt & BIT(13))) * 2] : nullptr;
         for (int i = 0; i < width; i += 8) {
             // Move the tile address to the current tile
-            int xOffset = (i + bgHOfs[bg]) & 0x1FF;
+            int xOffset = (i + scroll) & 0x1FF;
             uint32_t tileAddr = tileBase + ((xOffset & 0xF8) >> 2);
 
             // If the X-offset exceeds 256 and the background is 512 pixels wide, move to the next 256x256 section
-            if (xOffset >= 256 && (bgCnt[bg] & BIT(14)))
+            if (xOffset >= 256 && (cnt & BIT(14)))
                 tileAddr += 0x800;
 
             // Get the current tile and its palette
-            uint16_t tile = core->memory.read<uint16_t>(gbaMode, tileAddr);
+            uint16_t tile = memory.read<uint16_t>(gbaMode, tileAddr);
             uint8_t *pal = extPal ? &extPal[(tile >> 3) & 0x1E00] : palette;
 
             // Get the palette indices for the current line of the tile, flipped vertically if enabled
             uint32_t indexAddr = indexBase + (tile & 0x3FF) * 64 + ((tile & BIT(11)) ? (7 - (yOffset & 7)) : (yOffset & 7)) * 8;
-            uint64_t indices = core->memory.read<uint32_t>(gbaMode, indexAddr) |
-                ((uint64_t)core->memory.read<uint32_t>(gbaMode, indexAddr + 4) << 32);
+            uint64_t indices = memory.read<uint32_t>(gbaMode, indexAddr) |
+                ((uint64_t)memory.read<uint32_t>(gbaMode, indexAddr + 4) << 32);
 
-            // Draw the current line of the tile, flipped horizontally if enabled
-            for (int x = i - (xOffset & 7) + ((tile & BIT(10)) ? 7 : 0); indices != 0; ((tile & BIT(10)) ? x-- : x++), indices >>= 8) {
-                // Draw a pixel if it's visible
-                if (x >= 0 && x < (gbaMode ? 240 : 256) && (indices & 0xFF))
-                    drawBgPixel(bg, line, x, U8TO16(pal, (indices & 0xFF) * 2) | BIT(15));
+            // Decode the current line of the tile, flipped horizontally if enabled
+            uint32_t *dst = &pixels[8 + i - fine];
+            if (!indices) {
+                for (int x = 0; x < 8; x++) dst[x] = 0;
+                continue;
+            }
+            for (int j = 0; j < 8; j++, indices >>= 8) {
+                uint32_t index = indices & 0xFF;
+                dst[(tile & BIT(10)) ? (7 - j) : j] = index ? (U8TO16(pal, index * 2) | BIT(15)) : 0;
             }
         }
     }
     else { // 4-bit
         for (int i = 0; i < width; i += 8) {
             // Move the tile address to the current tile
-            int xOffset = (i + bgHOfs[bg]) & 0x1FF;
+            int xOffset = (i + scroll) & 0x1FF;
             uint32_t tileAddr = tileBase + ((xOffset & 0xF8) >> 2);
 
             // If the X-offset exceeds 256 and the background is 512 pixels wide, move to the next 256x256 section
-            if (xOffset >= 256 && (bgCnt[bg] & BIT(14)))
+            if (xOffset >= 256 && (cnt & BIT(14)))
                 tileAddr += 0x800;
 
             // Get the current tile
-            uint16_t tile = core->memory.read<uint16_t>(gbaMode, tileAddr);
+            uint16_t tile = memory.read<uint16_t>(gbaMode, tileAddr);
 
             // Get the tile's palette
             // In 4-bit mode, the tile can select from multiple 16-color palettes
@@ -570,16 +672,23 @@ template <bool gbaMode> void Gpu2D::drawText(int bg, int line) {
 
             // Get the palette indices for the current line of the tile, flipped vertically if enabled
             uint32_t indexAddr = indexBase + (tile & 0x3FF) * 32 + ((tile & BIT(11)) ? (7 - (yOffset & 7)) : (yOffset & 7)) * 4;
-            uint32_t indices = core->memory.read<uint32_t>(gbaMode, indexAddr);
+            uint32_t indices = memory.read<uint32_t>(gbaMode, indexAddr);
 
-            // Draw the current line of the tile, flipped horizontally if enabled
-            for (int x = i - (xOffset & 7) + ((tile & BIT(10)) ? 7 : 0); indices != 0; ((tile & BIT(10)) ? x-- : x++), indices >>= 4) {
-                // Draw a pixel if it's visible
-                if (x >= 0 && x < (gbaMode ? 240 : 256) && (indices & 0xF))
-                    drawBgPixel(bg, line, x, U8TO16(pal, (indices & 0xF) * 2) | BIT(15));
+            // Decode the current line of the tile, flipped horizontally if enabled
+            uint32_t *dst = &pixels[8 + i - fine];
+            if (!indices) {
+                for (int x = 0; x < 8; x++) dst[x] = 0;
+                continue;
+            }
+            for (int j = 0; j < 8; j++, indices >>= 4) {
+                uint32_t index = indices & 0xF;
+                dst[(tile & BIT(10)) ? (7 - j) : j] = index ? (U8TO16(pal, index * 2) | BIT(15)) : 0;
             }
         }
     }
+
+    // Draw the decoded line
+    drawBgLine<false>(bg, &pixels[8], gbaMode ? 240 : 256, 0);
 }
 
 template <bool gbaMode> void Gpu2D::drawAffine(int bg, int line) {

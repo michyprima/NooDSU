@@ -112,9 +112,13 @@ private:
 
     static uint32_t rgb5ToRgb6(uint32_t color);
 
+    void drawLayers(int line);
+    void skipLayers();
     void calcWinMasks(int line, int width);
     void drawBgPixel(int bg, int line, int x, uint32_t pixel);
     void drawObjPixel(int line, int x, uint32_t pixel, int8_t priority);
+    template <bool windows, bool is3D, bool topOnly> void insertBgLine(int bg, const uint32_t *pixels, int width, int shift);
+    template <bool is3D> void drawBgLine(int bg, const uint32_t *pixels, int width, int shift);
 
     template <bool gbaMode> void drawText(int bg, int line);
     template <bool gbaMode> void drawAffine(int bg, int line);
