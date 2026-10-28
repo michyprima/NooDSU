@@ -325,8 +325,8 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
                     ms[EP_JOIN3D], ms[EP_JOIN2D], ms[EP_GEOM], ms[EP_SPU]);
                 lines[3] = text;
                 snprintf(text, sizeof(text), "Geometry ms/f: vertex %.1f (clip %.1f), matrix %.1f, texcoord %.1f, other %.1f, "
-                    "FIFO writes %.1f", ms[EP_GEOM_VTX], ms[EP_GEOM_CLIP], ms[EP_GEOM_MTX], ms[EP_GEOM_TEX],
-                    ms[EP_GEOM_OTHER], ms[EP_GXFIFO]);
+                    "FIFO writes %.1f, worker wait %.1f", ms[EP_GEOM_VTX], ms[EP_GEOM_CLIP], ms[EP_GEOM_MTX], ms[EP_GEOM_TEX],
+                    ms[EP_GEOM_OTHER], ms[EP_GXFIFO], ms[EP_GEOM_SYNC]);
                 lines[5] = text;
                 static uint32_t lastCount[EC_COUNT];
                 double lineCounts[EC_COUNT];

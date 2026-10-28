@@ -391,13 +391,11 @@ void Gpu2D::drawScanline(int line) {
         break;
 
     case 1: { // Layers
-        uint32_t *dst = &framebuffer[line * 256];
-#ifdef __WIIU__
         // Claim the destination's cache blocks without reading them from memory first, since they're fully overwritten
+        uint32_t *dst = &framebuffer[line * 256];
         if (!((uintptr_t)dst & 31))
-            for (int i = 0; i < 256 * 4; i += 32)
-                __asm__ volatile("dcbz %0, %1" :: "b"(dst), "r"(i) : "memory");
-#endif
+            for (int i = 0; i < 256; i += 8)
+                claimBlock(&dst[i]);
         memcpy(dst, layers[0], 256 * sizeof(uint32_t));
         break;
     }

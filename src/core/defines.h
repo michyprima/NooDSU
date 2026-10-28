@@ -122,6 +122,14 @@ template <typename T> FORCE_INLINE void writeLsb(uint8_t *data, T value) {
     memcpy(data, &value, sizeof(T));
 }
 
+// Claim a 32-byte cache block on Wii U, where memory accesses that miss the cache are slow
+// This zeroes the block in the cache without reading it, so it's only safe when the whole block will be overwritten
+FORCE_INLINE void claimBlock(void *data) {
+#ifdef __WIIU__
+    __asm__ volatile("dcbz 0, %0" :: "r"(data) : "memory");
+#endif
+}
+
 // Macros that perform bit rotations
 #define ROL8(v, s) ((v << s) | (v >> (8 - s)))
 #define ROL32(v, s) ((v << s) | (v >> (32 - s)))

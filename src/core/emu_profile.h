@@ -45,6 +45,7 @@ enum EmuProfileSlot {
     EP_GEOM_TEX, // Texture coordinate commands
     EP_GEOM_OTHER, // Other geometry commands
     EP_GXFIFO, // Sending words to the GXFIFO
+    EP_GEOM_SYNC, // Waiting for geometry commands on the worker thread
     EP_3D_HELP, // Drawing 3D scanlines for threads that fell behind, on the emulator thread
     EP_3D_WAIT, // Waiting for 3D scanlines, on the emulator thread
     EP_CAPTURE, // Display capture

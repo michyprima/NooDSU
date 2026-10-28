@@ -66,23 +66,30 @@ const uint8_t Gpu3D::paramCounts[] = {
     3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0x70-0x7F
 };
 
+Gpu3D::~Gpu3D() {
+    // Finish any commands on the worker before cleaning it up
+    stopWorker();
+}
+
 void Gpu3D::saveState(FILE *file) {
-    // Write state data to the file
+    // Write state data to the file, after any queued commands have run
+    sync();
+    uint32_t stat = gxStat | gxStatExec;
     fwrite(&state, sizeof(state), 1, file);
     fwrite(&pipeSize, sizeof(pipeSize), 1, file);
     fwrite(&testQueue, sizeof(testQueue), 1, file);
     fwrite(&matrixQueue, sizeof(matrixQueue), 1, file);
-    fwrite(&matrixMode, sizeof(matrixMode), 1, file);
-    fwrite(&clipDirty, sizeof(clipDirty), 1, file);
-    fwrite(&projection, sizeof(projection), 1, file);
-    fwrite(&projectionStack, sizeof(projectionStack), 1, file);
-    fwrite(&coordinate, sizeof(coordinate), 1, file);
-    fwrite(coordinateStack, sizeof(Matrix), sizeof(coordinateStack) / sizeof(Matrix), file);
-    fwrite(&direction, sizeof(direction), 1, file);
-    fwrite(directionStack, sizeof(Matrix), sizeof(coordinateStack) / sizeof(Matrix), file);
-    fwrite(&texture, sizeof(texture), 1, file);
-    fwrite(&textureStack, sizeof(textureStack), 1, file);
-    fwrite(&clip, sizeof(clip), 1, file);
+    fwrite(&mtx.mode, sizeof(mtx.mode), 1, file);
+    fwrite(&mtx.clipDirty, sizeof(mtx.clipDirty), 1, file);
+    fwrite(&mtx.projection, sizeof(mtx.projection), 1, file);
+    fwrite(&mtx.projectionStack, sizeof(mtx.projectionStack), 1, file);
+    fwrite(&mtx.coordinate, sizeof(mtx.coordinate), 1, file);
+    fwrite(mtx.coordinateStack, sizeof(Matrix), sizeof(mtx.coordinateStack) / sizeof(Matrix), file);
+    fwrite(&mtx.direction, sizeof(mtx.direction), 1, file);
+    fwrite(mtx.directionStack, sizeof(Matrix), sizeof(mtx.coordinateStack) / sizeof(Matrix), file);
+    fwrite(&mtx.texture, sizeof(mtx.texture), 1, file);
+    fwrite(&mtx.textureStack, sizeof(mtx.textureStack), 1, file);
+    fwrite(&mtx.clip, sizeof(mtx.clip), 1, file);
     fwrite(verticesIn, sizeof(Vertex), sizeof(vertices1) / sizeof(Vertex), file);
     fwrite(verticesOut, sizeof(Vertex), sizeof(vertices2) / sizeof(Vertex), file);
     fwrite(&vertexCountIn, sizeof(vertexCountIn), 1, file);
@@ -116,7 +123,7 @@ void Gpu3D::saveState(FILE *file) {
     fwrite(viewport, 2, sizeof(viewport) / 2, file);
     fwrite(viewportNext, 2, sizeof(viewportNext) / 2, file);
     fwrite(&gxFifo, sizeof(gxFifo), 1, file);
-    fwrite(&gxStat, sizeof(gxStat), 1, file);
+    fwrite(&stat, sizeof(stat), 1, file);
     fwrite(posResult, 4, sizeof(posResult) / 4, file);
     fwrite(vecResult, 2, sizeof(vecResult) / 2, file);
     fwrite(&gxFifoCount, sizeof(gxFifoCount), 1, file);
@@ -124,22 +131,23 @@ void Gpu3D::saveState(FILE *file) {
 }
 
 void Gpu3D::loadState(FILE *file) {
-    // Read state data from the file
+    // Read state data from the file, after any queued commands have run
+    sync();
     fread(&state, sizeof(state), 1, file);
     fread(&pipeSize, sizeof(pipeSize), 1, file);
     fread(&testQueue, sizeof(testQueue), 1, file);
     fread(&matrixQueue, sizeof(matrixQueue), 1, file);
-    fread(&matrixMode, sizeof(matrixMode), 1, file);
-    fread(&clipDirty, sizeof(clipDirty), 1, file);
-    fread(&projection, sizeof(projection), 1, file);
-    fread(&projectionStack, sizeof(projectionStack), 1, file);
-    fread(&coordinate, sizeof(coordinate), 1, file);
-    fread(coordinateStack, sizeof(Matrix), sizeof(coordinateStack) / sizeof(Matrix), file);
-    fread(&direction, sizeof(direction), 1, file);
-    fread(directionStack, sizeof(Matrix), sizeof(coordinateStack) / sizeof(Matrix), file);
-    fread(&texture, sizeof(texture), 1, file);
-    fread(&textureStack, sizeof(textureStack), 1, file);
-    fread(&clip, sizeof(clip), 1, file);
+    fread(&mtx.mode, sizeof(mtx.mode), 1, file);
+    fread(&mtx.clipDirty, sizeof(mtx.clipDirty), 1, file);
+    fread(&mtx.projection, sizeof(mtx.projection), 1, file);
+    fread(&mtx.projectionStack, sizeof(mtx.projectionStack), 1, file);
+    fread(&mtx.coordinate, sizeof(mtx.coordinate), 1, file);
+    fread(mtx.coordinateStack, sizeof(Matrix), sizeof(mtx.coordinateStack) / sizeof(Matrix), file);
+    fread(&mtx.direction, sizeof(mtx.direction), 1, file);
+    fread(mtx.directionStack, sizeof(Matrix), sizeof(mtx.coordinateStack) / sizeof(Matrix), file);
+    fread(&mtx.texture, sizeof(mtx.texture), 1, file);
+    fread(&mtx.textureStack, sizeof(mtx.textureStack), 1, file);
+    fread(&mtx.clip, sizeof(mtx.clip), 1, file);
     fread(vertices1, sizeof(Vertex), sizeof(vertices1) / sizeof(Vertex), file);
     fread(vertices2, sizeof(Vertex), sizeof(vertices2) / sizeof(Vertex), file);
     fread(&vertexCountIn, sizeof(vertexCountIn), 1, file);
@@ -174,6 +182,9 @@ void Gpu3D::loadState(FILE *file) {
     fread(viewportNext, 2, sizeof(viewportNext) / 2, file);
     fread(&gxFifo, sizeof(gxFifo), 1, file);
     fread(&gxStat, sizeof(gxStat), 1, file);
+    gxStatExec = gxStat & EXEC_STAT_BITS;
+    gxStat &= ~EXEC_STAT_BITS;
+    fifoMtx = mtx;
     fread(posResult, 4, sizeof(posResult) / 4, file);
     fread(vecResult, 2, sizeof(vecResult) / 2, file);
     fread(&gxFifoCount, sizeof(gxFifoCount), 1, file);
@@ -274,11 +285,314 @@ bool Gpu3D::clipPolygon(Vertex *unclipped, Vertex *clipped, uint8_t *size) {
     return clip;
 }
 
+static bool changesExecStat(uint8_t command) {
+    // Check if a command changes the GXSTAT bits that are set by execution, which is only the box test result
+    return command == 0x70;
+}
+
+void Gpu3D::startWorker() {
+    // Start executing commands on a worker thread, above the 3D renderer's priority so it doesn't fall behind
+    if (!queue) {
+        // Align the queue to cache blocks, so they can be claimed before being written
+        queueAlloc = new uint32_t[QUEUE_SIZE + 8];
+        queue = (uint32_t*)(((uintptr_t)queueAlloc + 31) & ~31);
+    }
+    fifoMtx = mtx;
+    queueEnd = queueStart = 0;
+    queueHead.store(0);
+    queueTail.store(0);
+    statDone.store(statSent);
+    workerSleeping.store(false);
+    workerStop.store(false);
+    worker = new WorkerThread(&Gpu3D::runWorker, this);
+#ifndef GEOM_WORKER_PRIORITY
+#define GEOM_WORKER_PRIORITY 15
+#endif
+    worker->setPriority(GEOM_WORKER_PRIORITY);
+}
+
+void Gpu3D::stopWorker() {
+    // Let the worker finish its commands and then stop it
+    if (!worker) return;
+    sync();
+    workerStop.store(true);
+    {
+        std::lock_guard<std::mutex> guard(workerMutex);
+        workerCond.notify_one();
+    }
+    worker->join();
+    delete worker;
+    worker = nullptr;
+    delete[] queueAlloc;
+    queueAlloc = queue = nullptr;
+}
+
+void Gpu3D::runWorker() {
+    uint32_t head = queueHead.load(), tail = head, stat = statDone.load(), published = head;
+    while (true) {
+        if (head == tail && (tail = queueTail.load()) == head) {
+            // Publish progress once caught up, so anything waiting on the worker can continue
+            statDone.store(stat);
+            queueHead.store(head);
+            published = head;
+
+            // Sleep until more commands are published; it doesn't spin, since it would hold up the 3D renderer
+            std::unique_lock<std::mutex> lock(workerMutex);
+            workerSleeping.store(true);
+            while ((tail = queueTail.load()) == head) {
+                if (workerStop.load()) return;
+                workerCond.wait(lock);
+            }
+            workerSleeping.store(false);
+        }
+
+        // Execute the next command
+        uint32_t header = queue[head & (QUEUE_SIZE - 1)];
+        uint8_t command = header;
+        int count = header >> 8;
+        uint32_t params[32];
+        for (int i = 0; i < count; i++)
+            params[i] = queue[(head + 1 + i) & (QUEUE_SIZE - 1)];
+        execute(command, params);
+        if (changesExecStat(command)) stat++;
+        head += count + 1;
+
+        // Also publish progress regularly, so the emulator thread can reuse space if the queue fills up
+        if (head - published >= 0x400) {
+            queueHead.store(head);
+            published = head;
+        }
+    }
+}
+
+void Gpu3D::queueCommand(uint8_t command, uint32_t *params, int count) {
+    // Wait for room in the queue, which only happens if the worker falls far behind
+    // A block's worth of extra room is kept, since whole cache blocks are claimed when they start being written
+    while (queueEnd + count + 1 + 8 - queueStart > QUEUE_SIZE) {
+        publishQueue(true);
+        std::this_thread::yield();
+        queueStart = queueHead.load();
+    }
+
+    // Add the command and its parameters; they're published at the end of the batch
+    // Each cache block is claimed instead of being read from memory, since everything in it is new
+    for (int i = 0; i <= count; i++) {
+        uint32_t index = (queueEnd + i) & (QUEUE_SIZE - 1);
+        if (!(index & 7)) claimBlock(&queue[index]);
+        queue[index] = i ? params[i - 1] : (command | (count << 8));
+    }
+    queueEnd += count + 1;
+    if (changesExecStat(command)) statSent++;
+}
+
+void Gpu3D::publishQueue(bool force) {
+    // Let the worker see newly queued commands, waking it if it's sleeping
+    // A sleeping worker is only woken once enough commands build up, unless something needs their results
+    // The sleeping flag is checked again after publishing, since the worker might have just gone to sleep
+    uint32_t tail = queueTail.load(std::memory_order_relaxed);
+    if (tail == queueEnd || (!force && queueEnd - tail < 0x800 && workerSleeping.load())) return;
+    queueTail.store(queueEnd);
+    if (workerSleeping.load()) {
+        std::lock_guard<std::mutex> guard(workerMutex);
+        workerCond.notify_one();
+    }
+}
+
+void Gpu3D::sync() {
+    // Wait for the worker to execute all queued commands, before something reads their results
+    if (!worker) return;
+    publishQueue(true);
+    if ((queueStart = queueHead.load()) == queueEnd) return;
+    EP_START(wait);
+    while ((queueStart = queueHead.load()) != queueEnd)
+        std::this_thread::yield();
+    EP_ADD(EP_GEOM_SYNC, wait);
+}
+
+void Gpu3D::syncStat() {
+    // Wait for the worker to execute any queued commands that change the GXSTAT bits set by execution
+    if (!worker || statDone.load() == statSent) return;
+    publishQueue(true);
+    EP_START(wait);
+    while (statDone.load() != statSent)
+        std::this_thread::yield();
+    EP_ADD(EP_GEOM_SYNC, wait);
+}
+
+int Gpu3D::stackSlot(uint8_t mode, uint8_t command, uint32_t param) {
+    // Update GXSTAT's matrix stack bits for a stack command, and get the stack slot it uses, or -1 if none
+    switch (command) {
+    case 0x11: // MTX_PUSH
+        switch (mode) {
+        case 0: // Projection stack
+            // Push to the single projection stack slot and increment the pointer, or indicate an overflow error
+            if (gxStat & BIT(13)) {
+                gxStat |= BIT(15);
+                return -1;
+            }
+            gxStat |= BIT(13);
+            return 0;
+
+        case 1: case 2: { // Coordinate and directional stacks
+            // Indicate an overflow error; even though the 31st slot exists, it still causes one
+            uint8_t pointer = (gxStat >> 8) & 0x1F;
+            if (pointer >= 30)
+                gxStat |= BIT(15);
+
+            // Push to the current slot and increment the pointer
+            if (pointer >= 31) return -1;
+            gxStat += BIT(8);
+            return pointer;
+        }
+
+        default: // Texture stack
+            return 0;
+        }
+
+    case 0x12: // MTX_POP
+        switch (mode) {
+        case 0: // Projection stack
+            // Pop from the single projection stack slot and decrement the pointer, or indicate an underflow error
+            if (!(gxStat & BIT(13))) {
+                gxStat |= BIT(15);
+                return -1;
+            }
+            gxStat &= ~BIT(13);
+            return 0;
+
+        case 1: case 2: { // Coordinate and directional stacks
+            // Indicate an underflow or overflow error; even though the 31st slot exists, it still causes one
+            uint8_t pointer = ((gxStat >> 8) & 0x1F) - ((int8_t)(param << 2) >> 2);
+            if (pointer >= 30)
+                gxStat |= BIT(15);
+
+            // Pop from the new slot and update the pointer
+            if (pointer >= 31) return -1;
+            gxStat = (gxStat & ~0x1F00) | (pointer << 8);
+            return pointer;
+        }
+
+        default: // Texture stack
+            return 0;
+        }
+
+    default: // MTX_STORE, MTX_RESTORE
+        if (mode == 1 || mode == 2) {
+            // Indicate an overflow error for the 31st slot, which still exists
+            int address = param & 0x1F;
+            if (address == 31) gxStat |= BIT(15);
+            return address;
+        }
+        return 0;
+    }
+}
+
+int Gpu3D::takeCommand(uint8_t command, uint32_t *params, int count) {
+    // Update the FIFO's view of a command as it's taken for execution, and return how many parameters to pass on
+    switch (command) {
+    case 0x11: case 0x12: // MTX_PUSH, MTX_POP
+        // Clear the busy bit if no more matrix commands are queued, and then fall through
+        if (--matrixQueue == 0)
+            gxStat &= ~BIT(14);
+
+    case 0x13: case 0x14: // MTX_STORE, MTX_RESTORE
+        // Pass the stack slot as an extra parameter, since the FIFO keeps track of the stack pointers
+        params[1] = stackSlot(worker ? fifoMtx.mode : mtx.mode, command, params[0]);
+        count = 2;
+        break;
+
+    case 0x50: // SWAP_BUFFERS
+        // Halt the geometry engine; the buffers will be swapped and the engine unhalted on next V-blank
+        state = GX_HALTED;
+        break;
+
+    case 0x70: case 0x71: case 0x72: // BOX_TEST, POS_TEST, VEC_TEST
+        // Clear the busy bit if no more test commands are queued
+        if ((testQueue -= paramCounts[command]) == 0)
+            gxStat &= ~BIT(0);
+        break;
+    }
+
+    // With a worker, also apply matrix commands to a copy of the matrices, so they can be read without waiting
+    if (worker) {
+        switch (command) {
+            case 0x10: mtxModeCmd(fifoMtx, params[0]); break; // MTX_MODE
+            case 0x11: mtxPushCmd(fifoMtx, params[1]); break; // MTX_PUSH
+            case 0x12: mtxPopCmd(fifoMtx, params[1]); break; // MTX_POP
+            case 0x13: mtxStoreCmd(fifoMtx, params[1]); break; // MTX_STORE
+            case 0x14: mtxRestoreCmd(fifoMtx, params[1]); break; // MTX_RESTORE
+            case 0x15: mtxIdentityCmd(fifoMtx); break; // MTX_IDENTITY
+            case 0x16: mtxLoad44Cmd(fifoMtx, params); break; // MTX_LOAD_4x4
+            case 0x17: mtxLoad43Cmd(fifoMtx, params); break; // MTX_LOAD_4x3
+            case 0x18: mtxMult44Cmd(fifoMtx, params); break; // MTX_MULT_4x4
+            case 0x19: mtxMult43Cmd(fifoMtx, params); break; // MTX_MULT_4x3
+            case 0x1A: mtxMult33Cmd(fifoMtx, params); break; // MTX_MULT_3x3
+            case 0x1B: mtxScaleCmd(fifoMtx, params); break; // MTX_SCALE
+            case 0x1C: mtxTransCmd(fifoMtx, params); break; // MTX_TRANS
+        }
+    }
+    return count;
+}
+
+void Gpu3D::execute(uint8_t command, uint32_t *params) {
+    // Execute a geometry command
+    EP_START_EMU(cmdStart);
+    switch (command) {
+        case 0x10: mtxModeCmd(mtx, params[0]); break; // MTX_MODE
+        case 0x11: mtxPushCmd(mtx, params[1]); break; // MTX_PUSH
+        case 0x12: mtxPopCmd(mtx, params[1]); break; // MTX_POP
+        case 0x13: mtxStoreCmd(mtx, params[1]); break; // MTX_STORE
+        case 0x14: mtxRestoreCmd(mtx, params[1]); break; // MTX_RESTORE
+        case 0x15: mtxIdentityCmd(mtx); break; // MTX_IDENTITY
+        case 0x16: mtxLoad44Cmd(mtx, params); break; // MTX_LOAD_4x4
+        case 0x17: mtxLoad43Cmd(mtx, params); break; // MTX_LOAD_4x3
+        case 0x18: mtxMult44Cmd(mtx, params); break; // MTX_MULT_4x4
+        case 0x19: mtxMult43Cmd(mtx, params); break; // MTX_MULT_4x3
+        case 0x1A: mtxMult33Cmd(mtx, params); break; // MTX_MULT_3x3
+        case 0x1B: mtxScaleCmd(mtx, params); break; // MTX_SCALE
+        case 0x1C: mtxTransCmd(mtx, params); break; // MTX_TRANS
+        case 0x20: colorCmd(params[0]); break; // COLOR
+        case 0x21: normalCmd(params[0]); break; // NORMAL
+        case 0x22: texCoordCmd(params[0]); break; // TEXCOORD
+        case 0x23: vtx16Cmd(params); break; // VTX_16
+        case 0x24: vtx10Cmd(params[0]); break; // VTX_10
+        case 0x25: vtxXYCmd(params[0]); break; // VTX_XY
+        case 0x26: vtxXZCmd(params[0]); break; // VTX_XZ
+        case 0x27: vtxYZCmd(params[0]); break; // VTX_YZ
+        case 0x28: vtxDiffCmd(params[0]); break; // VTX_DIFF
+        case 0x29: polygonAttrCmd(params[0]); break; // POLYGON_ATTR
+        case 0x2A: texImageParamCmd(params[0]); break; // TEXIMAGE_PARAM
+        case 0x2B: plttBaseCmd(params[0]); break; // PLTT_BASE
+        case 0x30: difAmbCmd(params[0]); break; // DIF_AMB
+        case 0x31: speEmiCmd(params[0]); break; // SPE_EMI
+        case 0x32: lightVectorCmd(params[0]); break; // LIGHT_VECTOR
+        case 0x33: lightColorCmd(params[0]); break; // LIGHT_COLOR
+        case 0x34: shininessCmd(params); break; // SHININESS
+        case 0x40: beginVtxsCmd(params[0]); break; // BEGIN_VTXS
+        case 0x41: break; // END_VTXS
+        case 0x50: swapBuffersCmd(params[0]); break; // SWAP_BUFFERS
+        case 0x60: viewportCmd(params[0]); break; // VIEWPORT
+        case 0x70: boxTestCmd(params); break; // BOX_TEST
+        case 0x71: posTestCmd(params); break; // POS_TEST
+        case 0x72: vecTestCmd(params[0]); break; // VEC_TEST
+
+    default:
+        LOG_CRIT("Unknown GXFIFO command: 0x%X\n", command);
+        break;
+    }
+    EP_ADD_EMU((command >= 0x23 && command <= 0x28) ? EP_GEOM_VTX : (command == 0x22) ? EP_GEOM_TEX :
+        (command < 0x20) ? EP_GEOM_MTX : EP_GEOM_OTHER, cmdStart);
+}
+
 void Gpu3D::runCommands() {
 #ifdef PROFILE_EMU
     EP_START(geom);
     struct GeomTimer { uint32_t start; ~GeomTimer() { EP_ADD(EP_GEOM, start); } } geomTimer = { geom };
 #endif
+    // Execute commands on a worker thread if threaded 3D is enabled
+    if (!worker != !(Settings::threaded3D & 0xF))
+        worker ? stopWorker() : startWorker();
+
     // Run a batch of geometry commands
     uint32_t cycles = 0;
     while (cycles < GPU3D_BATCH) {
@@ -299,53 +613,12 @@ void Gpu3D::runCommands() {
             fifo.pop_front();
         }
 
-        // Execute the geometry command
-        EP_START(cmdStart);
-        switch (entry.command) {
-            case 0x10: mtxModeCmd(entry.param); break; // MTX_MODE
-            case 0x11: mtxPushCmd(); break; // MTX_PUSH
-            case 0x12: mtxPopCmd(entry.param); break; // MTX_POP
-            case 0x13: mtxStoreCmd(entry.param); break; // MTX_STORE
-            case 0x14: mtxRestoreCmd(entry.param); break; // MTX_RESTORE
-            case 0x15: mtxIdentityCmd(); break; // MTX_IDENTITY
-            case 0x16: mtxLoad44Cmd(params); break; // MTX_LOAD_4x4
-            case 0x17: mtxLoad43Cmd(params); break; // MTX_LOAD_4x3
-            case 0x18: mtxMult44Cmd(params); break; // MTX_MULT_4x4
-            case 0x19: mtxMult43Cmd(params); break; // MTX_MULT_4x3
-            case 0x1A: mtxMult33Cmd(params); break; // MTX_MULT_3x3
-            case 0x1B: mtxScaleCmd(params); break; // MTX_SCALE
-            case 0x1C: mtxTransCmd(params); break; // MTX_TRANS
-            case 0x20: colorCmd(entry.param); break; // COLOR
-            case 0x21: normalCmd(entry.param); break; // NORMAL
-            case 0x22: texCoordCmd(entry.param); break; // TEXCOORD
-            case 0x23: vtx16Cmd(params); break; // VTX_16
-            case 0x24: vtx10Cmd(entry.param); break; // VTX_10
-            case 0x25: vtxXYCmd(entry.param); break; // VTX_XY
-            case 0x26: vtxXZCmd(entry.param); break; // VTX_XZ
-            case 0x27: vtxYZCmd(entry.param); break; // VTX_YZ
-            case 0x28: vtxDiffCmd(entry.param); break; // VTX_DIFF
-            case 0x29: polygonAttrCmd(entry.param); break; // POLYGON_ATTR
-            case 0x2A: texImageParamCmd(entry.param); break; // TEXIMAGE_PARAM
-            case 0x2B: plttBaseCmd(entry.param); break; // PLTT_BASE
-            case 0x30: difAmbCmd(entry.param); break; // DIF_AMB
-            case 0x31: speEmiCmd(entry.param); break; // SPE_EMI
-            case 0x32: lightVectorCmd(entry.param); break; // LIGHT_VECTOR
-            case 0x33: lightColorCmd(entry.param); break; // LIGHT_COLOR
-            case 0x34: shininessCmd(params); break; // SHININESS
-            case 0x40: beginVtxsCmd(entry.param); break; // BEGIN_VTXS
-            case 0x41: break; // END_VTXS
-            case 0x50: swapBuffersCmd(entry.param); break; // SWAP_BUFFERS
-            case 0x60: viewportCmd(entry.param); break; // VIEWPORT
-            case 0x70: boxTestCmd(params); break; // BOX_TEST
-            case 0x71: posTestCmd(params); break; // POS_TEST
-            case 0x72: vecTestCmd(entry.param); break; // VEC_TEST
-
-        default:
-            LOG_CRIT("Unknown GXFIFO command: 0x%X\n", entry.command);
-            break;
-        }
-        EP_ADD((entry.command >= 0x23 && entry.command <= 0x28) ? EP_GEOM_VTX : (entry.command == 0x22) ? EP_GEOM_TEX :
-            (entry.command < 0x20) ? EP_GEOM_MTX : EP_GEOM_OTHER, cmdStart);
+        // Apply the parts of the command that the FIFO handles, and then execute it, on the worker if running
+        // Single-parameter commands take theirs from the first slot
+        if (count == 1) params[0] = entry.param;
+        int passed = takeCommand(entry.command, params, count);
+        if (worker) queueCommand(entry.command, params, passed);
+        else execute(entry.command, params);
 
         // On hardware, FIFO entries are moved into a pipe before being executed
         // The pipe can hold 4 entries, and is refilled when it runs half empty (2 entries)
@@ -358,6 +631,9 @@ void Gpu3D::runCommands() {
         if (fifo.empty() || fifo.size() < paramCounts[fifo.front().command])
             break;
     }
+
+    // Let the worker see the batch's commands
+    if (worker) publishQueue(false);
 
     // Update the FIFO status
     gxStat = (gxStat & ~0x01FF0000) | ((fifo.size() - pipeSize) << 16); // FIFO entries
@@ -417,7 +693,8 @@ void Gpu3D::processVertices() {
 }
 
 void Gpu3D::swapBuffers() {
-    // Process final vertices and reset the count
+    // Process final vertices and reset the count, after any queued commands have run
+    sync();
     processVertices();
     processCount = 0;
 
@@ -474,7 +751,7 @@ void Gpu3D::addVertex() {
     // Transform the texture coordinates
     if (textureCoordMode == 3) {
         // Get the texture matrix with the texture coordinates
-        Matrix matrix = texture;
+        Matrix matrix = mtx.texture;
         matrix.data[12] = (int32_t)s << 12;
         matrix.data[13] = (int32_t)t << 12;
 
@@ -487,13 +764,10 @@ void Gpu3D::addVertex() {
     }
 
     // Update the clip matrix if necessary
-    if (clipDirty) {
-        clip = coordinate * projection;
-        clipDirty = false;
-    }
+    mtx.updateClip();
 
     // Transform the vertex
-    verticesIn[vertexCountIn] = verticesIn[vertexCountIn] * clip;
+    verticesIn[vertexCountIn] = verticesIn[vertexCountIn] * mtx.clip;
 
     // Move to the next vertex
     vertexCountIn++;
@@ -560,9 +834,9 @@ void Gpu3D::addPolygon() {
 
     // Check if the polygon should be culled, and clip it if not
     bool cull = (!renderFront && dot > 0) || (!renderBack && dot < 0);
-    EP_START(clipStart);
+    EP_START_EMU(clipStart);
     bool clip = cull ? false : clipPolygon(unclipped, clipped, &savedPolygon.size);
-    EP_ADD(EP_GEOM_CLIP, clipStart);
+    EP_ADD_EMU(EP_GEOM_CLIP, clipStart);
 
     // Discard polygons that should be culled or are outside of the view area
     if (cull || savedPolygon.size == 0) {
@@ -673,328 +947,260 @@ void Gpu3D::addPolygon() {
     polygonCountIn++;
 }
 
-void Gpu3D::mtxModeCmd(uint32_t param) {
+void Gpu3D::mtxModeCmd(MatrixState &m, uint32_t param) {
     // Set the matrix mode
-    matrixMode = param & 0x00000003;
+    m.mode = param & 0x00000003;
 }
 
-void Gpu3D::mtxPushCmd() {
-    // Push the current matrix onto a stack
-    switch (matrixMode) {
+void Gpu3D::mtxPushCmd(MatrixState &m, int slot) {
+    // Push the current matrix onto a stack, if the FIFO found room
+    switch (m.mode) {
     case 0: // Projection stack
-        if (!(gxStat & BIT(13))) {
-            // Push to the single projection stack slot and increment the pointer
-            projectionStack = projection;
-            gxStat |= BIT(13);
-        }
-        else {
-            // Indicate a matrix stack overflow error
-            gxStat |= BIT(15);
-        }
+        if (slot >= 0) m.projectionStack = m.projection;
         break;
 
-    case 1: case 2: { // Coordinate and directional stacks
-        // Get the stack pointer to push to
-        uint8_t pointer = (gxStat >> 8) & 0x1F;
-
-        // Indicate a matrix stack overflow error
-        // Even though the 31st slot exists, it still causes an overflow error
-        if (pointer >= 30)
-            gxStat |= BIT(15);
-
-        // Push to the current coordinate and directional stack slots and increment the pointer
-        if (pointer < 31) {
-            coordinateStack[pointer] = coordinate;
-            directionStack[pointer] = direction;
-            gxStat += BIT(8);
+    case 1: case 2: // Coordinate and directional stacks
+        if (slot >= 0) {
+            m.coordinateStack[slot] = m.coordinate;
+            m.directionStack[slot] = m.direction;
         }
         break;
-    }
 
     case 3: // Texture stack
-        // Push to the single texture stack slot
-        textureStack = texture;
+        m.textureStack = m.texture;
         break;
     }
-
-    // Clear the busy bit if no more matrix commands are queued
-    if (--matrixQueue == 0)
-        gxStat &= ~BIT(14);
 }
 
-void Gpu3D::mtxPopCmd(uint32_t param) {
-    // Pop a matrix from a stack
-    switch (matrixMode) {
+void Gpu3D::mtxPopCmd(MatrixState &m, int slot) {
+    // Pop a matrix from a stack, if the FIFO found one
+    switch (m.mode) {
     case 0: // Projection stack
-        if (gxStat & BIT(13)) {
-            // Pop from the single projection stack slot and decrement the pointer
-            gxStat &= ~BIT(13);
-            projection = projectionStack;
-            clipDirty = true;
-        }
-        else {
-            // Indicate a matrix stack underflow error
-            gxStat |= BIT(15);
+        if (slot >= 0) {
+            m.projection = m.projectionStack;
+            m.clipDirty = true;
         }
         break;
 
-    case 1: case 2: { // Coordinate and directional stacks
-        // Get the stack pointer to pop from
-        uint8_t pointer = ((gxStat >> 8) & 0x1F) - ((int8_t)(param << 2) >> 2);
-
-        // Indicate a matrix stack underflow or overflow error
-        // Even though the 31st slot exists, it still causes an overflow error
-        if (pointer >= 30)
-            gxStat |= BIT(15);
-
-        // Pop from the current coordinate and directional stack slots and update the pointer
-        if (pointer < 31) {
-            gxStat = (gxStat & ~0x1F00) | (pointer << 8);
-            coordinate = coordinateStack[pointer];
-            direction = directionStack[pointer];
-            clipDirty = true;
+    case 1: case 2: // Coordinate and directional stacks
+        if (slot >= 0) {
+            m.coordinate = m.coordinateStack[slot];
+            m.direction = m.directionStack[slot];
+            m.clipDirty = true;
         }
         break;
-    }
 
     case 3: // Texture stack
-        // Pop from the single texture stack slot
-        texture = textureStack;
+        m.texture = m.textureStack;
         break;
     }
-
-    // Clear the busy bit if no more matrix commands are queued
-    if (--matrixQueue == 0)
-        gxStat &= ~BIT(14);
 }
 
-void Gpu3D::mtxStoreCmd(uint32_t param) {
+void Gpu3D::mtxStoreCmd(MatrixState &m, int slot) {
     // Store a matrix to the stack
-    switch (matrixMode) {
+    switch (m.mode) {
     case 0: // Projection stack
-        // Store to the single projection stack slot
-        projectionStack = projection;
+        m.projectionStack = m.projection;
         break;
 
-    case 1: case 2: { // Coordinate and directional stacks
-        // Get the stack address to store to
-        int address = param & 0x0000001F;
-
-        // Indicate a matrix stack overflow error
-        // Even though the 31st slot exists, it still causes an overflow error
-        if (address == 31) gxStat |= BIT(15);
-
-        // Store to the current coordinate and directional stack slots
-        coordinateStack[address] = coordinate;
-        directionStack[address] = direction;
+    case 1: case 2: // Coordinate and directional stacks
+        m.coordinateStack[slot] = m.coordinate;
+        m.directionStack[slot] = m.direction;
         break;
-    }
 
     case 3: // Texture stack
-        // Store to the single texture stack slot
-        textureStack = texture;
+        m.textureStack = m.texture;
         break;
     }
 }
 
-void Gpu3D::mtxRestoreCmd(uint32_t param) {
+void Gpu3D::mtxRestoreCmd(MatrixState &m, int slot) {
     // Restore a matrix from the stack
-    switch (matrixMode) {
+    switch (m.mode) {
     case 0: // Projection stack
-        // Restore from the single projection stack slot
-        projection = projectionStack;
-        clipDirty = true;
+        m.projection = m.projectionStack;
+        m.clipDirty = true;
         break;
 
-    case 1: case 2: { // Coordinate and directional stacks
-        // Get the stack address to store to
-        int address = param & 0x0000001F;
-
-        // Indicate a matrix stack overflow error
-        // Even though the 31st slot exists, it still causes an overflow error
-        if (address == 31) gxStat |= BIT(15);
-
-        // Restore from the current coordinate and directional stack slots
-        coordinate = coordinateStack[address];
-        direction = directionStack[address];
-        clipDirty = true;
+    case 1: case 2: // Coordinate and directional stacks
+        m.coordinate = m.coordinateStack[slot];
+        m.direction = m.directionStack[slot];
+        m.clipDirty = true;
         break;
-   }
 
     case 3: // Texture stack
-        // Restore from the single texture stack slot
-        texture = textureStack;
+        m.texture = m.textureStack;
         break;
     }
 }
 
-void Gpu3D::mtxIdentityCmd() {
+void Gpu3D::mtxIdentityCmd(MatrixState &m) {
     // Set a matrix to the identity matrix
-    switch (matrixMode) {
+    switch (m.mode) {
     case 0: // Projection stack
-        projection = Matrix();
-        clipDirty = true;
+        m.projection = Matrix();
+        m.clipDirty = true;
         break;
 
     case 1: // Coordinate stack
-        coordinate = Matrix();
-        clipDirty = true;
+        m.coordinate = Matrix();
+        m.clipDirty = true;
         break;
 
     case 2: // Coordinate and directional stacks
-        coordinate = Matrix();
-        direction = Matrix();
-        clipDirty = true;
+        m.coordinate = Matrix();
+        m.direction = Matrix();
+        m.clipDirty = true;
         break;
 
     case 3: // Texture stack
-        texture = Matrix();
+        m.texture = Matrix();
         break;
     }
 }
 
-void Gpu3D::mtxLoad44Cmd(uint32_t *params) {
+void Gpu3D::mtxLoad44Cmd(MatrixState &m, uint32_t *params) {
     // Convert the parameters to a 4x4 matrix
     Matrix matrix = *(Matrix*)&params[0];
 
     // Set a matrix to the 4x4 matrix
-    switch (matrixMode) {
+    switch (m.mode) {
     case 0: // Projection stack
-        projection = matrix;
-        clipDirty = true;
+        m.projection = matrix;
+        m.clipDirty = true;
         break;
 
     case 1: // Coordinate stack
-        coordinate = matrix;
-        clipDirty = true;
+        m.coordinate = matrix;
+        m.clipDirty = true;
         break;
 
     case 2: // Coordinate and directional stacks
-        coordinate = matrix;
-        direction = matrix;
-        clipDirty = true;
+        m.coordinate = matrix;
+        m.direction = matrix;
+        m.clipDirty = true;
         break;
 
     case 3: // Texture stack
-        texture = matrix;
+        m.texture = matrix;
         break;
     }
 }
 
-void Gpu3D::mtxLoad43Cmd(uint32_t *params) {
+void Gpu3D::mtxLoad43Cmd(MatrixState &m, uint32_t *params) {
     // Convert the parameters to a 4x3 matrix
     Matrix matrix;
     for (int i = 0; i < 4; i++)
         memcpy(&matrix.data[i * 4], &params[i * 3], 3 * sizeof(int32_t));
 
     // Set a matrix to the 4x3 matrix
-    switch (matrixMode) {
+    switch (m.mode) {
     case 0: // Projection stack
-        projection = matrix;
-        clipDirty = true;
+        m.projection = matrix;
+        m.clipDirty = true;
         break;
 
     case 1: // Coordinate stack
-        coordinate = matrix;
-        clipDirty = true;
+        m.coordinate = matrix;
+        m.clipDirty = true;
         break;
 
     case 2: // Coordinate and directional stacks
-        coordinate = matrix;
-        direction = matrix;
-        clipDirty = true;
+        m.coordinate = matrix;
+        m.direction = matrix;
+        m.clipDirty = true;
         break;
 
     case 3: // Texture stack
-        texture = matrix;
+        m.texture = matrix;
         break;
     }
 }
 
-void Gpu3D::mtxMult44Cmd(uint32_t *params) {
+void Gpu3D::mtxMult44Cmd(MatrixState &m, uint32_t *params) {
     // Convert the parameters to a 4x4 matrix
     Matrix matrix = *(Matrix*)&params[0];
 
     // Multiply a matrix by the 4x4 matrix
-    switch (matrixMode) {
+    switch (m.mode) {
     case 0: // Projection stack
-        projection = matrix * projection;
-        clipDirty = true;
+        m.projection = matrix * m.projection;
+        m.clipDirty = true;
         break;
 
     case 1: // Coordinate stack
-        coordinate = matrix * coordinate;
-        clipDirty = true;
+        m.coordinate = matrix * m.coordinate;
+        m.clipDirty = true;
         break;
 
     case 2: // Coordinate and directional stacks
-        coordinate = matrix * coordinate;
-        direction = matrix * direction;
-        clipDirty = true;
+        m.coordinate = matrix * m.coordinate;
+        m.direction = matrix * m.direction;
+        m.clipDirty = true;
         break;
 
     case 3: // Texture stack
-        texture = matrix * texture;
+        m.texture = matrix * m.texture;
         break;
     }
 }
 
-void Gpu3D::mtxMult43Cmd(uint32_t *params) {
+void Gpu3D::mtxMult43Cmd(MatrixState &m, uint32_t *params) {
     // Convert the parameters to a 4x3 matrix
     Matrix matrix;
     for (int i = 0; i < 4; i++)
         memcpy(&matrix.data[i * 4], &params[i * 3], 3 * sizeof(int32_t));
 
     // Multiply a matrix by the 4x3 matrix
-    switch (matrixMode) {
+    switch (m.mode) {
     case 0: // Projection stack
-        projection = matrix * projection;
-        clipDirty = true;
+        m.projection = matrix * m.projection;
+        m.clipDirty = true;
         break;
 
     case 1: // Coordinate stack
-        coordinate = matrix * coordinate;
-        clipDirty = true;
+        m.coordinate = matrix * m.coordinate;
+        m.clipDirty = true;
         break;
 
     case 2: // Coordinate and directional stacks
-        coordinate = matrix * coordinate;
-        direction = matrix * direction;
-        clipDirty = true;
+        m.coordinate = matrix * m.coordinate;
+        m.direction = matrix * m.direction;
+        m.clipDirty = true;
         break;
 
     case 3: // Texture stack
-        texture = matrix * texture;
+        m.texture = matrix * m.texture;
         break;
     }
 }
 
-void Gpu3D::mtxMult33Cmd(uint32_t *params) {
+void Gpu3D::mtxMult33Cmd(MatrixState &m, uint32_t *params) {
     // Convert the parameters to a 3x3 matrix
     Matrix matrix;
     for (int i = 0; i < 3; i++)
         memcpy(&matrix.data[i * 4], &params[i * 3], 3 * sizeof(int32_t));
 
     // Multiply a matrix by the 3x3 matrix
-    switch (matrixMode) {
+    switch (m.mode) {
     case 0: // Projection stack
-        projection = matrix * projection;
-        clipDirty = true;
+        m.projection = matrix * m.projection;
+        m.clipDirty = true;
         break;
 
     case 1: // Coordinate stack
-        coordinate = matrix * coordinate;
-        clipDirty = true;
+        m.coordinate = matrix * m.coordinate;
+        m.clipDirty = true;
         break;
 
     case 2: // Coordinate and directional stacks
-        coordinate = matrix * coordinate;
-        direction = matrix * direction;
-        clipDirty = true;
+        m.coordinate = matrix * m.coordinate;
+        m.direction = matrix * m.direction;
+        m.clipDirty = true;
         break;
 
     case 3: // Texture stack
-        texture = matrix * texture;
+        m.texture = matrix * m.texture;
         break;
     }
 }
@@ -1013,46 +1219,46 @@ static void translate(Matrix &mtx, uint32_t *params) {
             (int64_t)(int32_t)params[2] * mtx.data[8 + x] + ((int64_t)mtx.data[12 + x] << 12)) >> 12;
 }
 
-void Gpu3D::mtxScaleCmd(uint32_t *params) {
+void Gpu3D::mtxScaleCmd(MatrixState &m, uint32_t *params) {
     // Multiply a matrix by the scale matrix
-    switch (matrixMode) {
+    switch (m.mode) {
     case 0: // Projection stack
-        scale(projection, params);
-        clipDirty = true;
+        scale(m.projection, params);
+        m.clipDirty = true;
         break;
 
     case 1: case 2: // Coordinate stack
-        scale(coordinate, params);
-        clipDirty = true;
+        scale(m.coordinate, params);
+        m.clipDirty = true;
         break;
 
     case 3: // Texture stack
-        scale(texture, params);
+        scale(m.texture, params);
         break;
     }
 }
 
-void Gpu3D::mtxTransCmd(uint32_t *params) {
+void Gpu3D::mtxTransCmd(MatrixState &m, uint32_t *params) {
     // Multiply a matrix by the translation matrix
-    switch (matrixMode) {
+    switch (m.mode) {
     case 0: // Projection stack
-        translate(projection, params);
-        clipDirty = true;
+        translate(m.projection, params);
+        m.clipDirty = true;
         break;
 
     case 1: // Coordinate stack
-        translate(coordinate, params);
-        clipDirty = true;
+        translate(m.coordinate, params);
+        m.clipDirty = true;
         break;
 
     case 2: // Coordinate and directional stacks
-        translate(coordinate, params);
-        translate(direction, params);
-        clipDirty = true;
+        translate(m.coordinate, params);
+        translate(m.direction, params);
+        m.clipDirty = true;
         break;
 
     case 3: // Texture stack
-        translate(texture, params);
+        translate(m.texture, params);
         break;
     }
 }
@@ -1076,7 +1282,7 @@ void Gpu3D::normalCmd(uint32_t param) {
         vertex.w = 1 << 12;
 
         // Get the texture matrix with the texture coordinates
-        Matrix matrix = texture;
+        Matrix matrix = mtx.texture;
         matrix.data[12] = s << 12;
         matrix.data[13] = t << 12;
 
@@ -1089,7 +1295,7 @@ void Gpu3D::normalCmd(uint32_t param) {
     }
 
     // Multiply the normal vector with the directional matrix
-    normalVector = normalVector * direction;
+    normalVector = normalVector * mtx.direction;
 
     // Set the base vertex color
     savedVertex.color = emissionColor;
@@ -1149,7 +1355,7 @@ void Gpu3D::texCoordCmd(uint32_t param) {
         vertex.w = 1 << 8;
 
         // Multiply the vertex with the texture matrix
-        vertex = vertex * texture;
+        vertex = vertex * mtx.texture;
 
         // Save the transformed coordinates
         savedVertex.s = vertex.x >> 8;
@@ -1257,7 +1463,7 @@ void Gpu3D::lightVectorCmd(uint32_t param) {
     lightVector[param >> 30].z = ((int16_t)((param & 0x3FF00000) >> 14)) >> 3;
 
     // Multiply the light vector by the directional matrix
-    lightVector[param >> 30] = lightVector[param >> 30] * direction;
+    lightVector[param >> 30] = lightVector[param >> 30] * mtx.direction;
 
     // Set one of the half vectors
     halfVector[param >> 30].x = (lightVector[param >> 30].x) / 2;
@@ -1307,11 +1513,8 @@ void Gpu3D::beginVtxsCmd(uint32_t param) {
 
 void Gpu3D::swapBuffersCmd(uint32_t param) {
     // Set the W-buffering toggle
+    // The geometry engine is halted when the command is taken from the FIFO, until buffers swap on next V-blank
     savedPolygon.wBuffer = param & BIT(1);
-
-    // Halt the geometry engine
-    // The buffers will be swapped and the engine unhalted on next V-blank
-    state = GX_HALTED;
 }
 
 void Gpu3D::viewportCmd(uint32_t param) {
@@ -1348,10 +1551,7 @@ void Gpu3D::boxTestCmd(uint32_t *params) {
     };
 
     // Update the clip matrix if necessary
-    if (clipDirty) {
-        clip = coordinate * projection;
-        clipDirty = false;
-    }
+    mtx.updateClip();
 
     // Get the transformed vertices of the box
     Vertex vertices[8];
@@ -1360,7 +1560,7 @@ void Gpu3D::boxTestCmd(uint32_t *params) {
         vertices[i].y = boxTestCoords[indices[i * 3 + 1]];
         vertices[i].z = boxTestCoords[indices[i * 3 + 2]];
         vertices[i].w = 1 << 12;
-        vertices[i] = vertices[i] * clip;
+        vertices[i] = vertices[i] * mtx.clip;
     }
 
     // Arrange the vertices to represent the faces of the box
@@ -1373,10 +1573,6 @@ void Gpu3D::boxTestCmd(uint32_t *params) {
         { vertices[1], vertices[5], vertices[7], vertices[4] }
     };
 
-    // Clear the busy bit if no more test commands are queued
-    if ((testQueue -= 3) == 0)
-        gxStat &= ~BIT(0);
-
     // Clip the faces of the box
     // If any of the faces are in view, set the result bit
     for (int i = 0; i < 6; i++) {
@@ -1385,13 +1581,13 @@ void Gpu3D::boxTestCmd(uint32_t *params) {
         clipPolygon(faces[i], clipped, &size);
 
         if (size > 0) {
-            gxStat |= BIT(1);
+            gxStatExec |= BIT(1);
             return;
         }
     }
 
     // Clear the result bit if none of the faces were in view
-    gxStat &= ~BIT(1);
+    gxStatExec &= ~BIT(1);
 }
 
 void Gpu3D::posTestCmd(uint32_t *params) {
@@ -1402,21 +1598,14 @@ void Gpu3D::posTestCmd(uint32_t *params) {
     savedVertex.w = 1 << 12;
 
     // Update the clip matrix if necessary
-    if (clipDirty) {
-        clip = coordinate * projection;
-        clipDirty = false;
-    }
+    mtx.updateClip();
 
     // Multiply the vertex with the clip matrix and set the result
-    Vertex vertex = savedVertex * clip;
+    Vertex vertex = savedVertex * mtx.clip;
     posResult[0] = vertex.x;
     posResult[1] = vertex.y;
     posResult[2] = vertex.z;
     posResult[3] = vertex.w;
-
-    // Clear the busy bit if no more test commands are queued
-    if ((testQueue -= 2) == 0)
-        gxStat &= ~BIT(0);
 }
 
 void Gpu3D::vecTestCmd(uint32_t param) {
@@ -1428,14 +1617,10 @@ void Gpu3D::vecTestCmd(uint32_t param) {
 
     // Multiply the vector with the directional matrix and set the result
     // The result has 4-bit signs and 12-bit fractions
-    vector = vector * direction;
+    vector = vector * mtx.direction;
     vecResult[0] = ((int16_t)(vector.x << 3)) >> 3;
     vecResult[1] = ((int16_t)(vector.y << 3)) >> 3;
     vecResult[2] = ((int16_t)(vector.z << 3)) >> 3;
-
-    // Clear the busy bit if no more test commands are queued
-    if (--testQueue == 0)
-        gxStat &= ~BIT(0);
 }
 
 void Gpu3D::addEntry(Entry entry) {
@@ -1745,23 +1930,27 @@ void Gpu3D::writeGxStat(uint32_t mask, uint32_t value) {
     gxStat = (gxStat & ~mask) | (value & mask);
 }
 
+uint32_t Gpu3D::readGxStat() {
+    // Read from the GXSTAT register, once queued commands that change the bits set by execution have run
+    syncStat();
+    return gxStat | gxStatExec;
+}
+
 uint32_t Gpu3D::readRamCount() {
-    // Read from the RAM_COUNT register
+    // Read from the RAM_COUNT register, after any queued commands have run
+    sync();
     return (vertexCountIn << 16) | polygonCountIn;
 }
 
 uint32_t Gpu3D::readClipMtxResult(int index) {
-    // Update the clip matrix if necessary
-    if (clipDirty) {
-        clip = coordinate * projection;
-        clipDirty = false;
-    }
-
-    // Read from one of the CLIPMTX_RESULT registers
-    return clip.data[index];
+    // Read from one of the CLIPMTX_RESULT registers, using the FIFO's copy of the matrices if there's a worker
+    MatrixState &m = worker ? fifoMtx : mtx;
+    m.updateClip();
+    return m.clip.data[index];
 }
 
 uint32_t Gpu3D::readVecMtxResult(int index) {
-    // Read from one of the VECMTX_RESULT registers
-    return direction.data[(index / 3) * 4 + index % 3];
+    // Read from one of the VECMTX_RESULT registers, using the FIFO's copy of the matrices if there's a worker
+    MatrixState &m = worker ? fifoMtx : mtx;
+    return m.direction.data[(index / 3) * 4 + index % 3];
 }

@@ -121,7 +121,7 @@ void Dma::transfer(int channel) {
         wordCounts[channel] -= gxFifoCount;
         if (wordCounts[channel] > 0) {
             // Schedule another transfer immediately if the FIFO is still half empty
-            if (core->gpu3D.readGxStat() & BIT(25))
+            if (core->gpu3D.fifoHalfEmpty())
                 core->schedule(SchedTask(DMA9_TRANSFER0 + (cpu << 2) + channel), 1);
             return;
         }
@@ -134,7 +134,7 @@ void Dma::transfer(int channel) {
             dstAddrs[channel] = dmaDad[channel];
 
         // In GXFIFO mode, schedule another transfer immediately if the FIFO is still half empty
-        if (mode == 7 && core->gpu3D.readGxStat() & BIT(25))
+        if (mode == 7 && core->gpu3D.fifoHalfEmpty())
             core->schedule(SchedTask(DMA9_TRANSFER0 + (cpu << 2) + channel), 1);
     }
     else {
@@ -180,7 +180,7 @@ void Dma::writeDmaCnt(int channel, uint32_t mask, uint32_t value) {
     // In GXFIFO mode, schedule a transfer on the channel immediately if the FIFO is already half empty
     // All other modes are only triggered at the moment when the event happens
     // For example, if a word from the DS cart is ready before starting a DMA, the DMA will not be triggered
-    if ((dmaCnt[channel] & BIT(31)) && ((dmaCnt[channel] & 0x38000000) >> 27) == 7 && (core->gpu3D.readGxStat() & BIT(25)))
+    if ((dmaCnt[channel] & BIT(31)) && ((dmaCnt[channel] & 0x38000000) >> 27) == 7 && core->gpu3D.fifoHalfEmpty())
         core->schedule(SchedTask(DMA9_TRANSFER0 + (cpu << 2) + channel), 1);
 
     // Don't reload the internal registers unless the enable bit changed from 0 to 1

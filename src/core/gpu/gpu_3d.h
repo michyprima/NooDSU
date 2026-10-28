@@ -19,11 +19,15 @@
 
 #pragma once
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <queue>
 #include <vector>
 
 #include "../defines.h"
+#include "../worker_thread.h"
 
 class Core;
 
@@ -84,6 +88,24 @@ struct Matrix {
     Matrix operator*(Matrix &mtx);
 };
 
+// The matrices and stacks used by the geometry engine
+struct MatrixState {
+    uint8_t mode = 0;
+    bool clipDirty = false;
+    Matrix projection, projectionStack;
+    Matrix coordinate, coordinateStack[32];
+    Matrix direction, directionStack[32];
+    Matrix texture, textureStack;
+    Matrix clip;
+
+    void updateClip() {
+        // Update the clip matrix if the matrices that make it up have changed
+        if (!clipDirty) return;
+        clip = coordinate * projection;
+        clipDirty = false;
+    }
+};
+
 struct Vector {
     int32_t x = 0, y = 0, z = 0;
 
@@ -130,6 +152,7 @@ public:
     uint16_t vertexCountOut = 0;
 
     Gpu3D(Core *core): core(core) {}
+    ~Gpu3D();
     void saveState(FILE *file);
     void loadState(FILE *file);
 
@@ -137,9 +160,10 @@ public:
     void swapBuffers();
     bool shouldSwap() { return state == GX_HALTED; }
 
-    uint32_t readGxStat() { return gxStat; }
-    uint32_t readPosResult(int index) { return posResult[index]; }
-    uint32_t readVecResult(int index) { return vecResult[index]; }
+    uint32_t readGxStat();
+    bool fifoHalfEmpty() { return gxStat & BIT(25); }
+    uint32_t readPosResult(int index) { sync(); return posResult[index]; }
+    uint32_t readVecResult(int index) { sync(); return vecResult[index]; }
     uint32_t readRamCount();
     uint32_t readClipMtxResult(int index);
     uint32_t readVecMtxResult(int index);
@@ -196,14 +220,8 @@ private:
 
     static const uint8_t paramCounts[0x100];
 
-    uint8_t matrixMode = 0;
-    bool clipDirty = false;
-
-    Matrix projection, projectionStack;
-    Matrix coordinate, coordinateStack[32];
-    Matrix direction, directionStack[32];
-    Matrix texture, textureStack;
-    Matrix clip;
+    // The execution state, and the FIFO's copy that's kept when there's a worker
+    MatrixState mtx, fifoMtx;
 
     Vertex vertices1[6144], vertices2[6144];
     Vertex *verticesIn = vertices1;
@@ -239,10 +257,43 @@ private:
 
     uint32_t gxFifo = 0x00000000;
     uint32_t gxStat = 0x04000000;
+    uint32_t gxStatExec = 0;
     int32_t posResult[4] = {};
     int16_t vecResult[3] = {};
 
     uint8_t gxFifoCount = 0;
+
+    // Commands can be executed on a worker thread, while the FIFO is still handled on the emulator thread
+    // Commands are passed through a ring of words, and anything that reads their results waits for them first
+    static const uint32_t QUEUE_SIZE = 0x10000;
+    static const uint32_t EXEC_STAT_BITS = BIT(1);
+    // Each side only publishes its position now and then, and shared values are padded onto their own cache lines,
+    // since sharing cache lines between cores is slow
+    WorkerThread *worker = nullptr;
+    uint32_t *queue = nullptr, *queueAlloc = nullptr;
+    uint32_t queueEnd = 0, queueStart = 0;
+    uint32_t statSent = 0;
+    uint8_t padding1[64];
+    std::atomic<uint32_t> queueHead, statDone;
+    std::atomic<bool> workerSleeping;
+    uint8_t padding2[64];
+    std::atomic<uint32_t> queueTail;
+    std::atomic<bool> workerStop;
+    uint8_t padding3[64];
+    std::mutex workerMutex;
+    std::condition_variable workerCond;
+
+    void startWorker();
+    void stopWorker();
+    void runWorker();
+    void queueCommand(uint8_t command, uint32_t *params, int count);
+    void publishQueue(bool force);
+    void sync();
+    void syncStat();
+
+    int stackSlot(uint8_t mode, uint8_t command, uint32_t param);
+    int takeCommand(uint8_t command, uint32_t *params, int count);
+    void execute(uint8_t command, uint32_t *params);
 
     static uint32_t rgb5ToRgb6(uint16_t color);
     static Vertex intersection(Vertex *vtx1, Vertex *vtx2, int32_t val1, int32_t val2);
@@ -252,19 +303,19 @@ private:
     void addVertex();
     void addPolygon();
 
-    void mtxModeCmd(uint32_t param);
-    void mtxPushCmd();
-    void mtxPopCmd(uint32_t param);
-    void mtxStoreCmd(uint32_t param);
-    void mtxRestoreCmd(uint32_t param);
-    void mtxIdentityCmd();
-    void mtxLoad44Cmd(uint32_t *params);
-    void mtxLoad43Cmd(uint32_t *params);
-    void mtxMult44Cmd(uint32_t *params);
-    void mtxMult43Cmd(uint32_t *params);
-    void mtxMult33Cmd(uint32_t *params);
-    void mtxScaleCmd(uint32_t *params);
-    void mtxTransCmd(uint32_t *params);
+    void mtxModeCmd(MatrixState &m, uint32_t param);
+    void mtxPushCmd(MatrixState &m, int slot);
+    void mtxPopCmd(MatrixState &m, int slot);
+    void mtxStoreCmd(MatrixState &m, int slot);
+    void mtxRestoreCmd(MatrixState &m, int slot);
+    void mtxIdentityCmd(MatrixState &m);
+    void mtxLoad44Cmd(MatrixState &m, uint32_t *params);
+    void mtxLoad43Cmd(MatrixState &m, uint32_t *params);
+    void mtxMult44Cmd(MatrixState &m, uint32_t *params);
+    void mtxMult43Cmd(MatrixState &m, uint32_t *params);
+    void mtxMult33Cmd(MatrixState &m, uint32_t *params);
+    void mtxScaleCmd(MatrixState &m, uint32_t *params);
+    void mtxTransCmd(MatrixState &m, uint32_t *params);
     void colorCmd(uint32_t param);
     void normalCmd(uint32_t param);
     void texCoordCmd(uint32_t param);

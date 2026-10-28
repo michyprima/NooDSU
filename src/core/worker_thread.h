@@ -69,6 +69,12 @@ public:
         delete fallback;
     }
 
+    void setPriority(int priority) {
+#ifdef __WIIU__
+        if (thread) OSSetThreadPriority(thread, priority);
+#endif
+    }
+
     void join() {
 #ifdef __WIIU__
         if (thread) {
