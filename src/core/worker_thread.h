@@ -56,10 +56,16 @@ public:
     }
 #endif
 
-    template <typename... Args> WorkerThread(Args&&... args): func(std::bind(std::forward<Args>(args)...)) {
+    // A core to keep a thread on, for platforms that let threads be placed
+    enum Core { ANY_CORE, CORE_0 };
+
+    template <typename... Args> WorkerThread(Args&&... args): WorkerThread(ANY_CORE, std::forward<Args>(args)...) {}
+
+    template <typename... Args> WorkerThread(Core core, Args&&... args): func(std::bind(std::forward<Args>(args)...)) {
 #ifdef __WIIU__
-        // Create the thread like std::thread does on Wii U, but only allowed on cores 0 and 2
-        thread = createThread(entry, this, STACK_SIZE, 16, OS_THREAD_ATTRIB_AFFINITY_CPU0 | OS_THREAD_ATTRIB_AFFINITY_CPU2);
+        // Create the thread like std::thread does on Wii U, but only allowed on cores 0 and 2, or just core 0
+        uint32_t affinity = OS_THREAD_ATTRIB_AFFINITY_CPU0 | ((core == CORE_0) ? 0 : OS_THREAD_ATTRIB_AFFINITY_CPU2);
+        thread = createThread(entry, this, STACK_SIZE, 16, affinity);
         if (thread) return;
 #endif
         fallback = new std::thread(func);

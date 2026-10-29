@@ -1239,12 +1239,19 @@ void ConsoleUI::pauseMenu() {
             }
 #endif
 #ifdef PROFILE_SAMPLER
-            case Sampler::MENU_INDEX: // CPU Samples
+            case Sampler::MENU_INDEX: { // CPU Samples
                 // Show where the emulator's core spent its time since emulation last resumed
                 // The details are on a second page, shown after the first is dismissed
-                if (message("CPU Samples", Sampler::report(0)))
-                    message("CPU Samples: details", Sampler::report(1));
+                // Both pages are also added to a file, which is easier to read than the screen
+                std::string pages[] = { Sampler::report(0), Sampler::report(1) };
+                if (FILE *file = fopen((Settings::basePath + "/samples.txt").c_str(), "a")) {
+                    fprintf(file, "%s\n%s\n\n", pages[0].c_str(), pages[1].c_str());
+                    fclose(file);
+                }
+                if (message("CPU Samples", pages[0]))
+                    message("CPU Samples: details", pages[1]);
                 break;
+            }
 #endif
             }
         }

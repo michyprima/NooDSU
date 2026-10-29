@@ -328,6 +328,7 @@ void Gpu3D::stopWorker() {
 }
 
 void Gpu3D::runWorker() {
+    HB_SET_CORE(HB_GEOM_CORE);
     uint32_t head = queueHead.load(), tail = head, stat = statDone.load(), published = head;
     while (true) {
         if (head == tail && (tail = queueTail.load()) == head) {

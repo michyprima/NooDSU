@@ -47,6 +47,9 @@ enum HeartbeatSlot {
     HB_3D_WAIT_US, // Total microseconds the 2D engine waited for 3D scanlines
     HB_EMU_3D_WAIT_US, // Total microseconds the emulator waited for the GPU 3D renderer to finish a frame
     HB_2D_JOIN_US, // Total microseconds the emulator waited for the 2D thread at the end of frames
+    HB_2D_EMU_LINES, // Scanlines the emulator drew because the 2D thread hadn't started them
+    HB_2D_CORE, // Core the 2D thread last ran on, plus 1
+    HB_GEOM_CORE, // Core the geometry worker last ran on, plus 1
     HB_COUNT
 };
 
@@ -56,12 +59,19 @@ namespace Heartbeat {
 }
 #define HB_SET(slot, value) (Heartbeat::values[slot] = (value))
 #define HB_INC(slot) (Heartbeat::values[slot]++)
+#ifdef __WIIU__
+#include <coreinit/core.h>
+#define HB_SET_CORE(slot) HB_SET(slot, OSGetCoreId() + 1)
+#else
+#define HB_SET_CORE(slot) do {} while (0)
+#endif
 #define HB_TIMER(name) auto name = std::chrono::steady_clock::now()
 #define HB_ADD_US(slot, name) (Heartbeat::values[slot] += \
     std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - name).count())
 #else
 #define HB_SET(slot, value) do {} while (0)
 #define HB_INC(slot) do {} while (0)
+#define HB_SET_CORE(slot) do {} while (0)
 #define HB_TIMER(name) do {} while (0)
 #define HB_ADD_US(slot, name) do {} while (0)
 #endif
