@@ -987,8 +987,13 @@ static bool mayJump(uint32_t op, bool thumb) {
 
 bool Jit::batched(JitBlock *block, size_t i) {
     // Check if an instruction is in a run whose cycles are checked together, which is only done with fast timing
-    return codeFast && !testing && !block->thumb && i < block->instrs.size() &&
-        nativeKind(block->instrs[i].opcode, arm7) == NK_ALU;
+    // Runs are native ALU instructions and loads; stores always check, since they can halt the CPU, change code
+    // or schedule something that has to happen straight away, and jumps end runs since they leave the block
+    if (!codeFast || testing || block->thumb || i >= block->instrs.size()) return false;
+    uint32_t op = block->instrs[i].opcode;
+    int kind = nativeKind(op, arm7);
+    if (kind == NK_ALU) return true;
+    return (kind == NK_TRANSFER || kind == NK_HALF || kind == NK_BLOCK) && (op & BIT(20));
 }
 
 void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool &ok) {
@@ -1025,9 +1030,9 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
         }
     }
 
-    // With fast timing, runs of native ALU instructions add up their cycles and only check whether to stop after
-    // the last one, so events can happen a few instructions late; they don't access memory or jump, so nothing
-    // else can tell, and jumps into the middle of a run still count the cycles of what they run
+    // With fast timing, runs of native ALU instructions and loads add up their cycles and only check whether to stop
+    // after the last one, so events can happen a few instructions late and loads can see the time a little behind;
+    // jumps into the middle of a run still count the cycles of what they run
     if (batched(block, i)) {
         if (batched(block, i + 1)) {
             e.add(R_BATCH, R_BATCH, 3);
