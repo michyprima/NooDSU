@@ -136,6 +136,7 @@ private:
     int offPc = 0, offCpsr = 0, offCycles = 0, offEventCycles = 0, offUsr = 0, offRegs = 0;
     uint32_t codeCore = 0;
     bool codeFailed = false;
+    bool codeFast = false; // Whether code was generated for fast timing, which checks cycles less often
 
     // Addresses that native instructions use, which tests can point elsewhere
     uint32_t addrCondition = 0, addrMemory = 0, addrReadMap = 0, addrWriteMap = 0;
@@ -167,6 +168,7 @@ private:
     void linkEntry(JitBlock *block);
     void emitStubs(PpcEmitter &e);
     bool emitNative(PpcEmitter &e, uint32_t op, uint32_t pc);
+    bool batched(JitBlock *block, size_t i);
     void emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool &ok);
     void emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitBranch(PpcEmitter &e, uint32_t op, uint32_t pc);

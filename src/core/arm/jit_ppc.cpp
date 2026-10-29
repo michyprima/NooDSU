@@ -34,6 +34,7 @@
 
 // Registers that hold state while generated code runs; they're saved by the entry code
 enum PpcReg {
+    R_BATCH = 20, // Cycles of a batch of instructions that share one check, zero outside of one
     R_TMP2 = 21, // Values kept across memory accesses
     R_TMP1 = 22,
     R_WMAP = 23, // ARM9 write memory map
@@ -266,7 +267,7 @@ void Jit::emitStubs(PpcEmitter &e) {
     codeExit = e.here();
     e.lwz(0, 84, 1);
     e.mtlr(0);
-    e.lmw(R_TMP2, 24, 1);
+    e.lmw(R_BATCH, 24, 1);
     e.addi(1, 1, 80);
     e.blr();
 
@@ -276,7 +277,8 @@ void Jit::emitStubs(PpcEmitter &e) {
     e.stwu(1, -80, 1);
     e.mflr(0);
     e.stw(0, 84, 1);
-    e.stmw(R_TMP2, 24, 1);
+    e.stmw(R_BATCH, 24, 1);
+    e.li(R_BATCH, 0);
     e.mr(R_ARM, 3);
     e.mr(R_EVENTS, 4);
     e.mr(R_LIMIT, 5);
@@ -949,6 +951,11 @@ static bool mayJump(uint32_t op, bool thumb) {
     return (op & 0x0E000010) == 0x06000010; // Undefined
 }
 
+bool Jit::batched(JitBlock *block, size_t i) {
+    // Check if an instruction is in a run whose cycles are checked together, which is only done with fast timing
+    return codeFast && !block->thumb && i < block->instrs.size() && nativeKind(block->instrs[i].opcode) == NK_ALU;
+}
+
 void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool &ok) {
     // Generate one instruction; the program counter register already holds its value
     uint32_t op = block->instrs[i].opcode;
@@ -981,6 +988,18 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
             e.li(3, 1);
             e.patchB(done);
         }
+    }
+
+    // With fast timing, runs of native ALU instructions add up their cycles and only check whether to stop after
+    // the last one, so events can happen a few instructions late; they don't access memory or jump, so nothing
+    // else can tell, and jumps into the middle of a run still count the cycles of what they run
+    if (batched(block, i)) {
+        if (batched(block, i + 1)) {
+            e.add(R_BATCH, R_BATCH, 3);
+            return;
+        }
+        e.add(3, 3, R_BATCH);
+        e.li(R_BATCH, 0);
     }
 
     // Count cycles and check whether to stop; the program counter is stored first if it's only in the register

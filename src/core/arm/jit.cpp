@@ -399,6 +399,15 @@ bool Jit::run(const uint32_t *limit) {
     if (!codeArea && !codeFailed)
         initCodegen();
 
+    // Code generated with fast timing counts cycles differently, so start over if the setting changed
+    if (bool(Settings::fastTiming) != codeFast) {
+        reset();
+        for (size_t i = 0; i < graveyard.size(); i++)
+            delete graveyard[i];
+        graveyard.clear();
+        codeFast = !codeFast;
+    }
+
     // Find the host memory for the next instruction, if it's somewhere code can be compiled from
     Interpreter &arm = core->interpreter[0];
     bool thumb = arm.cpsr & BIT(5);

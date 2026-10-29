@@ -1336,7 +1336,10 @@ void ConsoleUI::jitSelfTest() {
     // Run the interpreter and the JIT side by side with settings that keep them deterministic
     // Frames are skipped so most of the time goes to CPU emulation, which is what's being compared
     // The user's settings are restored afterwards, so they aren't saved with the test values
-    int saved[] = { Settings::threaded2D, Settings::threaded3D, Settings::emulateAudio, Settings::frameskip, Settings::jit };
+    // Timing is exact for the test, since fast timing lets compiled code check for events less often than the interpreter
+    int saved[] = { Settings::threaded2D, Settings::threaded3D, Settings::emulateAudio, Settings::frameskip, Settings::jit,
+        Settings::fastTiming };
+    Settings::fastTiming = 0;
     Settings::threaded2D = 0;
     Settings::threaded3D = 0;
     Settings::emulateAudio = 0;
@@ -1359,6 +1362,7 @@ void ConsoleUI::jitSelfTest() {
         Settings::emulateAudio = saved[2];
         Settings::frameskip = saved[3];
         Settings::jit = saved[4];
+        Settings::fastTiming = saved[5];
         Rtc::fixedTime = 0;
     };
     if (!cores[1]) {
