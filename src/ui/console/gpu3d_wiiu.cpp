@@ -86,6 +86,7 @@ struct GpuDraw {
 class Gpu3DWiiU: public Gpu3DHardware {
 public:
     bool init();
+    bool initMultisampling();
     void render(Gpu3DRenderer *renderer) override;
 
 private:
@@ -102,6 +103,11 @@ private:
     GX2Texture fogTexture; // The fog density for each depth / 0x200, from 0 to 128
     uint8_t fogSettings[35] = {}; // The fog table, offset and shift the densities were made from
     GX2DepthBuffer depthBuffer;
+    GX2ColorBuffer msaaColor; // Multisampled buffers, which anti-aliasing draws the polygons into and averages down
+    GX2ColorBuffer msaaAttribs; // Never kept, but render targets drawn together have to be multisampled alike
+    GX2DepthBuffer msaaDepth;
+    GX2Surface resolved; // The averaged colors, before they're copied to the linear color buffer
+    int msaaState = 0; // 0 until the multisampled buffers are first needed, then 1 if they were made or -1 if not
     GpuVertex *vertices = nullptr;
 
     // Decoded textures are kept between frames, and decoded again when the data they came from changes
@@ -258,6 +264,48 @@ bool Gpu3DWiiU::init() {
 int Gpu3DWiiU::threadEntry(int argc, const char **argv) {
     ((Gpu3DWiiU*)argv)->run();
     return 0;
+}
+
+bool Gpu3DWiiU::initMultisampling() {
+    // Create the multisampled buffers for anti-aliasing, with 4 samples per pixel; color buffers also need an
+    // auxiliary buffer, which starts out filled with the value that marks it as cleared
+    auto multisample = [](GX2ColorBuffer &buffer, const GX2Surface &like) {
+        memset(&buffer, 0, sizeof(buffer));
+        buffer.surface = like;
+        buffer.surface.aa = GX2_AA_MODE4X;
+        buffer.surface.use = GX2_SURFACE_USE_COLOR_BUFFER;
+        buffer.surface.tileMode = GX2_TILE_MODE_DEFAULT;
+        buffer.surface.image = nullptr;
+        buffer.viewNumSlices = 1;
+        GX2CalcSurfaceSizeAndAlignment(&buffer.surface);
+        uint32_t size, alignment;
+        GX2CalcColorBufferAuxInfo(&buffer, &size, &alignment);
+        buffer.aaBuffer = MEMAllocFromDefaultHeapEx(size, alignment);
+        buffer.aaSize = size;
+        buffer.surface.image = MEMAllocFromDefaultHeapEx(buffer.surface.imageSize, buffer.surface.alignment);
+        if (!buffer.aaBuffer || !buffer.surface.image) return false;
+        memset(buffer.aaBuffer, 0xCC, size);
+        DCFlushRange(buffer.aaBuffer, size);
+        GX2InitColorBufferRegs(&buffer);
+        return true;
+    };
+    memset(&msaaDepth, 0, sizeof(msaaDepth));
+    msaaDepth.surface = depthBuffer.surface;
+    msaaDepth.surface.aa = GX2_AA_MODE4X;
+    msaaDepth.surface.image = nullptr;
+    msaaDepth.viewNumSlices = 1;
+    msaaDepth.depthClear = 1.0f;
+    GX2CalcSurfaceSizeAndAlignment(&msaaDepth.surface);
+    GX2InitDepthBufferRegs(&msaaDepth);
+    msaaDepth.surface.image = MEMAllocFromDefaultHeapEx(msaaDepth.surface.imageSize, msaaDepth.surface.alignment);
+    memset(&resolved, 0, sizeof(resolved));
+    resolved = colorBuffer.surface;
+    resolved.tileMode = GX2_TILE_MODE_DEFAULT;
+    resolved.image = nullptr;
+    GX2CalcSurfaceSizeAndAlignment(&resolved);
+    resolved.image = MEMAllocFromDefaultHeapEx(resolved.imageSize, resolved.alignment);
+    return multisample(msaaColor, colorBuffer.surface) && multisample(msaaAttribs, attribBuffer.surface) &&
+        msaaDepth.surface.image && resolved.image;
 }
 
 void Gpu3DWiiU::render(Gpu3DRenderer *renderer) {
@@ -513,6 +561,10 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     // reference value; the GPU's alphas are 6-bit ones out of 63, so the cutoff is between the 6-bit values
     float alphaMin = (disp3DCnt & BIT(2)) ? (renderer->getAlphaTestRef() * 2 + 1.5f) / 63 : 0.0f;
 
+    // Make the buffers for anti-aliasing by multisampling the first time it's enabled
+    if (Settings::gpuAntiAlias && !msaaState)
+        msaaState = initMultisampling() ? 1 : -1;
+
     // Get the clear values; the clear color is 5-bit with a 5-bit alpha
     uint32_t clear = renderer->getClearColor();
     float clearR = ((clear >> 0) & 0x1F) / 31.0f, clearG = ((clear >> 5) & 0x1F) / 31.0f;
@@ -594,122 +646,142 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, edgeTexture.surface.image, edgeTexture.surface.imageSize);
         if (fogUpdated)
             GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, fogTexture.surface.image, fogTexture.surface.imageSize);
-        GX2SetContextState(state);
-        GX2ClearColor(&colorBuffer, clearR, clearG, clearB, clearA);
-        GX2ClearColor(&attribBuffer, float(clearAttrib & 0x3F) * 4 + ((clearAttrib & BIT(13)) ? 2 : 0), clearDepthValue, 0, 0);
-        GX2ClearDepthStencilEx(&depthBuffer, depthClear, (clear >> 24) & 0x3F, GX2_CLEAR_FLAGS_BOTH); // Clear polygon ID
-        GX2SetContextState(state);
-        GX2SetColorBuffer(&colorBuffer, GX2_RENDER_TARGET_0);
-        GX2SetColorBuffer(&attribBuffer, GX2_RENDER_TARGET_1);
-        GX2SetDepthBuffer(&depthBuffer);
-        GX2SetViewport(0, 0, 256, 192, 0, 1);
-        GX2SetScissor(0, 0, 256, 192);
-        GX2SetRasterizerClipControlHalfZ(TRUE, FALSE, TRUE);
-        GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
-        GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
-        GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
-            GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ONE, GX2_BLEND_COMBINE_MODE_MAX);
-        GX2SetAttribBuffer(0, (count + 6) * sizeof(GpuVertex), sizeof(GpuVertex), vertices);
+        // With anti-aliasing, the polygons are first drawn multisampled and averaged down, and then again without
+        // color for the attributes, since polygon IDs and depths can't be averaged; this isn't how the DS does it,
+        // but it smooths the same edges, and more
+        bool msaa = (msaaState == 1) && Settings::gpuAntiAlias && (disp3DCnt & BIT(4));
+        for (int pass = msaa ? 0 : 1; pass < 2; pass++) {
+            if (pass == 1 && msaa && !writeAttribs) break;
+            GX2ColorBuffer &target = pass ? colorBuffer : msaaColor;
+            GX2ColorBuffer &attribTarget = pass ? attribBuffer : msaaAttribs;
+            GX2DepthBuffer &depthTarget = pass ? depthBuffer : msaaDepth;
+            GX2ChannelMask colorMask = (pass == 0 || !msaa) ? GX2_CHANNEL_MASK_RGBA : NO_CHANNELS;
+            bool attribs = writeAttribs && pass == 1;
+            GX2SetContextState(state);
+            if (colorMask)
+                GX2ClearColor(&target, clearR, clearG, clearB, clearA);
+            GX2ClearColor(&attribTarget, float(clearAttrib & 0x3F) * 4 + ((clearAttrib & BIT(13)) ? 2 : 0), clearDepthValue, 0, 0);
+            GX2ClearDepthStencilEx(&depthTarget, depthClear, (clear >> 24) & 0x3F, GX2_CLEAR_FLAGS_BOTH); // Clear polygon ID
+            GX2SetContextState(state);
+            GX2SetColorBuffer(&target, GX2_RENDER_TARGET_0);
+            GX2SetColorBuffer(&attribTarget, GX2_RENDER_TARGET_1);
+            GX2SetDepthBuffer(&depthTarget);
+            GX2SetViewport(0, 0, 256, 192, 0, 1);
+            GX2SetScissor(0, 0, 256, 192);
+            GX2SetRasterizerClipControlHalfZ(TRUE, FALSE, TRUE);
+            GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
+            GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
+            GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
+                GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ONE, GX2_BLEND_COMBINE_MODE_MAX);
+            GX2SetAttribBuffer(0, (count + 6) * sizeof(GpuVertex), sizeof(GpuVertex), vertices);
 
-        for (GpuDraw &draw : draws) {
-            WHBGfxShaderGroup &group = groups[draw.shader];
-            GX2SetFetchShader(&group.fetchShader);
-            GX2SetVertexShader(group.vertexShader);
-            GX2SetPixelShader(group.pixelShader);
-            if (draw.texture) {
-                // The shaders take texture coordinates in texels, and are given the size of a texel
-                float texelSize[] = { 1.0f / draw.texture->surface.width, 1.0f / draw.texture->surface.height, 0, 0 };
-                GX2SetPixelTexture(draw.texture, 0);
-                GX2SetPixelSampler(&samplers[draw.sampler], 0);
-                GX2SetPixelUniformReg(0, 4, texelSize);
-            }
-            GX2CompareFunction func = wBuffer ? (draw.depthEqual ? GX2_COMPARE_FUNC_GEQUAL : GX2_COMPARE_FUNC_GREATER) :
-                (draw.depthEqual ? GX2_COMPARE_FUNC_LEQUAL : GX2_COMPARE_FUNC_LESS);
-            GX2SetColorControl(GX2_LOGIC_OP_COPY, draw.translucent ? 0x01 : 0x00, FALSE, TRUE);
+            for (GpuDraw &draw : draws) {
+                WHBGfxShaderGroup &group = groups[draw.shader];
+                GX2SetFetchShader(&group.fetchShader);
+                GX2SetVertexShader(group.vertexShader);
+                GX2SetPixelShader(group.pixelShader);
+                if (draw.texture) {
+                    // The shaders take texture coordinates in texels, and are given the size of a texel
+                    float texelSize[] = { 1.0f / draw.texture->surface.width, 1.0f / draw.texture->surface.height, 0, 0 };
+                    GX2SetPixelTexture(draw.texture, 0);
+                    GX2SetPixelSampler(&samplers[draw.sampler], 0);
+                    GX2SetPixelUniformReg(0, 4, texelSize);
+                }
+                GX2CompareFunction func = wBuffer ? (draw.depthEqual ? GX2_COMPARE_FUNC_GEQUAL : GX2_COMPARE_FUNC_GREATER) :
+                    (draw.depthEqual ? GX2_COMPARE_FUNC_LEQUAL : GX2_COMPARE_FUNC_LESS);
+                GX2SetColorControl(GX2_LOGIC_OP_COPY, draw.translucent ? 0x01 : 0x00, FALSE, TRUE);
 
-            // The stencil buffer's low bits track the polygon ID of each pixel, with a flag if it was translucent,
-            // since translucent pixels aren't drawn over ones from the same ID; the top bit marks where shadow masks
-            // were hidden, which is where shadows are drawn
-            if (draw.shadow == 1) {
-                if (draw.clearMask) {
-                    // Clear the marks over the whole screen at the start of a group of masks
-                    GX2SetDepthStencilControl(TRUE, FALSE, GX2_COMPARE_FUNC_ALWAYS, TRUE, FALSE,
-                        GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
+                // The stencil buffer's low bits track the polygon ID of each pixel, with a flag if it was translucent,
+                // since translucent pixels aren't drawn over ones from the same ID; the top bit marks where shadow masks
+                // were hidden, which is where shadows are drawn
+                if (draw.shadow == 1) {
+                    if (draw.clearMask) {
+                        // Clear the marks over the whole screen at the start of a group of masks
+                        GX2SetDepthStencilControl(TRUE, FALSE, GX2_COMPARE_FUNC_ALWAYS, TRUE, FALSE,
+                            GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
+                            GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
+                            GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+                        GX2SetStencilMask(0x80, 0x80, 0, 0x80, 0x80, 0);
+                        GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
+                        GX2SetTargetChannelMasks(NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
+                            NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
+                        GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 6, count, 1);
+                    }
+
+                    // Masks draw nothing, but mark the pixels where they fail the depth test
+                    GX2SetDepthStencilControl(TRUE, FALSE, func, TRUE, FALSE,
+                        GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_REPLACE,
                         GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
                         GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
-                    GX2SetStencilMask(0x80, 0x80, 0, 0x80, 0x80, 0);
+                    GX2SetStencilMask(0x80, 0x80, 0x80, 0x80, 0x80, 0x80);
                     GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
                     GX2SetTargetChannelMasks(NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
                         NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
-                    GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 6, count, 1);
+                    GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
+                    GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
+                    continue;
                 }
+                if (draw.shadow == 2) {
+                    // Shadows aren't drawn over pixels with their own ID, so first remove the marks under those
+                    GX2SetDepthStencilControl(TRUE, FALSE, GX2_COMPARE_FUNC_ALWAYS, TRUE, FALSE,
+                        GX2_COMPARE_FUNC_EQUAL, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
+                        GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
+                        GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+                    GX2SetStencilMask(0x3F, 0x80, draw.stencil & 0x3F, 0x3F, 0x80, draw.stencil & 0x3F);
+                    GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
+                    GX2SetTargetChannelMasks(NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
+                        NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
+                    GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
+                    GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
 
-                // Masks draw nothing, but mark the pixels where they fail the depth test
-                GX2SetDepthStencilControl(TRUE, FALSE, func, TRUE, FALSE,
-                    GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_REPLACE,
-                    GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
-                    GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
-                GX2SetStencilMask(0x80, 0x80, 0x80, 0x80, 0x80, 0x80);
-                GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
-                GX2SetTargetChannelMasks(NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
-                    NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
-                GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
-                GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
-                continue;
-            }
-            if (draw.shadow == 2) {
-                // Shadows aren't drawn over pixels with their own ID, so first remove the marks under those
-                GX2SetDepthStencilControl(TRUE, FALSE, GX2_COMPARE_FUNC_ALWAYS, TRUE, FALSE,
-                    GX2_COMPARE_FUNC_EQUAL, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
-                    GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
-                    GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
-                GX2SetStencilMask(0x3F, 0x80, draw.stencil & 0x3F, 0x3F, 0x80, draw.stencil & 0x3F);
-                GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
-                GX2SetTargetChannelMasks(NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
-                    NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
-                GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
-                GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
-
-                // Then draw them where the marks are left, like translucent pixels, keeping the marks
+                    // Then draw them where the marks are left, like translucent pixels, keeping the marks
+                    GX2SetDepthStencilControl(TRUE, draw.depthWrite, func, TRUE, FALSE,
+                        GX2_COMPARE_FUNC_EQUAL, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
+                        GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
+                        GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+                    GX2SetStencilMask(0x80, 0x7F, 0xC0 | draw.stencil, 0x80, 0x7F, 0xC0 | draw.stencil);
+                    GX2SetTargetChannelMasks(colorMask, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
+                        NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
+                    GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
+                    continue;
+                }
+                if (draw.split) {
+                    // Draw the opaque pixels first, then the translucent ones with a shader that drops opaque pixels
+                    // Only modulated textures can give both, since other modes use the polygon's alpha
+                    GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, std::max(0.99f, alphaMin));
+                    GX2SetDepthStencilControl(TRUE, TRUE, func, TRUE, FALSE,
+                        GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
+                        GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
+                        GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+                    GX2SetStencilMask(0x7F, 0x7F, draw.stencil & 0x3F, 0x7F, 0x7F, draw.stencil & 0x3F);
+                    GX2SetTargetChannelMasks(colorMask, attribs ? GX2_CHANNEL_MASK_RGBA : NO_CHANNELS,
+                        NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
+                    GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
+                    GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
+                    if (draw.shader != 1) continue;
+                    WHBGfxShaderGroup &trans = groups[3];
+                    GX2SetFetchShader(&trans.fetchShader);
+                    GX2SetVertexShader(trans.vertexShader);
+                    GX2SetPixelShader(trans.pixelShader);
+                }
                 GX2SetDepthStencilControl(TRUE, draw.depthWrite, func, TRUE, FALSE,
-                    GX2_COMPARE_FUNC_EQUAL, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
-                    GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
-                    GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
-                GX2SetStencilMask(0x80, 0x7F, 0xC0 | draw.stencil, 0x80, 0x7F, 0xC0 | draw.stencil);
-                GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
-                    NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
-                GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
-                continue;
-            }
-            if (draw.split) {
-                // Draw the opaque pixels first, then the translucent ones with a shader that drops opaque pixels
-                // Only modulated textures can give both, since other modes use the polygon's alpha
-                GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, std::max(0.99f, alphaMin));
-                GX2SetDepthStencilControl(TRUE, TRUE, func, TRUE, FALSE,
-                    GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
-                    GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
-                    GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
-                GX2SetStencilMask(0x7F, 0x7F, draw.stencil & 0x3F, 0x7F, 0x7F, draw.stencil & 0x3F);
-                GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, writeAttribs ? GX2_CHANNEL_MASK_RGBA : NO_CHANNELS,
+                    draw.solid ? GX2_COMPARE_FUNC_ALWAYS : GX2_COMPARE_FUNC_NOT_EQUAL, GX2_STENCIL_FUNCTION_REPLACE,
+                    GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS,
+                    GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+                GX2SetStencilMask(0x7F, 0x7F, draw.stencil, 0x7F, 0x7F, draw.stencil);
+                // Only solid pixels set the attributes, since translucent ones keep the solid polygon's ID underneath
+                GX2SetTargetChannelMasks(colorMask,
+                    (attribs && draw.solid) ? GX2_CHANNEL_MASK_RGBA : NO_CHANNELS,
                     NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
                 GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
-                GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
-                if (draw.shader != 1) continue;
-                WHBGfxShaderGroup &trans = groups[3];
-                GX2SetFetchShader(&trans.fetchShader);
-                GX2SetVertexShader(trans.vertexShader);
-                GX2SetPixelShader(trans.pixelShader);
             }
-            GX2SetDepthStencilControl(TRUE, draw.depthWrite, func, TRUE, FALSE,
-                draw.solid ? GX2_COMPARE_FUNC_ALWAYS : GX2_COMPARE_FUNC_NOT_EQUAL, GX2_STENCIL_FUNCTION_REPLACE,
-                GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS,
-                GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
-            GX2SetStencilMask(0x7F, 0x7F, draw.stencil, 0x7F, 0x7F, draw.stencil);
-            // Only solid pixels set the attributes, since translucent ones keep the solid polygon's ID underneath
-            GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA,
-                (writeAttribs && draw.solid) ? GX2_CHANNEL_MASK_RGBA : NO_CHANNELS,
-                NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
-            GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
+
+            // Average the multisampled colors into the color buffer, through a tiled surface the GPU can resolve to
+            if (pass == 0) {
+                GX2ResolveAAColorBuffer(&msaaColor, &resolved, 0, 0);
+                GX2CopySurface(&resolved, 0, 0, &colorBuffer.surface, 0, 0);
+                GX2SetContextState(state);
+            }
         }
 
         if (gpuEdges) {
@@ -845,7 +917,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2SetVertexShader(group.vertexShader);
             GX2SetPixelShader(group.pixelShader);
             for (GpuDraw &draw : draws) {
-                if (draw.translucent || draw.stencil) continue;
+                if (!draw.solid || draw.shadow) continue;
                 GX2CompareFunction func = wBuffer ? (draw.depthEqual ? GX2_COMPARE_FUNC_GEQUAL : GX2_COMPARE_FUNC_GREATER) :
                     (draw.depthEqual ? GX2_COMPARE_FUNC_LEQUAL : GX2_COMPARE_FUNC_LESS);
                 GX2SetDepthOnlyControl(TRUE, draw.depthWrite, func);

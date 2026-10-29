@@ -953,6 +953,7 @@ void ConsoleUI::settingsMenu() {
         settings.push_back(MenuItem("Fast CPU Timing (Experimental)", toggle[Settings::fastTiming]));
         settings.push_back(MenuItem("GPU 3D Renderer (Experimental)", toggle[Settings::hardware3D]));
         settings.push_back(MenuItem("Fast 2D Threads (Experimental)", toggle[Settings::fast2D]));
+        settings.push_back(MenuItem("GPU 3D Multisampling (Experimental)", toggle[Settings::gpuAntiAlias]));
 #endif
 
         // Create the settings menu
@@ -991,6 +992,7 @@ void ConsoleUI::settingsMenu() {
                 case 34: Settings::fastTiming = (Settings::fastTiming + 1) % 2; break;
                 case 35: Settings::hardware3D = (Settings::hardware3D + 1) % 2; break;
                 case 36: Settings::fast2D = (Settings::fast2D + 1) % 2; break;
+                case 37: Settings::gpuAntiAlias = (Settings::gpuAntiAlias + 1) % 2; break;
 
             case 5:
                 // Update the palette when changing themes
