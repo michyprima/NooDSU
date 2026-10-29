@@ -528,8 +528,10 @@ int logHeartbeat(int argc, const char **argv) {
             per(HB_GPU_TEXTURE_US, gpuFrames), per(HB_GPU_LOCK_US, gpuFrames), per(HB_GPU_DRAW_US, gpuFrames),
             per(HB_GPU_CONVERT_US, gpuFrames), per(HB_EMU_3D_WAIT_US, frames), per(HB_2D_JOIN_US, frames),
             per(HB_3D_WAIT_US, frames));
-        fprintf(file, "   2D lines drawn by the emulator per frame: A %u, B %u | cores: 2D %u, geometry %u\n",
-            per(HB_2D_EMU_LINES_A, frames), per(HB_2D_EMU_LINES_B, frames), v[HB_2D_CORE], v[HB_GEOM_CORE]);
+        fprintf(file, "   2D lines drawn by the emulator per frame: A %u, B %u | cores: 2D %u, geometry %u | "
+            "ROM misses %u, waited %u us\n", per(HB_2D_EMU_LINES_A, frames), per(HB_2D_EMU_LINES_B, frames),
+            v[HB_2D_CORE], v[HB_GEOM_CORE], v[HB_ROM_MISSES] - last[HB_ROM_MISSES],
+            v[HB_ROM_WAIT_US] - last[HB_ROM_WAIT_US]);
         for (int i = 0; i < HB_COUNT; i++)
             last[i] = v[i];
         fclose(file);

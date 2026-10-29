@@ -49,6 +49,8 @@ enum HeartbeatSlot {
     HB_2D_JOIN_US, // Total microseconds the emulator waited for the 2D thread at the end of frames
     HB_2D_EMU_LINES_A, // Engine A scanlines the emulator drew because its 2D thread hadn't started them
     HB_2D_EMU_LINES_B, // Engine B scanlines the emulator drew because its 2D thread hadn't started them
+    HB_ROM_MISSES, // ROM reads from file that missed the cache
+    HB_ROM_WAIT_US, // Total microseconds the emulator waited on ROM reads that missed the cache
     HB_2D_CORE, // Core the 2D thread last ran on, plus 1
     HB_GEOM_CORE, // Core the geometry worker last ran on, plus 1
     HB_COUNT

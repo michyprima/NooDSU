@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -66,35 +67,54 @@ protected:
 
     virtual bool loadRom();
     void loadRomSection(size_t offset, size_t size);
+    bool startRomLoad();
+    void ensureLoaded(size_t offset, size_t size);
 
 private:
     std::string romPath, savePath;
     int romFd = -1, saveFd = -1;
 
-    // Large chunks of a ROM file kept in memory, so that small streamed reads don't each go to the file,
-    // with the chunk after the last one read loaded ahead on another thread
+    // Large chunks of a ROM file kept in memory, so that small streamed reads don't each go to the file
+    // Chunks are filled in blocks: a block that's needed is read right away, while another thread loads the rest of
+    // its chunk and the chunk after it, a few blocks per read, so a read that misses the cache doesn't stall for long
     static const uint32_t CHUNK_SIZE = 0x40000;
+    static const uint32_t BLOCK_SIZE = 0x4000;
     static const int CHUNK_COUNT = 8;
+    static const int PREFETCH_BLOCKS = 2;
 
     struct RomChunk {
+        uint8_t *alloc = nullptr;
         uint8_t *data = nullptr;
         uint32_t index = -1;
         uint32_t lastUse = 0;
-        bool loading = false;
+        uint16_t valid = 0; // Blocks that are loaded
+        uint16_t reading = 0; // Blocks being loaded
     };
 
     RomChunk chunks[CHUNK_COUNT];
     uint32_t chunkUses = 0;
-    uint32_t prefetchIndex = -1;
+    uint32_t prefetchWant[2] = { uint32_t(-1), uint32_t(-1) }; // The chunk last read from and the one after it
+    int prefetchStart = 0; // The block after the last one read, where loading ahead in its chunk starts
     bool stopPrefetch = false;
     size_t romBufSize = 0;
     std::mutex chunkMutex, fileMutex;
     std::condition_variable chunkCond;
     WorkerThread *prefetchThread = nullptr;
 
-    void readRomFile(uint8_t *data, size_t offset, size_t size);
+    // A ROM kept in RAM is loaded on another thread, so a game can start right away; reads of data that isn't loaded
+    // yet load it from file first, and the file is closed once everything is loaded
+    std::atomic<uint8_t> *romBlocks = nullptr; // For each block: 0 = not loaded, 1 = loading, 2 = loaded
+    std::atomic<bool> romLoaded{false}, stopLoad{false};
+    std::atomic<int> fileWaiters{0};
+    FILE *loadFile = nullptr;
+    WorkerThread *loadThread = nullptr;
+
+    void readRomFile(FILE *file, uint8_t *data, size_t offset, size_t size);
+    void loadRomBlocks(size_t first, size_t count);
+    void runRomLoad();
     int findChunk(uint32_t index);
-    int fillChunk(uint32_t index, std::unique_lock<std::mutex> &lock);
+    int claimChunk(uint32_t index);
+    void readBlocks(int slot, int first, int count, std::unique_lock<std::mutex> &lock);
     void runPrefetch();
 };
 
