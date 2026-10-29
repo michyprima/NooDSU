@@ -93,6 +93,7 @@ private:
     bool fastFrame = false;
     Gpu2D *drawers[2] = {};
     Gpu2DQueue queues[2];
+    std::mutex drawerLocks[2];
     std::atomic<int> linesDone[2];
     std::mutex frameMutex;
     std::condition_variable frameCond;
@@ -117,5 +118,6 @@ private:
     void drawThreaded(int engine);
     void stopThreads();
     bool fastStep(int engine);
+    bool fastEntry(int engine);
     bool captureLine(uint32_t cnt, int line, const uint32_t *rawLine, bool directOnly);
 };

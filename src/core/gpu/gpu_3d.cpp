@@ -304,7 +304,9 @@ void Gpu3D::startWorker() {
     statDone.store(statSent);
     workerSleeping.store(false);
     workerStop.store(false);
-    worker = new WorkerThread(&Gpu3D::runWorker, this);
+    // Keep it on core 0 where threads can be placed, where it outranks the 2D thread, since core 2 also has the frontend
+    // and a hardware 3D renderer at the same priority, which can hold up the emulator waiting on it
+    worker = new WorkerThread(WorkerThread::CORE_0, &Gpu3D::runWorker, this);
 #ifndef GEOM_WORKER_PRIORITY
 #define GEOM_WORKER_PRIORITY 15
 #endif

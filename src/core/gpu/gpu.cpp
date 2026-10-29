@@ -699,6 +699,19 @@ void Gpu::drawThreaded(int engine) {
 }
 
 bool Gpu::fastStep(int engine) {
+    // Handle an entry for the thread's engine, or for the other one if it has nothing to do, since the other thread can
+    // be held up by busier threads on its core; each engine's entries are handled by one thread at a time, in order
+    for (int i = 0; i < 2; i++) {
+        int target = engine ^ i;
+        if (queues[target].empty() || !drawerLocks[target].try_lock()) continue;
+        bool handled = fastEntry(target);
+        drawerLocks[target].unlock();
+        if (handled) return true;
+    }
+    return false;
+}
+
+bool Gpu::fastEntry(int engine) {
     // Replay the next register write sent to an engine, or draw the next scanline with its drawing copy
     Gpu2DEntry entry;
     if (!queues[engine].pop(entry)) return false;
