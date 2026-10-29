@@ -41,6 +41,7 @@
 #include <mutex>
 
 #include "console_ui.h"
+#include "gpu3d_wiiu.h"
 #include "../core/settings.h"
 #include "../core/worker_thread.h"
 #include "../core/heartbeat.h"
@@ -70,6 +71,10 @@ std::mutex procMutex;
 std::condition_variable procCond;
 std::atomic<bool> releaseRequested;
 bool uiParked, uiDone;
+
+// Whether the UI holds GX2, from starting a frame until it's finished; menus can start a frame and return without
+// finishing it, so it's only locked once, since the mutex counts recursive locks
+bool uiHoldsGx2;
 
 uint32_t ConsoleUI::defaultKeys[] {
     VPAD_BUTTON_A, VPAD_BUTTON_B, VPAD_BUTTON_MINUS, VPAD_BUTTON_PLUS,
@@ -115,8 +120,12 @@ void ConsoleUI::startFrame(uint32_t color) {
     float b = float((color >> 16) & 0xFF) / 0xFF;
     float a = float(color >> 24) / 0xFF;
 
-    // Clear the TV and gamepad screens
+    // Clear the TV and gamepad screens, holding GX2 until the frame is submitted so the 3D renderer doesn't use it
     WHBGfxBeginRender();
+    if (!uiHoldsGx2) {
+        gx2Mutex.lock();
+        uiHoldsGx2 = true;
+    }
     WHBGfxBeginRenderTV();
     WHBGfxClearColor(r, g, b, a);
     WHBGfxBeginRenderDRC();
@@ -129,6 +138,10 @@ void ConsoleUI::endFrame() {
     WHBGfxFinishRenderTV();
     WHBGfxFinishRenderDRC();
     WHBGfxFinishRender();
+    if (uiHoldsGx2) {
+        uiHoldsGx2 = false;
+        gx2Mutex.unlock();
+    }
 
     // Free the gamepad screen texture if it was overridden
     if (gpTexture) {
@@ -164,7 +177,10 @@ void *ConsoleUI::createTexture(uint32_t *data, int width, int height) {
         memcpy(dst, &data[y * width], width * sizeof(uint32_t));
         dst += texture->surface.pitch;
     }
+    // Invalidating adds a GPU command, so hold GX2 for it if this is outside a frame
+    if (!uiHoldsGx2) gx2Mutex.lock();
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, texture->surface.image, texture->surface.imageSize);
+    if (!uiHoldsGx2) gx2Mutex.unlock();
     return texture;
 }
 
@@ -454,6 +470,9 @@ int runUi(int argc, const char **argv) {
     GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
         GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ZERO, GX2_BLEND_COMBINE_MODE_ADD);
 
+    // Set up the GPU 3D renderer, which has its own GX2 state
+    initGpu3D();
+
     // Initialize audio output
     SDL_Init(SDL_INIT_AUDIO);
     SDL_AudioSpec AudioSettings, ObtainedSettings;
@@ -486,9 +505,10 @@ int logHeartbeat(int argc, const char **argv) {
         OSSleepTicks(OSMillisecondsToTicks(250));
         volatile uint32_t *v = Heartbeat::values;
         if (!(file = fopen(path.c_str(), "a"))) continue;
-        fprintf(file, "%u: frames %u task %u wait %u | jit %08X in %u entries %u | 2D %u 3D %u | ui %u stage %u | audio %u\n",
-            tick, v[HB_EMU_FRAMES], v[HB_EMU_TASK], v[HB_EMU_WAIT], v[HB_JIT_BLOCK], v[HB_JIT_INSIDE],
-            v[HB_JIT_ENTRIES], v[HB_2D_LINES], v[HB_3D_LINES], v[HB_UI_FRAMES], v[HB_UI_STAGE], v[HB_AUDIO]);
+        fprintf(file, "%u: frames %u task %u wait %u | jit %08X in %u entries %u | 2D %u 3D %u | ui %u stage %u | audio %u"
+            " | gpu %u stage %u\n", tick, v[HB_EMU_FRAMES], v[HB_EMU_TASK], v[HB_EMU_WAIT], v[HB_JIT_BLOCK],
+            v[HB_JIT_INSIDE], v[HB_JIT_ENTRIES], v[HB_2D_LINES], v[HB_3D_LINES], v[HB_UI_FRAMES], v[HB_UI_STAGE],
+            v[HB_AUDIO], v[HB_GPU_FRAMES], v[HB_GPU_STAGE]);
         fclose(file);
     }
     return 0;

@@ -30,7 +30,13 @@ Gpu3DRenderer::Gpu3DRenderer(Core *core): core(core) {
         ready[i].store(3);
 }
 
+Gpu3DHardware *Gpu3DRenderer::hardware = nullptr;
+
 Gpu3DRenderer::~Gpu3DRenderer() {
+    // Let a hardware frame finish, since it writes to this renderer
+    if (hardwareFrame)
+        while (ready[191].load() < 3) std::this_thread::yield();
+
     // Clean up the threads
     for (size_t i = 0; i < threads.size(); i++) {
         threads[i]->join();
@@ -85,7 +91,8 @@ uint32_t *Gpu3DRenderer::getLine(int line) {
 uint32_t *Gpu3DRenderer::getLine1(int line) {
     // If a thread is falling behind, see if this thread can help out instead of waiting around
     // Threads go back for the final pass after drawing their next scanline, so check 2 scanlines ahead
-    if (ready[line].load() < 3 && line + activeThreads * 2 < (192 << resShift)) {
+    // There's nothing to help with when the hardware renderer is drawing the frame
+    if (!hardwareFrame && ready[line].load() < 3 && line + activeThreads * 2 < (192 << resShift)) {
         int next = line + activeThreads * 2;
         switch (ready[next].exchange(1)) {
         case 0: {
@@ -168,6 +175,21 @@ void Gpu3DRenderer::drawScanline(int line) {
         }
         threads.clear();
 
+        // Render the frame on the host's GPU if enabled, which marks scanlines as done when they're ready
+        // It only renders at the native resolution so far
+        // The last hardware frame has to finish first, since the 2D engine might not have waited for all of it
+        if (hardwareFrame)
+            while (ready[191].load() < 3) std::this_thread::yield();
+        hardwareFrame = hardware && Settings::hardware3D && !resShift;
+        if (hardwareFrame) {
+            activeThreads = 0;
+            for (int i = 0; i < 192; i++)
+                ready[i].store(0);
+            hardware->render(this);
+            EP_ADD(EP_JOIN3D, join);
+            return;
+        }
+
         // Set up threaded 3D rendering if enabled
         if ((activeThreads = Settings::threaded3D & 0xF)) {
             // Mark the scanlines as not ready
@@ -182,7 +204,7 @@ void Gpu3DRenderer::drawScanline(int line) {
     }
 
     // Draw scanlines normally when threading is disabled
-    if (activeThreads == 0) {
+    if (activeThreads == 0 && !hardwareFrame) {
         if (resShift) {
             // Draw two scanlines at a time when high-res is enabled
             for (int i = line * 2; i < line * 2 + 2; i++) {
@@ -395,6 +417,71 @@ void Gpu3DRenderer::finishScanline(int line) {
                 else
                     framebuffer[0][i] = (framebuffer[0][i] & ~0xFC0000) | ((attribBuffer[0][i] & 0x1F8000) << 3);
             }
+        }
+    }
+}
+
+uint64_t Gpu3DRenderer::hashTexture(_Polygon *polygon) {
+    // Hash the data a polygon's texture is decoded from, so a hardware renderer can tell if a decoded copy is current
+    // This covers the texel data, the palette, and for compressed textures, their block data and block palettes
+    static const uint8_t texelBits[] = { 0, 8, 2, 4, 8, 2, 8, 16 };
+    static const uint16_t paletteSizes[] = { 0, 64, 8, 32, 512, 0, 16, 0 };
+    uint64_t hash = 14695981039346656037ULL;
+    auto add = [&](uint8_t *data, uint32_t size) {
+        if (!data) {
+            hash = (hash ^ 0xFFFFFFFF) * 1099511628211ULL;
+            return;
+        }
+        for (uint32_t i = 0; i + 4 <= size; i += 4)
+            hash = (hash ^ U8TO32(data, i)) * 1099511628211ULL;
+        for (uint32_t i = size & ~3; i < size; i++)
+            hash = (hash ^ data[i]) * 1099511628211ULL;
+    };
+    auto addTexture = [&](uint32_t address, uint32_t size) {
+        // Texture slots are 128KB each, so data is added a slot at a time
+        while (size > 0) {
+            uint32_t chunk = std::min(size, 0x20000 - (address & 0x1FFFF));
+            add(getTexture(address), chunk);
+            address += chunk;
+            size -= chunk;
+        }
+    };
+    auto addPalette = [&](uint32_t address, uint32_t size) {
+        // Palette slots are 16KB each
+        while (size > 0) {
+            uint32_t chunk = std::min(size, 0x4000 - (address & 0x3FFF));
+            add(getPalette(address), chunk);
+            address += chunk;
+            size -= chunk;
+        }
+    };
+
+    uint32_t texels = polygon->sizeS * polygon->sizeT;
+    addTexture(polygon->textureAddr, texels * texelBits[polygon->textureFmt] / 8);
+    addPalette(polygon->paletteAddr, paletteSizes[polygon->textureFmt]);
+    if (polygon->textureFmt == 5) {
+        // Compressed textures have 2 bytes per 4x4 block in slot 1, each choosing a palette of up to 4 colors
+        uint32_t blockAddr = 0x20000 + (polygon->textureAddr % 0x20000) / 2 + ((polygon->textureAddr / 0x20000 == 2) ? 0x10000 : 0);
+        for (uint32_t i = 0; i < texels / 16; i++) {
+            uint8_t *block = getTexture(blockAddr + i * 2);
+            if (!block) continue;
+            uint16_t palBase = U8TO16(block, 0);
+            hash = (hash ^ palBase) * 1099511628211ULL;
+            addPalette(polygon->paletteAddr + (palBase & 0x3FFF) * 4, 8);
+        }
+    }
+    return hash;
+}
+
+void Gpu3DRenderer::decodeTexture(_Polygon *polygon, uint32_t *out) {
+    // Decode a polygon's whole texture for a hardware renderer, as 8-bit RGBA with red in the top byte
+    // Channels are expanded from 6 bits by repeating their top bits, so full values stay full
+    for (int t = 0; t < polygon->sizeT; t++) {
+        for (int s = 0; s < polygon->sizeS; s++) {
+            uint32_t texel = readTexture(polygon, s, t);
+            uint32_t r = (texel >> 0) & 0x3F, g = (texel >> 6) & 0x3F, b = (texel >> 12) & 0x3F, a = (texel >> 18) & 0x3F;
+            *out++ = (((r << 2) | (r >> 4)) << 24) | (((g << 2) | (g >> 4)) << 16) | (((b << 2) | (b >> 4)) << 8) |
+                ((a << 2) | (a >> 4));
         }
     }
 }

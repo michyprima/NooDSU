@@ -951,6 +951,7 @@ void ConsoleUI::settingsMenu() {
         settings.push_back(MenuItem("Wii U Settings", true));
         settings.push_back(MenuItem("JIT (Experimental)", toggle[Settings::jit]));
         settings.push_back(MenuItem("Fast CPU Timing (Experimental)", toggle[Settings::fastTiming]));
+        settings.push_back(MenuItem("GPU 3D Renderer (Experimental)", toggle[Settings::hardware3D]));
 #endif
 
         // Create the settings menu
@@ -987,6 +988,7 @@ void ConsoleUI::settingsMenu() {
                 case 31: ScreenLayout::gbaCrop = (ScreenLayout::gbaCrop + 1) % 2; break;
                 case 33: Settings::jit = (Settings::jit + 1) % 2; break;
                 case 34: Settings::fastTiming = (Settings::fastTiming + 1) % 2; break;
+                case 35: Settings::hardware3D = (Settings::hardware3D + 1) % 2; break;
 
             case 5:
                 // Update the palette when changing themes

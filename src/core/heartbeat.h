@@ -35,6 +35,8 @@ enum HeartbeatSlot {
     HB_UI_FRAMES, // Frames drawn by the UI
     HB_UI_STAGE, // Step of the UI loop: 1 = get frame, 2 = start frame, 3 = draw, 4 = end frame, 5 = input
     HB_AUDIO, // Audio callbacks
+    HB_GPU_STAGE, // Step of the GPU 3D renderer: 1 = waiting, 2 = building, 3 = locking GX2, 4 = drawing, 5 = converting
+    HB_GPU_FRAMES, // Frames finished by the GPU 3D renderer
     HB_COUNT
 };
 

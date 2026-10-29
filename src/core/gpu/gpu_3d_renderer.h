@@ -28,8 +28,17 @@
 #include "../worker_thread.h"
 
 class Core;
+class Gpu3DRenderer;
 struct Vertex;
 struct _Polygon;
+
+// A 3D renderer that runs on the host's GPU, which a frontend can provide
+// It renders a frame's polygons on its own thread, filling in each scanline and then marking it as done
+class Gpu3DHardware {
+public:
+    virtual ~Gpu3DHardware() {}
+    virtual void render(Gpu3DRenderer *renderer) = 0;
+};
 
 // The values for drawing one polygon's span on a scanline
 struct Span {
@@ -54,6 +63,17 @@ public:
 
     uint16_t readDisp3DCnt() { return disp3DCnt; }
 
+    // For hardware renderers, which get the frame's state and textures here and write scanlines back
+    static Gpu3DHardware *hardware;
+    Core *getCore() { return core; }
+    uint32_t getClearColor() { return clearColor; }
+    uint16_t getClearDepth() { return clearDepth; }
+    uint16_t getToon(int index) { return toonTable[index]; }
+    uint64_t hashTexture(_Polygon *polygon);
+    void decodeTexture(_Polygon *polygon, uint32_t *out);
+    uint32_t *hardwareLine(int line) { return &framebuffer[0][line * 256 * 2]; }
+    void hardwareDone(int line) { ready[line].store(3); }
+
     void writeDisp3DCnt(uint16_t mask, uint16_t value);
     void writeEdgeColor(int index, uint16_t mask, uint16_t value);
     void writeClearColor(uint32_t mask, uint32_t value);
@@ -68,6 +88,7 @@ private:
     Core *core;
 
     bool resShift = false;
+    bool hardwareFrame = false; // Whether the current frame is being rendered by the hardware renderer
     // Each layer is padded by 512 bytes, since the layers' sizes are a multiple of the cache's way size, which would
     // make the same pixel in all of them compete for the same cache set
     static const int LAYER_SIZE = 256 * 192 * 4 + 128;
