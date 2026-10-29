@@ -593,6 +593,12 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2SetPixelSampler(&samplers[0], 0);
             GX2SetPixelTexture(&edgeTexture, 1);
             GX2SetPixelSampler(&samplers[0], 1);
+
+            // A neighbor has to be further by a margin, since the GPU's depths for surfaces that touch can differ
+            // slightly where the DS's are equal; W values are relative, while Z values crowd near the far end, so
+            // those get a small fixed margin like the DS's depth test for equal values
+            float margin[] = { wBuffer ? (1.0f + 1.0f / 256) : 1.0f, wBuffer ? 0.0f : 0x200, 0, 0 };
+            GX2SetPixelUniformReg(0, 4, margin);
             GX2SetDepthStencilControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS, FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS,
                 GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS,
                 GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
@@ -674,9 +680,10 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         // Set the edge bit on solid pixels next to a different ID with greater depth, comparing each pair of
         // neighbors once, so the renderer only checks those for edge marking instead of every solid pixel
         // The depth has to be greater by a margin, since the GPU's depths for surfaces that touch, like windows on
-        // walls, can differ slightly where the DS's are equal, which made edges flicker
+        // walls, can differ slightly where the DS's are equal, which made edges flicker; this is the same as the edge
+        // marking pass, relative for W values and fixed for Z values, which crowd near the far end
         // Pixels on the screen border are compared to the clear values by the renderer, so they're always checked
-        auto further = [](int32_t depth, int32_t other) { return other - depth > (depth >> 8); };
+        auto further = [&](int32_t depth, int32_t other) { return other - depth > (wBuffer ? (depth >> 8) : 0x200); };
         if (edges) {
             uint32_t *prevAttribs = renderer->hardwareAttribs(std::max(y - 1, 0));
             int32_t *prevDepths = renderer->hardwareDepths(std::max(y - 1, 0));
