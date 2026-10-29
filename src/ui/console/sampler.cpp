@@ -56,9 +56,9 @@ namespace Sampler {
     static uint32_t stubs[0x1000 >> 4]; // The JIT's shared routines at the start of the codegen area
     static uint32_t blocked[TEXT_SIZE >> 4]; // Where the sampled thread called into the system when it was blocked
     static uint32_t sysCallers[TEXT_SIZE >> 4]; // Where the app called into the system, for samples in system code
-    static uint32_t jitBlocks, other, total, idle;
+    static uint32_t jitBlocks, jitBlocks7, stubs7, other, total, idle;
     static OSThread *sampled;
-    static uint32_t codegenStart, codegenSize;
+    static uint32_t codegenStart, codegenSize, codegenSplit; // The ARM7 JIT uses the area after the split
     static OSAlarm alarm;
 
     // A thread on the lowest priority that only runs when the core would otherwise be idle, so idle time shows up
@@ -115,7 +115,9 @@ namespace Sampler {
                 sysCallers[(lr - textStart) >> 4]++;
         }
         else if (pc - codegenStart < 0x1000) stubs[(pc - codegenStart) >> 4]++;
-        else if (pc - codegenStart < codegenSize) jitBlocks++;
+        else if (pc - codegenStart < codegenSplit) jitBlocks++;
+        else if (pc - codegenStart < codegenSplit + 0x1000) stubs7++;
+        else if (pc - codegenStart < codegenSize) jitBlocks7++;
         else other++;
     }
 
@@ -128,12 +130,13 @@ namespace Sampler {
         void *area = nullptr;
         OSGetCodegenVirtAddrRange(&area, &codegenSize);
         codegenStart = (uint32_t)(uintptr_t)area;
+        codegenSplit = (codegenSize / 4 * 3) & ~0xFFF;
         memset(text, 0, sizeof(text));
         memset(os, 0, sizeof(os));
         memset(stubs, 0, sizeof(stubs));
         memset(blocked, 0, sizeof(blocked));
         memset(sysCallers, 0, sizeof(sysCallers));
-        jitBlocks = other = total = idle = 0;
+        jitBlocks = jitBlocks7 = stubs7 = other = total = idle = 0;
         sampled = OSGetCurrentThread();
         OSCreateAlarm(&alarm);
         OSSetPeriodicAlarm(&alarm, OSMicrosecondsToTicks(100), OSMicrosecondsToTicks(100), callback);
@@ -196,8 +199,9 @@ namespace Sampler {
             for (uint32_t count : text) textTotal += count;
             for (uint32_t count : os) osTotal += count;
             for (uint32_t count : stubs) stubTotal += count;
-            snprintf(line, sizeof(line), "%u samples: app %.1f%%, idle %.1f%%, system %.1f%%, JIT blocks %.1f%%, JIT stubs %.1f%%\n",
-                total, textTotal / percent, idle / percent, osTotal / percent, jitBlocks / percent, stubTotal / percent);
+            snprintf(line, sizeof(line), "%u samples: app %.1f%%, idle %.1f%%, system %.1f%%, JIT blocks %.1f%% + ARM7 %.1f%%, "
+                "stubs %.1f%% + ARM7 %.1f%%\n", total, textTotal / percent, idle / percent, osTotal / percent, jitBlocks / percent,
+                jitBlocks7 / percent, stubTotal / percent, stubs7 / percent);
             result = line;
 
             // Show the busiest functions, or code addresses if there are no symbols
