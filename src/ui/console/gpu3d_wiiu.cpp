@@ -509,6 +509,10 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     bool fog = disp3DCnt & BIT(7);
     bool writeAttribs = gpuEdges || fog;
 
+    // Pixels are dropped if their alpha is 0, or with the alpha test, if their 5-bit alpha isn't greater than the
+    // reference value; the GPU's alphas are 6-bit ones out of 63, so the cutoff is between the 6-bit values
+    float alphaMin = (disp3DCnt & BIT(2)) ? (renderer->getAlphaTestRef() * 2 + 1.5f) / 63 : 0.0f;
+
     // Get the clear values; the clear color is 5-bit with a 5-bit alpha
     uint32_t clear = renderer->getClearColor();
     float clearR = ((clear >> 0) & 0x1F) / 31.0f, clearG = ((clear >> 5) & 0x1F) / 31.0f;
@@ -602,7 +606,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         GX2SetScissor(0, 0, 256, 192);
         GX2SetRasterizerClipControlHalfZ(TRUE, FALSE, TRUE);
         GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
-        GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, 0.0f);
+        GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
         GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
             GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ONE, GX2_BLEND_COMBINE_MODE_MAX);
         GX2SetAttribBuffer(0, (count + 6) * sizeof(GpuVertex), sizeof(GpuVertex), vertices);
@@ -650,7 +654,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                 GX2SetTargetChannelMasks(NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
                     NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
                 GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
-                GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, 0.0f);
+                GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
                 continue;
             }
             if (draw.shadow == 2) {
@@ -664,7 +668,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                 GX2SetTargetChannelMasks(NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
                     NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
                 GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
-                GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, 0.0f);
+                GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
 
                 // Then draw them where the marks are left, like translucent pixels, keeping the marks
                 GX2SetDepthStencilControl(TRUE, draw.depthWrite, func, TRUE, FALSE,
@@ -680,7 +684,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             if (draw.split) {
                 // Draw the opaque pixels first, then the translucent ones with a shader that drops opaque pixels
                 // Only modulated textures can give both, since other modes use the polygon's alpha
-                GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, 0.99f);
+                GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, std::max(0.99f, alphaMin));
                 GX2SetDepthStencilControl(TRUE, TRUE, func, TRUE, FALSE,
                     GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
                     GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
@@ -689,7 +693,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                 GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, writeAttribs ? GX2_CHANNEL_MASK_RGBA : NO_CHANNELS,
                     NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
                 GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
-                GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, 0.0f);
+                GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
                 if (draw.shader != 1) continue;
                 WHBGfxShaderGroup &trans = groups[3];
                 GX2SetFetchShader(&trans.fetchShader);

@@ -532,6 +532,19 @@ int logHeartbeat(int argc, const char **argv) {
             "ROM misses %u, waited %u us\n", per(HB_2D_EMU_LINES_A, frames), per(HB_2D_EMU_LINES_B, frames),
             v[HB_2D_CORE], v[HB_GEOM_CORE], v[HB_ROM_MISSES] - last[HB_ROM_MISSES],
             v[HB_ROM_WAIT_US] - last[HB_ROM_WAIT_US]);
+
+        // Show which 3D features were used, with polygon counts per 3D frame
+        uint32_t frames3D = v[HB_3D_FRAMES] - last[HB_3D_FRAMES];
+        if (frames3D) {
+            uint32_t flags = v[HB_3D_FLAGS];
+            v[HB_3D_FLAGS] = 0;
+            fprintf(file, "   3D features:%s%s%s%s%s%s%s | polygons per frame %u: toon %u highlight %u shadow masks %u "
+                "shadows %u wireframe %u\n", (flags & BIT(1)) ? " highlight-mode" : "", (flags & BIT(2)) ? " alpha-test" : "",
+                (flags & BIT(4)) ? " anti-alias" : "", (flags & BIT(5)) ? " edge-marking" : "", (flags & BIT(7)) ? " fog" : "",
+                (flags & BIT(6)) ? " fog-alpha-only" : "", (flags & BIT(14)) ? " clear-bitmap" : "",
+                per(HB_3D_POLYS, frames3D), per(HB_3D_TOON, frames3D), per(HB_3D_HIGHLIGHT, frames3D),
+                per(HB_3D_SHADOW_MASKS, frames3D), per(HB_3D_SHADOWS, frames3D), per(HB_3D_WIREFRAME, frames3D));
+        }
         for (int i = 0; i < HB_COUNT; i++)
             last[i] = v[i];
         fclose(file);

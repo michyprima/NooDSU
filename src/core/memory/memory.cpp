@@ -1609,6 +1609,7 @@ template <typename T> void Memory::ioWrite9(uint32_t address, T value) {
             DEF_IO16(0x400033A, core->gpu3DRenderer.writeEdgeColor(5, IOWR_PARAMS)) // EDGE_COLOR
             DEF_IO16(0x400033C, core->gpu3DRenderer.writeEdgeColor(6, IOWR_PARAMS)) // EDGE_COLOR
             DEF_IO16(0x400033E, core->gpu3DRenderer.writeEdgeColor(7, IOWR_PARAMS)) // EDGE_COLOR
+            DEF_IO08(0x4000340, core->gpu3DRenderer.writeAlphaTestRef(IOWR_PARAMS8)) // ALPHA_TEST_REF
             DEF_IO32(0x4000350, core->gpu3DRenderer.writeClearColor(IOWR_PARAMS)) // CLEAR_COLOR
             DEF_IO16(0x4000354, core->gpu3DRenderer.writeClearDepth(IOWR_PARAMS)) // CLEAR_DEPTH
             DEF_IO32(0x4000358, core->gpu3DRenderer.writeFogColor(IOWR_PARAMS)) // FOG_COLOR

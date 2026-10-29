@@ -54,6 +54,7 @@ void Gpu3DRenderer::saveState(FILE *file) {
     fwrite(&fogOffset, sizeof(fogOffset), 1, file);
     fwrite(fogTable, 1, sizeof(fogTable), file);
     fwrite(toonTable, 2, sizeof(toonTable) / 2, file);
+    fwrite(&alphaTestRef, sizeof(alphaTestRef), 1, file);
 }
 
 void Gpu3DRenderer::loadState(FILE *file) {
@@ -66,6 +67,7 @@ void Gpu3DRenderer::loadState(FILE *file) {
     fread(&fogOffset, sizeof(fogOffset), 1, file);
     fread(fogTable, 1, sizeof(fogTable), file);
     fread(toonTable, 2, sizeof(toonTable) / 2, file);
+    fread(&alphaTestRef, sizeof(alphaTestRef), 1, file);
 }
 
 uint32_t Gpu3DRenderer::rgba5ToRgba6(uint32_t color) {
@@ -196,6 +198,19 @@ void Gpu3DRenderer::drawScanline(int line) {
             // Allow horizontal line polygons to be drawn
             if (polygonTop[i] == polygonBot[i]) polygonBot[i]++;
         }
+
+#ifdef HEARTBEAT
+        // Count which 3D features are used, to see what a renderer needs to support
+        HB_INC(HB_3D_FRAMES);
+        Heartbeat::values[HB_3D_FLAGS] |= disp3DCnt;
+        Heartbeat::values[HB_3D_POLYS] += core->gpu3D.polygonCountOut;
+        for (int i = 0; i < core->gpu3D.polygonCountOut; i++) {
+            _Polygon *polygon = &core->gpu3D.polygonsOut[i];
+            if (polygon->alpha == 0) HB_INC(HB_3D_WIREFRAME);
+            if (polygon->mode == 2) HB_INC((disp3DCnt & BIT(1)) ? HB_3D_HIGHLIGHT : HB_3D_TOON);
+            if (polygon->mode == 3) HB_INC(polygon->id ? HB_3D_SHADOWS : HB_3D_SHADOW_MASKS);
+        }
+#endif
 
         // List the polygons on each scanline in order, so drawing a scanline doesn't have to check every polygon
         // Each scanline's list starts where the previous one ends, sized by counting the polygons on each scanline
@@ -1250,6 +1265,9 @@ template <bool wBuffer, bool antiAlias, bool textured> void Gpu3DRenderer::drawS
     const bool transNewDepth = polygon->transNewDepth, fog = polygon->fog;
     const int8_t wShift = polygon->wShift;
 
+    // With the alpha test, pixels are only drawn if their 5-bit alpha is greater than the reference value
+    const int alphaRef = (disp3DCnt & BIT(2)) ? alphaTestRef : -1;
+
     // Calculate the interpolation factor with a precision of 8 bits for polygon fills
     auto getFactor = [&](uint32_t x) -> uint32_t {
         if (linear) // Linear fallback
@@ -1436,8 +1454,10 @@ template <bool wBuffer, bool antiAlias, bool textured> void Gpu3DRenderer::drawS
             color = (color & 0xFC0000) | (b << 12) | (g << 6) | r;
         }
 
-        // Skip fully transparent pixels, and hidden edge pixels if the pixel is opaque or blending is disabled
-        if (!(color & 0xFC0000) || ((x < x1e || x >= x4e) && ((color >> 18) == 0x3F || !(disp3DCnt & BIT(3)))))
+        // Skip fully transparent pixels, ones that fail the alpha test, and hidden edge pixels if the pixel is opaque
+        // or blending is disabled
+        if (!(color & 0xFC0000) || int((color >> 19) & 0x1F) <= alphaRef ||
+                ((x < x1e || x >= x4e) && ((color >> 18) == 0x3F || !(disp3DCnt & BIT(3)))))
             continue;
 
         // Draw a pixel, marked with an extra bit as an indicator for 2D blending
@@ -1538,6 +1558,13 @@ void Gpu3DRenderer::writeFogOffset(uint16_t mask, uint16_t value) {
     mask &= 0x7FFF;
     if ((value & mask) == (fogOffset & mask)) return;
     fogOffset = (fogOffset & ~mask) | (value & mask);
+    core->gpu.invalidate3D();
+}
+
+void Gpu3DRenderer::writeAlphaTestRef(uint8_t value) {
+    // Write to the ALPHA_TEST_REF register and invalidate the 3D if a parameter changed
+    if ((value & 0x1F) == alphaTestRef) return;
+    alphaTestRef = value & 0x1F;
     core->gpu.invalidate3D();
 }
 

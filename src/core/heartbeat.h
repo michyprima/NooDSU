@@ -53,6 +53,14 @@ enum HeartbeatSlot {
     HB_ROM_WAIT_US, // Total microseconds the emulator waited on ROM reads that missed the cache
     HB_2D_CORE, // Core the 2D thread last ran on, plus 1
     HB_GEOM_CORE, // Core the geometry worker last ran on, plus 1
+    HB_3D_FRAMES, // 3D frames started, for the feature counts below
+    HB_3D_FLAGS, // 3D display control bits seen since the last log line, which the logger clears
+    HB_3D_POLYS, // Polygons drawn
+    HB_3D_TOON, // Toon polygons drawn while toon shading is selected
+    HB_3D_HIGHLIGHT, // Toon polygons drawn while highlight shading is selected
+    HB_3D_SHADOW_MASKS, // Shadow polygons with ID 0, which are masks
+    HB_3D_SHADOWS, // Shadow polygons with other IDs
+    HB_3D_WIREFRAME, // Polygons with alpha 0, drawn as wireframe
     HB_COUNT
 };
 

@@ -74,6 +74,7 @@ public:
     uint32_t getFogColor() { return fogColor; }
     uint16_t getFogOffset() { return fogOffset; }
     uint8_t getFogTable(int index) { return fogTable[index]; }
+    uint8_t getAlphaTestRef() { return alphaTestRef; }
     uint64_t hashTexture(_Polygon *polygon);
     void decodeTexture(_Polygon *polygon, uint32_t *out);
     uint32_t *hardwareLine(int line) { return &framebuffer[0][line * 256 * 2]; }
@@ -90,6 +91,7 @@ public:
     void writeFogColor(uint32_t mask, uint32_t value);
     void writeFogOffset(uint16_t mask, uint16_t value);
     void writeFogTable(int index, uint8_t value);
+    void writeAlphaTestRef(uint8_t value);
     void writeToonTable(int index, uint16_t mask, uint16_t value);
 
 private:
@@ -123,6 +125,7 @@ private:
     uint32_t fogColor = 0;
     uint16_t fogOffset = 0;
     uint8_t fogTable[32] = {};
+    uint8_t alphaTestRef = 0;
     uint16_t toonTable[32] = {};
 
     static uint32_t rgba5ToRgba6(uint32_t color);
