@@ -74,7 +74,10 @@ struct GpuDraw {
     bool translucent;
     bool depthEqual;
     bool depthWrite;
-    uint8_t stencil; // 0 for solid polygons, or the translucent flag with the polygon ID
+    bool solid;
+    uint8_t stencil; // The polygon ID, with the translucent flag for translucent polygons
+    uint8_t shadow; // 0 for normal polygons, 1 for shadow masks, 2 for shadows
+    bool clearMask; // Whether this starts a group of shadow masks, which clears the shadow bits first
     bool split; // Whether pixels can be opaque or translucent, so they're drawn separately to follow different rules
     uint32_t first, count;
 };
@@ -357,6 +360,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     }
 
     uint32_t count = 0;
+    bool inMasks = false;
 #ifdef GPU_DUMP
     std::vector<uint32_t> dumpMap; // Pairs of polygon index and first vertex
 #endif
@@ -366,8 +370,8 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             bool translucent = (polygon->alpha < 0x3F || polygon->textureFmt == 1 || polygon->textureFmt == 6);
             if (translucent != (pass == 1)) continue;
 
-            // Skip what isn't supported yet: shadows and wireframe polygons
-            if (polygon->size < 3 || polygon->mode == 3 || polygon->alpha == 0) continue;
+            // Skip what isn't supported yet: wireframe polygons
+            if (polygon->size < 3 || polygon->alpha == 0) continue;
             if (count + (polygon->size - 2) * 3 > MAX_VERTICES) break;
 
             // Pick the shader and texture; toon and highlight polygons are drawn like modulated ones for now
@@ -376,15 +380,30 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             HB_TIMER(hbTexture);
             draw.texture = textured ? getTexture(renderer, polygon) : nullptr;
             HB_ADD_US(HB_GPU_TEXTURE_US, hbTexture);
-            draw.shader = !draw.texture ? 0 : (polygon->mode == 1) ? 2 : 1;
+            draw.shader = !draw.texture ? 0 : (polygon->mode == 1 || polygon->mode == 3) ? 2 : 1;
             draw.sampler = (polygon->repeatS ? (polygon->flipS ? 2 : 1) : 0) + (polygon->repeatT ? (polygon->flipT ? 2 : 1) : 0) * 3;
             draw.translucent = translucent && blending;
             draw.depthEqual = polygon->depthTestEqual;
             draw.depthWrite = !translucent || polygon->transNewDepth;
             // Pixels are translucent if their final alpha isn't full, which is all of them for translucent polygons,
             // while full-alpha polygons with translucent textures can also give opaque pixels, which act like solid ones
-            draw.stencil = translucent ? (0x40 | polygon->id) : 0;
+            draw.solid = !translucent;
+            draw.stencil = translucent ? (0x40 | polygon->id) : polygon->id;
             draw.split = translucent && polygon->alpha == 0x3F;
+
+            // Shadow polygons with ID 0 are masks, which only mark where they're hidden; the first in a row clears
+            // the marks of the last group, and their color doesn't matter
+            if (polygon->mode == 3) {
+                draw.shadow = polygon->id ? 2 : 1;
+                draw.split = false;
+                if (draw.shadow == 1) {
+                    draw.texture = nullptr;
+                    draw.shader = 0;
+                    draw.depthWrite = false;
+                    draw.clearMask = !inMasks;
+                }
+            }
+            inMasks = (draw.shadow == 1);
             draw.first = count;
 #ifdef GPU_DUMP
             dumpMap.push_back(i);
@@ -456,7 +475,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             if (last && last->shader == draw.shader && last->texture == draw.texture && last->sampler == draw.sampler &&
                     last->translucent == draw.translucent && last->depthEqual == draw.depthEqual &&
                     last->depthWrite == draw.depthWrite && last->stencil == draw.stencil && last->split == draw.split &&
-                    last->first + last->count == draw.first)
+                    last->shadow == draw.shadow && !draw.clearMask && last->first + last->count == draw.first)
                 last->count += draw.count;
             else
                 draws.push_back(draw);
@@ -486,16 +505,16 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             texels[i] = ((((color >> 0) & 0x1F) * 255 / 31) << 24) | ((((color >> 5) & 0x1F) * 255 / 31) << 16) |
                 ((((color >> 10) & 0x1F) * 255 / 31) << 8) | ((disp3DCnt & BIT(4)) ? 0x80 : 0xFF);
         }
+    }
 
-        // Add a quad covering the screen, passing the coordinates of each pixel and its left and right, then down and
-        // up neighbors in the attributes texture
-        static const float corners[6][2] = { { 0, 0 }, { 1, 0 }, { 0, 1 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
-        for (int i = 0; i < 6; i++) {
-            float u = corners[i][0], v = corners[i][1];
-            GpuVertex &out = vertices[count + i];
-            out = { { u * 2 - 1, 1 - v * 2, 0, 1 }, { u, v }, { u + 1.0f / 256, v, u - 1.0f / 256, v },
-                { u, v + 1.0f / 192, u, v - 1.0f / 192 } };
-        }
+    // Add a quad covering the screen, for edge marking and clearing shadow marks; it passes the coordinates of each
+    // pixel and its left and right, then down and up neighbors in the attributes texture
+    static const float corners[6][2] = { { 0, 0 }, { 1, 0 }, { 0, 1 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+    for (int i = 0; i < 6; i++) {
+        float u = corners[i][0], v = corners[i][1];
+        GpuVertex &out = vertices[count + i];
+        out = { { u * 2 - 1, 1 - v * 2, 0, 1 }, { u, v }, { u + 1.0f / 256, v, u - 1.0f / 256, v },
+            { u, v + 1.0f / 192, u, v - 1.0f / 192 } };
     }
 
     {
@@ -511,13 +530,13 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         // Make what the CPU wrote visible to the GPU; this adds GPU commands, so it has to be done with GX2 held
         for (GX2Texture *texture : updated)
             GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, texture->surface.image, texture->surface.imageSize);
-        GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, vertices, (count + (gpuEdges ? 6 : 0)) * sizeof(GpuVertex));
+        GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, vertices, (count + 6) * sizeof(GpuVertex));
         if (gpuEdges)
             GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, edgeTexture.surface.image, edgeTexture.surface.imageSize);
         GX2SetContextState(state);
         GX2ClearColor(&colorBuffer, clearR, clearG, clearB, clearA);
         GX2ClearColor(&attribBuffer, float(clearAttrib & 0x3F) * 4 + ((clearAttrib & BIT(13)) ? 2 : 0), clearDepthValue, 0, 0);
-        GX2ClearDepthStencilEx(&depthBuffer, depthClear, 0, GX2_CLEAR_FLAGS_BOTH);
+        GX2ClearDepthStencilEx(&depthBuffer, depthClear, (clear >> 24) & 0x3F, GX2_CLEAR_FLAGS_BOTH); // Clear polygon ID
         GX2SetContextState(state);
         GX2SetColorBuffer(&colorBuffer, GX2_RENDER_TARGET_0);
         GX2SetColorBuffer(&attribBuffer, GX2_RENDER_TARGET_1);
@@ -529,7 +548,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, 0.0f);
         GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
             GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ONE, GX2_BLEND_COMBINE_MODE_MAX);
-        GX2SetAttribBuffer(0, (count + (gpuEdges ? 6 : 0)) * sizeof(GpuVertex), sizeof(GpuVertex), vertices);
+        GX2SetAttribBuffer(0, (count + 6) * sizeof(GpuVertex), sizeof(GpuVertex), vertices);
 
         for (GpuDraw &draw : draws) {
             WHBGfxShaderGroup &group = groups[draw.shader];
@@ -547,8 +566,60 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                 (draw.depthEqual ? GX2_COMPARE_FUNC_LEQUAL : GX2_COMPARE_FUNC_LESS);
             GX2SetColorControl(GX2_LOGIC_OP_COPY, draw.translucent ? 0x01 : 0x00, FALSE, TRUE);
 
-            // The stencil buffer tracks which polygon ID last drew a translucent pixel, since translucent pixels
-            // aren't drawn over ones from the same ID; opaque pixels clear it, and always write depth
+            // The stencil buffer's low bits track the polygon ID of each pixel, with a flag if it was translucent,
+            // since translucent pixels aren't drawn over ones from the same ID; the top bit marks where shadow masks
+            // were hidden, which is where shadows are drawn
+            if (draw.shadow == 1) {
+                if (draw.clearMask) {
+                    // Clear the marks over the whole screen at the start of a group of masks
+                    GX2SetDepthStencilControl(TRUE, FALSE, GX2_COMPARE_FUNC_ALWAYS, TRUE, FALSE,
+                        GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
+                        GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
+                        GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+                    GX2SetStencilMask(0x80, 0x80, 0, 0x80, 0x80, 0);
+                    GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
+                    GX2SetTargetChannelMasks(NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
+                        NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
+                    GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 6, count, 1);
+                }
+
+                // Masks draw nothing, but mark the pixels where they fail the depth test
+                GX2SetDepthStencilControl(TRUE, FALSE, func, TRUE, FALSE,
+                    GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_REPLACE,
+                    GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
+                    GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+                GX2SetStencilMask(0x80, 0x80, 0x80, 0x80, 0x80, 0x80);
+                GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
+                GX2SetTargetChannelMasks(NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
+                    NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
+                GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
+                GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, 0.0f);
+                continue;
+            }
+            if (draw.shadow == 2) {
+                // Shadows aren't drawn over pixels with their own ID, so first remove the marks under those
+                GX2SetDepthStencilControl(TRUE, FALSE, GX2_COMPARE_FUNC_ALWAYS, TRUE, FALSE,
+                    GX2_COMPARE_FUNC_EQUAL, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
+                    GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
+                    GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+                GX2SetStencilMask(0x3F, 0x80, draw.stencil & 0x3F, 0x3F, 0x80, draw.stencil & 0x3F);
+                GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
+                GX2SetTargetChannelMasks(NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
+                    NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
+                GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
+                GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, 0.0f);
+
+                // Then draw them where the marks are left, like translucent pixels, keeping the marks
+                GX2SetDepthStencilControl(TRUE, draw.depthWrite, func, TRUE, FALSE,
+                    GX2_COMPARE_FUNC_EQUAL, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
+                    GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
+                    GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+                GX2SetStencilMask(0x80, 0x7F, 0xC0 | draw.stencil, 0x80, 0x7F, 0xC0 | draw.stencil);
+                GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
+                    NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
+                GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
+                continue;
+            }
             if (draw.split) {
                 // Draw the opaque pixels first, then the translucent ones with a shader that drops opaque pixels
                 // Only modulated textures can give both, since other modes use the polygon's alpha
@@ -557,7 +628,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                     GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
                     GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
                     GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
-                GX2SetStencilMask(0x7F, 0x7F, 0, 0x7F, 0x7F, 0);
+                GX2SetStencilMask(0x7F, 0x7F, draw.stencil & 0x3F, 0x7F, 0x7F, draw.stencil & 0x3F);
                 GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, writeAttribs ? GX2_CHANNEL_MASK_RGBA : NO_CHANNELS,
                     NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
                 GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
@@ -569,13 +640,13 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                 GX2SetPixelShader(trans.pixelShader);
             }
             GX2SetDepthStencilControl(TRUE, draw.depthWrite, func, TRUE, FALSE,
-                draw.stencil ? GX2_COMPARE_FUNC_NOT_EQUAL : GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE,
+                draw.solid ? GX2_COMPARE_FUNC_ALWAYS : GX2_COMPARE_FUNC_NOT_EQUAL, GX2_STENCIL_FUNCTION_REPLACE,
                 GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS,
                 GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
             GX2SetStencilMask(0x7F, 0x7F, draw.stencil, 0x7F, 0x7F, draw.stencil);
             // Only solid pixels set the attributes, since translucent ones keep the solid polygon's ID underneath
             GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA,
-                (writeAttribs && !draw.stencil) ? GX2_CHANNEL_MASK_RGBA : NO_CHANNELS,
+                (writeAttribs && draw.solid) ? GX2_CHANNEL_MASK_RGBA : NO_CHANNELS,
                 NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
             GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
         }
