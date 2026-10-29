@@ -23,8 +23,11 @@
 #include <coreinit/memdefaultheap.h>
 #include <gx2/display.h>
 #include <gx2/draw.h>
+#include <gx2/event.h>
 #include <gx2/mem.h>
 #include <gx2/registers.h>
+#include <gx2/state.h>
+#include <gx2/swap.h>
 #include <gx2r/draw.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
@@ -134,14 +137,20 @@ void ConsoleUI::startFrame(uint32_t color) {
 }
 
 void ConsoleUI::endFrame() {
-    // Finish and display a frame
+    // Finish and display a frame, doing what WHBGfxFinishRender does but waiting for the GPU without holding GX2,
+    // so the 3D renderer can submit its frame in the meantime
     WHBGfxFinishRenderTV();
     WHBGfxFinishRenderDRC();
-    WHBGfxFinishRender();
+    GX2SwapScanBuffers();
+    GX2Flush();
+    GX2SetTVEnable(TRUE);
+    GX2SetDRCEnable(TRUE);
+    OSTime submitted = GX2GetLastSubmittedTimeStamp();
     if (uiHoldsGx2) {
         uiHoldsGx2 = false;
         gx2Mutex.unlock();
     }
+    GX2WaitTimeStamp(submitted);
 
     // Free the gamepad screen texture if it was overridden
     if (gpTexture) {
@@ -501,6 +510,7 @@ int logHeartbeat(int argc, const char **argv) {
     std::string path = std::string(WHBGetSdCardMountPath()) + "/wiiu/apps/noods/heartbeat.log";
     FILE *file = fopen(path.c_str(), "w");
     if (file) fclose(file);
+    uint32_t last[HB_COUNT] = {};
     for (uint32_t tick = 0;; tick++) {
         OSSleepTicks(OSMillisecondsToTicks(250));
         volatile uint32_t *v = Heartbeat::values;
@@ -509,6 +519,17 @@ int logHeartbeat(int argc, const char **argv) {
             " | gpu %u stage %u 3dcnt %04X\n", tick, v[HB_EMU_FRAMES], v[HB_EMU_TASK], v[HB_EMU_WAIT], v[HB_JIT_BLOCK],
             v[HB_JIT_INSIDE], v[HB_JIT_ENTRIES], v[HB_2D_LINES], v[HB_3D_LINES], v[HB_UI_FRAMES], v[HB_UI_STAGE],
             v[HB_AUDIO], v[HB_GPU_FRAMES], v[HB_GPU_STAGE], v[HB_GPU_DISP3DCNT]);
+
+        // Show the timings as microseconds per frame since the last line
+        uint32_t frames = v[HB_EMU_FRAMES] - last[HB_EMU_FRAMES], gpuFrames = v[HB_GPU_FRAMES] - last[HB_GPU_FRAMES];
+        auto per = [&](int slot, uint32_t count) { return count ? (v[slot] - last[slot]) / count : 0; };
+        fprintf(file, "   fps %.1f | gpu frames %u: build %u (textures %u) lock %u draw %u convert %u us | "
+            "emu waits gpu %u 2D %u | 2D waits 3D %u us\n", frames * 4.0f, gpuFrames, per(HB_GPU_BUILD_US, gpuFrames),
+            per(HB_GPU_TEXTURE_US, gpuFrames), per(HB_GPU_LOCK_US, gpuFrames), per(HB_GPU_DRAW_US, gpuFrames),
+            per(HB_GPU_CONVERT_US, gpuFrames), per(HB_EMU_3D_WAIT_US, frames), per(HB_2D_JOIN_US, frames),
+            per(HB_3D_WAIT_US, frames));
+        for (int i = 0; i < HB_COUNT; i++)
+            last[i] = v[i];
         fclose(file);
     }
     return 0;

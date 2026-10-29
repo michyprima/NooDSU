@@ -236,7 +236,9 @@ int Gpu3DWiiU::threadEntry(int argc, const char **argv) {
 
 void Gpu3DWiiU::render(Gpu3DRenderer *renderer) {
     // Wait for the last frame to finish in case it was skipped, and then hand over the next one
+    HB_TIMER(hbWait);
     while (busy.load()) std::this_thread::yield();
+    HB_ADD_US(HB_EMU_3D_WAIT_US, hbWait);
     std::lock_guard<std::mutex> guard(mutex);
     busy.store(true);
     job = renderer;
@@ -335,6 +337,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     bool wBuffer = polygonCount && polygons[0].wBuffer;
     HB_SET(HB_GPU_STAGE, 2);
     HB_SET(HB_GPU_DISP3DCNT, disp3DCnt);
+    HB_TIMER(hbBuild);
     frameCount++;
     freeTextures();
     updated.clear();
@@ -369,7 +372,9 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             // Pick the shader and texture; toon and highlight polygons are drawn like modulated ones for now
             GpuDraw draw = {};
             bool textured = texturing && polygon->textureFmt != 0;
+            HB_TIMER(hbTexture);
             draw.texture = textured ? getTexture(renderer, polygon) : nullptr;
+            HB_ADD_US(HB_GPU_TEXTURE_US, hbTexture);
             draw.shader = !draw.texture ? 0 : (polygon->mode == 1) ? 2 : 1;
             draw.sampler = (polygon->repeatS ? (polygon->flipS ? 2 : 1) : 0) + (polygon->repeatT ? (polygon->flipT ? 2 : 1) : 0) * 3;
             draw.translucent = translucent && blending;
@@ -479,9 +484,13 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
 
     {
         // Draw the frame while holding GX2, setting this context's state up again after clearing
+        HB_ADD_US(HB_GPU_BUILD_US, hbBuild);
         HB_SET(HB_GPU_STAGE, 3);
-        std::lock_guard<std::mutex> guard(gx2Mutex);
+        HB_TIMER(hbLock);
+        std::unique_lock<std::mutex> guard(gx2Mutex);
+        HB_ADD_US(HB_GPU_LOCK_US, hbLock);
         HB_SET(HB_GPU_STAGE, 4);
+        HB_TIMER(hbDraw);
 
         // Make what the CPU wrote visible to the GPU; this adds GPU commands, so it has to be done with GX2 held
         for (GX2Texture *texture : updated)
@@ -575,11 +584,16 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 6, count, 1);
         }
 
-        // Write the color buffers out to memory and wait for the GPU to finish
+        // Write the color buffers out to memory, and wait for the GPU to finish without holding GX2, so the UI can
+        // submit its frame in the meantime
         GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, colorBuffer.surface.image, colorBuffer.surface.imageSize);
         if (finish)
             GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, attribBuffer.surface.image, attribBuffer.surface.imageSize);
-        GX2DrawDone();
+        GX2Flush();
+        OSTime submitted = GX2GetLastSubmittedTimeStamp();
+        guard.unlock();
+        GX2WaitTimeStamp(submitted);
+        HB_ADD_US(HB_GPU_DRAW_US, hbDraw);
     }
 
 #ifdef GPU_DUMP
@@ -595,6 +609,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     // With fog, the renderer applies it, edge marking, and anti-aliasing from the attributes the same way it does for
     // its own scanlines, which needs the scanlines around each one converted first
     HB_SET(HB_GPU_STAGE, 5);
+    HB_TIMER(hbConvert);
     bool edges = disp3DCnt & BIT(5);
     bool solid[2][256];
     DCInvalidateRange(colorBuffer.surface.image, colorBuffer.surface.imageSize);
@@ -668,6 +683,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         renderer->hardwareFinish(191);
         renderer->hardwareDone(191);
     }
+    HB_ADD_US(HB_GPU_CONVERT_US, hbConvert);
 
 #ifdef GPU_DUMP
     // Debug builds save what the GPU was given and what it drew 4 times a second, cycling through 20 files

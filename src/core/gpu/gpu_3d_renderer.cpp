@@ -120,7 +120,9 @@ uint32_t *Gpu3DRenderer::getLine1(int line) {
     // Wait until a scanline is ready, and then return it
     HB_SET(HB_EMU_WAIT, 3);
     EP_START_EMU(wait);
+    HB_TIMER(hbWait);
     while (ready[line].load() < 3) std::this_thread::yield();
+    HB_ADD_US(HB_3D_WAIT_US, hbWait);
     EP_ADD_EMU(EP_3D_WAIT, wait);
     HB_SET(HB_EMU_WAIT, 0);
     return &framebuffer[0][line * 256 * 2];
@@ -178,8 +180,10 @@ void Gpu3DRenderer::drawScanline(int line) {
         // Render the frame on the host's GPU if enabled, which marks scanlines as done when they're ready
         // It only renders at the native resolution so far
         // The last hardware frame has to finish first, since the 2D engine might not have waited for all of it
+        HB_TIMER(hbWait);
         if (hardwareFrame)
             while (ready[191].load() < 3) std::this_thread::yield();
+        HB_ADD_US(HB_EMU_3D_WAIT_US, hbWait);
         hardwareFrame = hardware && Settings::hardware3D && !resShift;
         if (hardwareFrame) {
             activeThreads = 0;

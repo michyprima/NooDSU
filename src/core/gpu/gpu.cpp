@@ -550,10 +550,12 @@ void Gpu::scanline355() {
         // Stop the thread now that the frame has been drawn
         if (thread) {
             EP_START(join);
+            HB_TIMER(hbJoin);
             running.store(false);
             thread->join();
             delete thread;
             thread = nullptr;
+            HB_ADD_US(HB_2D_JOIN_US, hbJoin);
             EP_ADD(EP_JOIN2D, join);
         }
 

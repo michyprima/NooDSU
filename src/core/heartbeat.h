@@ -21,6 +21,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 
 enum HeartbeatSlot {
@@ -38,6 +39,14 @@ enum HeartbeatSlot {
     HB_GPU_STAGE, // Step of the GPU 3D renderer: 1 = waiting, 2 = building, 3 = locking GX2, 4 = drawing, 5 = converting
     HB_GPU_FRAMES, // Frames finished by the GPU 3D renderer
     HB_GPU_DISP3DCNT, // 3D display control of the frame the GPU 3D renderer is drawing
+    HB_GPU_BUILD_US, // Total microseconds the GPU 3D renderer spent building vertices
+    HB_GPU_LOCK_US, // Total microseconds the GPU 3D renderer waited for GX2
+    HB_GPU_DRAW_US, // Total microseconds the GPU 3D renderer spent drawing, until the GPU was done
+    HB_GPU_CONVERT_US, // Total microseconds the GPU 3D renderer spent converting scanlines
+    HB_GPU_TEXTURE_US, // Total microseconds the GPU 3D renderer spent checking and decoding textures, within building
+    HB_3D_WAIT_US, // Total microseconds the 2D engine waited for 3D scanlines
+    HB_EMU_3D_WAIT_US, // Total microseconds the emulator waited for the GPU 3D renderer to finish a frame
+    HB_2D_JOIN_US, // Total microseconds the emulator waited for the 2D thread at the end of frames
     HB_COUNT
 };
 
@@ -47,7 +56,12 @@ namespace Heartbeat {
 }
 #define HB_SET(slot, value) (Heartbeat::values[slot] = (value))
 #define HB_INC(slot) (Heartbeat::values[slot]++)
+#define HB_TIMER(name) auto name = std::chrono::steady_clock::now()
+#define HB_ADD_US(slot, name) (Heartbeat::values[slot] += \
+    std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - name).count())
 #else
 #define HB_SET(slot, value) do {} while (0)
 #define HB_INC(slot) do {} while (0)
+#define HB_TIMER(name) do {} while (0)
+#define HB_ADD_US(slot, name) do {} while (0)
 #endif
