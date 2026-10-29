@@ -52,6 +52,7 @@ public:
     static int jit;
     static int fastTiming;
     static int hardware3D;
+    static int fast2D;
 
     static std::string gbaBiosPath;
     static std::string ndsBios9Path;

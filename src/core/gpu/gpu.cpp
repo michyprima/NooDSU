@@ -54,8 +54,10 @@ Gpu::Gpu(Core *core): core(core) {
 }
 
 Gpu::~Gpu() {
-    // Clean up the threads
+    // Clean up the threads and the engines' drawing copies
     stopThreads();
+    for (Gpu2D *drawer : drawers)
+        delete drawer;
 
     // Clean up any queued framebuffers
     freeFramebuffer(drawBuffer);
@@ -364,7 +366,7 @@ void Gpu::gbaScanline308() {
 
 void Gpu::scanline256() {
     if (vCount < 192) {
-        if (thread) {
+        if (thread && !fastFrame) {
             // Finish each engine's scanline, drawing it here if its thread hasn't started it, or waiting for it
             // Engine B comes first, since its thread shares a core and is more likely to be behind
             for (int engine = 1; engine >= 0; engine--) {
@@ -388,7 +390,7 @@ void Gpu::scanline256() {
                 }
             }
         }
-        else if (frames == 0) {
+        else if (!thread && frames == 0) {
             // Draw the current scanlines
             core->gpu2D[0].drawScanline(vCount);
             core->gpu2D[1].drawScanline(vCount);
@@ -402,10 +404,11 @@ void Gpu::scanline256() {
             displayCapture = true;
 
         // Perform a display capture, unless engine A's thread already did with the same settings
+        // In fast 2D mode, the thread always does it when it draws the scanline
         if (displayCapture) {
             EP_START(capture);
-            if (!thread || !captureDone.load() || captureCnt != dispCapCnt)
-                captureLine(dispCapCnt, false);
+            if (!thread || (!fastFrame && (!captureDone.load() || captureCnt != dispCapCnt)))
+                captureLine(dispCapCnt, vCount, core->gpu2D[0].getRawLine(), false);
 
             // End the display capture after its last scanline, from the heights of the capture sizes
             static const uint16_t heights[] = { 128, 64, 128, 192 };
@@ -445,7 +448,18 @@ void Gpu::scanline355() {
     // Move to the next scanline
     switch (++vCount) {
     case 192: // End of visible scanlines
-        // Let the threads sleep now that the frame has been drawn; every scanline was finished at its H-blank
+        // In fast 2D mode, stop sending register writes and wait for the threads to finish the frame
+        if (thread && fastFrame) {
+            HB_TIMER(hbJoin);
+            for (int i = 0; i < 2; i++) {
+                core->gpu2D[i].setQueue(nullptr);
+                while (linesDone[i].load() < 192 || !queues[i].empty())
+                    std::this_thread::yield();
+            }
+            HB_ADD_US(HB_2D_JOIN_US, hbJoin);
+        }
+
+        // Let the threads sleep now that the frame has been drawn
         frameActive.store(false);
 
         for (int i = 0; i < 2; i++) {
@@ -559,6 +573,17 @@ void Gpu::scanline355() {
                 thread = new WorkerThread(WorkerThread::CORE_0, &Gpu::drawThreaded, this, 0);
                 threadB = new WorkerThread(WorkerThread::CORE_2, &Gpu::drawThreaded, this, 1);
             }
+
+            // In fast 2D mode, sync the drawing copies and send them register writes until the frame ends
+            if ((fastFrame = Settings::fast2D)) {
+                for (int i = 0; i < 2; i++) {
+                    if (!drawers[i]) drawers[i] = new Gpu2D(core, i);
+                    drawers[i]->copyRegisters(core->gpu2D[i]);
+                    drawers[i]->setFramebuffer(core->gpu2D[i].getFramebuffer());
+                    linesDone[i].store(0);
+                    core->gpu2D[i].setQueue(&queues[i]);
+                }
+            }
             std::lock_guard<std::mutex> guard(frameMutex);
             frameActive.store(true);
             frameCond.notify_all();
@@ -576,12 +601,19 @@ void Gpu::scanline355() {
 
     // Signal that the next scanline should start drawing, along with the display capture settings if it's captured
     // The capture is checked again at H-blank, in case its settings changed
+    // In fast 2D mode, the scanline is sent to the threads with the capture settings, since they draw behind
     if (vCount < 192 && thread) {
         bool capturing = displayCapture || (vCount == 0 && (dispCapCnt & BIT(31)));
-        captureCnt = capturing ? dispCapCnt : 0;
-        captureDone.store(false);
-        drawing.store(1);
-        drawingB.store(1);
+        if (fastFrame) {
+            for (int i = 0; i < 2; i++)
+                queues[i].push({ Gpu2DEntry::LINE, uint8_t(i == 0 && capturing), dispCapCnt, uint32_t(vCount) });
+        }
+        else {
+            captureCnt = capturing ? dispCapCnt : 0;
+            captureDone.store(false);
+            drawing.store(1);
+            drawingB.store(1);
+        }
     }
 
     for (int i = 0; i < 2; i++) {
@@ -627,26 +659,31 @@ void Gpu::drawThreaded(int engine) {
     if (engine == 0) HB_SET_CORE(HB_2D_CORE);
     std::atomic<int> &state = engine ? drawingB : drawing;
     while (running.load()) {
-        // Wait until the next scanline should start, and claim it unless the emulator thread already did
         // Between frames, sleep until the next one starts instead of spinning
+        if (!frameActive.load()) {
+            std::unique_lock<std::mutex> lock(frameMutex);
+            frameCond.wait(lock, [&] { return frameActive.load() || !running.load(); });
+            continue;
+        }
+
+        // In fast 2D mode, replay what the emulator sent, drawing scanlines as they come up
+        if (fastFrame) {
+            if (!fastStep(engine)) std::this_thread::yield();
+            continue;
+        }
+
+        // Otherwise, wait until the next scanline should start, and claim it unless the emulator thread already did
         int expected = 1;
-        while (!state.compare_exchange_weak(expected, 2)) {
-            if (!running.load()) return;
-            if (!frameActive.load()) {
-                std::unique_lock<std::mutex> lock(frameMutex);
-                frameCond.wait(lock, [&] { return frameActive.load() || !running.load(); });
-            }
-            else {
-                std::this_thread::yield();
-            }
-            expected = 1;
+        if (!state.compare_exchange_weak(expected, 2)) {
+            std::this_thread::yield();
+            continue;
         }
 
         // Draw the engine's scanline, and for engine A, the display capture that uses it, then signal that it's finished
         HB_INC(HB_2D_LINES);
         core->gpu2D[engine].drawScanline(vCount);
         if (engine) EP_INC(EC_LINES_THREAD);
-        else if (captureCnt) captureDone.store(captureLine(captureCnt, true));
+        else if (captureCnt) captureDone.store(captureLine(captureCnt, vCount, core->gpu2D[0].getRawLine(), true));
         state.store(0);
 
         // Engine A's thread also draws engine B's scanline if its thread hasn't started it, since that one shares a core
@@ -661,8 +698,28 @@ void Gpu::drawThreaded(int engine) {
     }
 }
 
-bool Gpu::captureLine(uint32_t cnt, bool directOnly) {
-    // Capture the current scanline with the given capture settings, from engine A's output that was just drawn
+bool Gpu::fastStep(int engine) {
+    // Replay the next register write sent to an engine, or draw the next scanline with its drawing copy
+    Gpu2DEntry entry;
+    if (!queues[engine].pop(entry)) return false;
+    Gpu2D *drawer = drawers[engine];
+    if (entry.type != Gpu2DEntry::LINE) {
+        drawer->replay(entry);
+        return true;
+    }
+
+    // Draw the scanline with the display capture settings from its start, and capture it if needed
+    // Captures that can't access VRAM directly off the emulator thread are skipped
+    HB_INC(HB_2D_LINES);
+    drawer->updateWindows(entry.value);
+    drawer->drawScanline(entry.value, entry.mask);
+    if (entry.index) captureLine(entry.mask, entry.value, drawer->getRawLine(), true);
+    linesDone[engine].store(entry.value + 1);
+    return true;
+}
+
+bool Gpu::captureLine(uint32_t cnt, int line, const uint32_t *rawLine, bool directOnly) {
+    // Capture a scanline with the given capture settings, from engine A's output that was just drawn
     // Off the emulator thread, VRAM can only be accessed directly, so it gives up if that's not possible
 
     // Determine the capture size
@@ -672,7 +729,7 @@ bool Gpu::captureLine(uint32_t cnt, bool directOnly) {
 
     // Get the VRAM destination address for the current scanline
     uint32_t base = 0x6800000 + ((cnt & 0x00030000) >> 16) * 0x20000;
-    uint32_t writeOffset = ((cnt & 0x000C0000) >> 3) + vCount * width * 2;
+    uint32_t writeOffset = ((cnt & 0x000C0000) >> 3) + line * width * 2;
 
     // Get direct pointers to a scanline's VRAM if it's mapped and within a page, or null to use memory accesses
     auto linePtr = [&](uint32_t offset, bool write) -> uint8_t* {
@@ -688,7 +745,7 @@ bool Gpu::captureLine(uint32_t cnt, bool directOnly) {
     case 0: { // Source A
         // Choose from 2D engine A or the 3D engine
         // In high-res mode, skip every other pixel when capturing 3D
-        uint32_t *source = (cnt & BIT(24)) ? core->gpu3DRenderer.getLine(vCount) : core->gpu2D[0].getRawLine();
+        const uint32_t *source = (cnt & BIT(24)) ? core->gpu3DRenderer.getLine(line) : rawLine;
         bool resShift = (Settings::highRes3D && (cnt & BIT(24)));
 
         // Copy a scanline to memory
@@ -707,7 +764,7 @@ bool Gpu::captureLine(uint32_t cnt, bool directOnly) {
         }
 
         // Get the VRAM source address for the current scanline
-        uint32_t readOffset = ((cnt & 0x0C000000) >> 11) + vCount * width * 2;
+        uint32_t readOffset = ((cnt & 0x0C000000) >> 11) + line * width * 2;
         uint8_t *src = linePtr(readOffset, false);
         if (directOnly && !src) return false;
 
@@ -729,11 +786,11 @@ bool Gpu::captureLine(uint32_t cnt, bool directOnly) {
 
         // Choose from 2D engine A or the 3D engine
         // In high-res mode, skip every other pixel when capturing 3D
-        uint32_t *source = (cnt & BIT(24)) ? core->gpu3DRenderer.getLine(vCount) : core->gpu2D[0].getRawLine();
+        const uint32_t *source = (cnt & BIT(24)) ? core->gpu3DRenderer.getLine(line) : rawLine;
         bool resShift = (Settings::highRes3D && (cnt & BIT(24)));
 
         // Get the VRAM source address for the current scanline
-        uint32_t readOffset = ((cnt & 0x0C000000) >> 11) + vCount * width * 2;
+        uint32_t readOffset = ((cnt & 0x0C000000) >> 11) + line * width * 2;
         uint8_t *src = linePtr(readOffset, false);
         if (directOnly && !src) return false;
 

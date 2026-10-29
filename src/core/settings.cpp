@@ -39,6 +39,7 @@ int Settings::arm7Hle = 0;
 int Settings::jit = 0;
 int Settings::fastTiming = 0;
 int Settings::hardware3D = 0;
+int Settings::fast2D = 0;
 
 std::string Settings::gbaBiosPath = "gba_bios.bin";
 std::string Settings::ndsBios9Path = "bios9.bin";
@@ -71,6 +72,7 @@ std::vector<Setting> Settings::settings = {
     Setting("jit", &jit, false),
     Setting("fastTiming", &fastTiming, false),
     Setting("hardware3D", &hardware3D, false),
+    Setting("fast2D", &fast2D, false),
     Setting("gbaBiosPath", &gbaBiosPath, true),
     Setting("ndsBios9Path", &ndsBios9Path, true),
     Setting("ndsBios7Path", &ndsBios7Path, true),

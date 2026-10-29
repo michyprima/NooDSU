@@ -19,10 +19,53 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <thread>
 
 class Core;
+
+// A register write or a scanline to draw, for a drawing copy of an engine to replay in fast 2D mode
+struct Gpu2DEntry {
+    enum Type : uint8_t {
+        DISPCNT, BGCNT, BGHOFS, BGVOFS, BGPA, BGPB, BGPC, BGPD, BGX, BGY, WINH, WINV,
+        WININ, WINOUT, MOSAIC, BLDCNT, BLDALPHA, BLDY, MASTER_BRIGHT, LINE
+    };
+
+    Type type;
+    uint8_t index; // The background or window, or for scanlines, whether the display capture takes it
+    uint32_t mask; // For scanlines, the display capture settings at its start
+    uint32_t value; // For scanlines, which one
+};
+
+// A queue of entries from the emulator thread to one drawing thread
+class Gpu2DQueue {
+public:
+    void push(const Gpu2DEntry &entry) {
+        // Wait for room if the drawing thread is far behind
+        uint32_t end = tail.load(std::memory_order_relaxed);
+        while (end - head.load(std::memory_order_acquire) >= SIZE)
+            std::this_thread::yield();
+        entries[end % SIZE] = entry;
+        tail.store(end + 1, std::memory_order_release);
+    }
+
+    bool pop(Gpu2DEntry &entry) {
+        uint32_t start = head.load(std::memory_order_relaxed);
+        if (start == tail.load(std::memory_order_acquire)) return false;
+        entry = entries[start % SIZE];
+        head.store(start + 1, std::memory_order_release);
+        return true;
+    }
+
+    bool empty() { return head.load(std::memory_order_acquire) == tail.load(std::memory_order_acquire); }
+
+private:
+    static const uint32_t SIZE = 4096;
+    Gpu2DEntry entries[SIZE];
+    std::atomic<uint32_t> head{0}, tail{0};
+};
 
 class Gpu2D {
 public:
@@ -34,6 +77,12 @@ public:
     void updateWindows(int line);
     void drawGbaScanline(int line);
     void drawScanline(int line);
+    void drawScanline(int line, uint32_t capCnt);
+
+    // In fast 2D mode, register writes are also sent to a drawing copy, which is synced at the start of each frame
+    void setQueue(Gpu2DQueue *queue) { this->queue = queue; }
+    void copyRegisters(const Gpu2D &other);
+    void replay(const Gpu2DEntry &entry);
 
     uint32_t *getFramebuffer() { return framebuffer; }
     void setFramebuffer(uint32_t *buffer) { framebuffer = buffer ? buffer : ownFramebuffer; }
@@ -70,6 +119,7 @@ public:
 private:
     Core *core;
     bool engine;
+    Gpu2DQueue *queue = nullptr;
 
     uint32_t bgVramAddr, objVramAddr;
     uint8_t *palette, *oam;

@@ -111,6 +111,61 @@ void Gpu2D::updateWindows(int line) {
     }
 }
 
+void Gpu2D::copyRegisters(const Gpu2D &other) {
+    // Take the registers and the internal state they affect from another copy of the engine
+    memcpy(internalX, other.internalX, sizeof(internalX));
+    memcpy(internalY, other.internalY, sizeof(internalY));
+    memcpy(winHFlip, other.winHFlip, sizeof(winHFlip));
+    memcpy(winVFlag, other.winVFlag, sizeof(winVFlag));
+    dispCnt = other.dispCnt;
+    memcpy(bgCnt, other.bgCnt, sizeof(bgCnt));
+    memcpy(bgHOfs, other.bgHOfs, sizeof(bgHOfs));
+    memcpy(bgVOfs, other.bgVOfs, sizeof(bgVOfs));
+    memcpy(bgPA, other.bgPA, sizeof(bgPA));
+    memcpy(bgPB, other.bgPB, sizeof(bgPB));
+    memcpy(bgPC, other.bgPC, sizeof(bgPC));
+    memcpy(bgPD, other.bgPD, sizeof(bgPD));
+    memcpy(bgX, other.bgX, sizeof(bgX));
+    memcpy(bgY, other.bgY, sizeof(bgY));
+    memcpy(winX1, other.winX1, sizeof(winX1));
+    memcpy(winX2, other.winX2, sizeof(winX2));
+    memcpy(winY1, other.winY1, sizeof(winY1));
+    memcpy(winY2, other.winY2, sizeof(winY2));
+    winIn = other.winIn;
+    winOut = other.winOut;
+    bldCnt = other.bldCnt;
+    mosaic = other.mosaic;
+    bldAlpha = other.bldAlpha;
+    bldY = other.bldY;
+    masterBright = other.masterBright;
+}
+
+void Gpu2D::replay(const Gpu2DEntry &entry) {
+    // Apply a register write that was made to another copy of the engine
+    switch (entry.type) {
+    case Gpu2DEntry::DISPCNT: return writeDispCnt(entry.mask, entry.value);
+    case Gpu2DEntry::BGCNT: return writeBgCnt(entry.index, entry.mask, entry.value);
+    case Gpu2DEntry::BGHOFS: return writeBgHOfs(entry.index, entry.mask, entry.value);
+    case Gpu2DEntry::BGVOFS: return writeBgVOfs(entry.index, entry.mask, entry.value);
+    case Gpu2DEntry::BGPA: return writeBgPA(entry.index, entry.mask, entry.value);
+    case Gpu2DEntry::BGPB: return writeBgPB(entry.index, entry.mask, entry.value);
+    case Gpu2DEntry::BGPC: return writeBgPC(entry.index, entry.mask, entry.value);
+    case Gpu2DEntry::BGPD: return writeBgPD(entry.index, entry.mask, entry.value);
+    case Gpu2DEntry::BGX: return writeBgX(entry.index, entry.mask, entry.value);
+    case Gpu2DEntry::BGY: return writeBgY(entry.index, entry.mask, entry.value);
+    case Gpu2DEntry::WINH: return writeWinH(entry.index, entry.mask, entry.value);
+    case Gpu2DEntry::WINV: return writeWinV(entry.index, entry.mask, entry.value);
+    case Gpu2DEntry::WININ: return writeWinIn(entry.mask, entry.value);
+    case Gpu2DEntry::WINOUT: return writeWinOut(entry.mask, entry.value);
+    case Gpu2DEntry::MOSAIC: return writeMosaic(entry.mask, entry.value);
+    case Gpu2DEntry::BLDCNT: return writeBldCnt(entry.mask, entry.value);
+    case Gpu2DEntry::BLDALPHA: return writeBldAlpha(entry.mask, entry.value);
+    case Gpu2DEntry::BLDY: return writeBldY(entry.value);
+    case Gpu2DEntry::MASTER_BRIGHT: return writeMasterBright(entry.mask, entry.value);
+    default: return;
+    }
+}
+
 void Gpu2D::drawGbaScanline(int line) {
     // Clear layers with the backdrop (first palette index)
     uint32_t backdrop = U8TO16(palette, 0) & ~BIT(15);
@@ -219,9 +274,12 @@ void Gpu2D::drawGbaScanline(int line) {
 }
 
 void Gpu2D::drawScanline(int line) {
+    drawScanline(line, core->gpu.readDispCapCnt());
+}
+
+void Gpu2D::drawScanline(int line, uint32_t capCnt) {
     // Build the layers unless nothing would see them, when the display shows something else and engine A's
     // display capture doesn't take them
-    uint32_t capCnt = core->gpu.readDispCapCnt();
     if (((dispCnt >> 16) & 0x3) == 1 || (engine == 0 && !(capCnt & BIT(24)) && ((capCnt >> 29) & 0x3) != 1))
         drawLayers(line);
     else
@@ -1248,6 +1306,7 @@ template <bool gbaMode> void Gpu2D::drawObjects(int line, bool window) {
 }
 
 void Gpu2D::writeDispCnt(uint32_t mask, uint32_t value) {
+    if (queue) queue->push({ Gpu2DEntry::DISPCNT, 0, mask, value });
     // Write to the DISPCNT register
     mask &= ((engine == 0) ? 0xFFFFFFFF : 0xC0B1FFF7);
     dispCnt = (dispCnt & ~mask) | (value & mask);
@@ -1255,44 +1314,52 @@ void Gpu2D::writeDispCnt(uint32_t mask, uint32_t value) {
 }
 
 void Gpu2D::writeBgCnt(int bg, uint16_t mask, uint16_t value) {
+    if (queue) queue->push({ Gpu2DEntry::BGCNT, uint8_t(bg), mask, value });
     // Write to one of the BGCNT registers
     if (core->gbaMode && bg < 2) mask &= 0xDFFF;
     bgCnt[bg] = (bgCnt[bg] & ~mask) | (value & mask);
 }
 
 void Gpu2D::writeBgHOfs(int bg, uint16_t mask, uint16_t value) {
+    if (queue) queue->push({ Gpu2DEntry::BGHOFS, uint8_t(bg), mask, value });
     // Write to one of the BGHOFS registers
     mask &= 0x01FF;
     bgHOfs[bg] = (bgHOfs[bg] & ~mask) | (value & mask);
 }
 
 void Gpu2D::writeBgVOfs(int bg, uint16_t mask, uint16_t value) {
+    if (queue) queue->push({ Gpu2DEntry::BGVOFS, uint8_t(bg), mask, value });
     // Write to one of the BGVOFS registers
     mask &= 0x01FF;
     bgVOfs[bg] = (bgVOfs[bg] & ~mask) | (value & mask);
 }
 
 void Gpu2D::writeBgPA(int bg, uint16_t mask, uint16_t value) {
+    if (queue) queue->push({ Gpu2DEntry::BGPA, uint8_t(bg), mask, value });
     // Write to one of the BGPA registers
     bgPA[bg - 2] = (bgPA[bg - 2] & ~mask) | (value & mask);
 }
 
 void Gpu2D::writeBgPB(int bg, uint16_t mask, uint16_t value) {
+    if (queue) queue->push({ Gpu2DEntry::BGPB, uint8_t(bg), mask, value });
     // Write to one of the BGPB registers
     bgPB[bg - 2] = (bgPB[bg - 2] & ~mask) | (value & mask);
 }
 
 void Gpu2D::writeBgPC(int bg, uint16_t mask, uint16_t value) {
+    if (queue) queue->push({ Gpu2DEntry::BGPC, uint8_t(bg), mask, value });
     // Write to one of the BGPC registers
     bgPC[bg - 2] = (bgPC[bg - 2] & ~mask) | (value & mask);
 }
 
 void Gpu2D::writeBgPD(int bg, uint16_t mask, uint16_t value) {
+    if (queue) queue->push({ Gpu2DEntry::BGPD, uint8_t(bg), mask, value });
     // Write to one of the BGPD registers
     bgPD[bg - 2] = (bgPD[bg - 2] & ~mask) | (value & mask);
 }
 
 void Gpu2D::writeBgX(int bg, uint32_t mask, uint32_t value) {
+    if (queue) queue->push({ Gpu2DEntry::BGX, uint8_t(bg), mask, value });
     // Write to one of the BGX registers
     mask &= 0x0FFFFFFF;
     bgX[bg - 2] = (bgX[bg - 2] & ~mask) | (value & mask);
@@ -1305,6 +1372,7 @@ void Gpu2D::writeBgX(int bg, uint32_t mask, uint32_t value) {
 }
 
 void Gpu2D::writeBgY(int bg, uint32_t mask, uint32_t value) {
+    if (queue) queue->push({ Gpu2DEntry::BGY, uint8_t(bg), mask, value });
     // Write to one of the BGY registers
     mask &= 0x0FFFFFFF;
     bgY[bg - 2] = (bgY[bg - 2] & ~mask) | (value & mask);
@@ -1318,6 +1386,7 @@ void Gpu2D::writeBgY(int bg, uint32_t mask, uint32_t value) {
 
 
 void Gpu2D::writeWinH(int win, uint16_t mask, uint16_t value) {
+    if (queue) queue->push({ Gpu2DEntry::WINH, uint8_t(win), mask, value });
     // Write to one of the WINH registers
     if (mask & 0x00FF) winX2[win] = (value & 0x00FF) >> 0;
     if (mask & 0xFF00) winX1[win] = (value & 0xFF00) >> 8;
@@ -1328,47 +1397,55 @@ void Gpu2D::writeWinH(int win, uint16_t mask, uint16_t value) {
 }
 
 void Gpu2D::writeWinV(int win, uint16_t mask, uint16_t value) {
+    if (queue) queue->push({ Gpu2DEntry::WINV, uint8_t(win), mask, value });
     // Write to one of the WINV registers
     if (mask & 0x00FF) winY2[win] = (value & 0x00FF) >> 0;
     if (mask & 0xFF00) winY1[win] = (value & 0xFF00) >> 8;
 }
 
 void Gpu2D::writeWinIn(uint16_t mask, uint16_t value) {
+    if (queue) queue->push({ Gpu2DEntry::WININ, 0, mask, value });
     // Write to the WININ register
     mask &= 0x3F3F;
     winIn = (winIn & ~mask) | (value & mask);
 }
 
 void Gpu2D::writeWinOut(uint16_t mask, uint16_t value) {
+    if (queue) queue->push({ Gpu2DEntry::WINOUT, 0, mask, value });
     // Write to the WINOUT register
     mask &= 0x3F3F;
     winOut = (winOut & ~mask) | (value & mask);
 }
 
 void Gpu2D::writeMosaic(uint16_t mask, uint16_t value) {
+    if (queue) queue->push({ Gpu2DEntry::MOSAIC, 0, mask, value });
     // Write to the MOSAIC register
     mosaic = (mosaic & ~mask) | (value & mask);
 }
 
 void Gpu2D::writeBldCnt(uint16_t mask, uint16_t value) {
+    if (queue) queue->push({ Gpu2DEntry::BLDCNT, 0, mask, value });
     // Write to the BLDCNT register
     mask &= 0x3FFF;
     bldCnt = (bldCnt & ~mask) | (value & mask);
 }
 
 void Gpu2D::writeBldAlpha(uint16_t mask, uint16_t value) {
+    if (queue) queue->push({ Gpu2DEntry::BLDALPHA, 0, mask, value });
     // Write to the BLDALPHA register
     mask &= 0x1F1F;
     bldAlpha = (bldAlpha & ~mask) | (value & mask);
 }
 
 void Gpu2D::writeBldY(uint8_t value) {
+    if (queue) queue->push({ Gpu2DEntry::BLDY, 0, 0xFF, value });
     // Write to the BLDY register
     bldY = value & 0x1F;
     if (bldY > 16) bldY = 16;
 }
 
 void Gpu2D::writeMasterBright(uint16_t mask, uint16_t value) {
+    if (queue) queue->push({ Gpu2DEntry::MASTER_BRIGHT, 0, mask, value });
     // Write to the MASTER_BRIGHT register
     mask &= 0xC01F;
     masterBright = (masterBright & ~mask) | (value & mask);

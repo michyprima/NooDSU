@@ -24,6 +24,7 @@
 #include <condition_variable>
 #include <thread>
 
+#include "gpu_2d.h"
 #include "../worker_thread.h"
 #include <mutex>
 #include <queue>
@@ -86,6 +87,13 @@ private:
     // The display capture settings for engine A's thread to capture the current scanline with, or 0 if not captured
     uint32_t captureCnt = 0;
     std::atomic<bool> captureDone;
+
+    // In fast 2D mode, the threads draw with copies of the engines, replaying register writes behind the emulator
+    // instead of keeping in step with it, so video memory can be read later than it should be
+    bool fastFrame = false;
+    Gpu2D *drawers[2] = {};
+    Gpu2DQueue queues[2];
+    std::atomic<int> linesDone[2];
     std::mutex frameMutex;
     std::condition_variable frameCond;
 
@@ -108,5 +116,6 @@ private:
     void drawGbaThreaded();
     void drawThreaded(int engine);
     void stopThreads();
-    bool captureLine(uint32_t cnt, bool directOnly);
+    bool fastStep(int engine);
+    bool captureLine(uint32_t cnt, int line, const uint32_t *rawLine, bool directOnly);
 };
