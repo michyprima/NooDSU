@@ -21,6 +21,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <condition_variable>
 #include <thread>
 
 #include "../worker_thread.h"
@@ -76,6 +77,18 @@ private:
     std::atomic<int> drawing;
     WorkerThread *thread = nullptr;
 
+    // On NDS, engine B has a thread of its own, so the engines are drawn in parallel
+    // The threads are kept between frames, sleeping while no frame is being drawn
+    std::atomic<int> drawingB;
+    WorkerThread *threadB = nullptr;
+    std::atomic<bool> frameActive;
+
+    // The display capture settings for engine A's thread to capture the current scanline with, or 0 if not captured
+    uint32_t captureCnt = 0;
+    std::atomic<bool> captureDone;
+    std::mutex frameMutex;
+    std::condition_variable frameCond;
+
     int frames = 0;
     bool gbaBlock = true;
     bool displayCapture = false;
@@ -93,5 +106,7 @@ private:
     static uint16_t rgb6ToRgb5(uint32_t color);
 
     void drawGbaThreaded();
-    void drawThreaded();
+    void drawThreaded(int engine);
+    void stopThreads();
+    bool captureLine(uint32_t cnt, bool directOnly);
 };

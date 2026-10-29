@@ -77,9 +77,9 @@ enum PixelProfileSlot {
 };
 
 enum EmuCountSlot {
-    EC_LINES_EMU, // 2D scanlines drawn fully on the emulator thread
-    EC_LINES_HALF, // 2D scanlines where the emulator thread drew engine B
-    EC_LINES_THREAD, // 2D scanlines drawn fully by the 2D thread
+    EC_LINES_EMU, // Engine A scanlines drawn on the emulator thread
+    EC_LINES_HALF, // Engine B scanlines drawn on the emulator thread
+    EC_LINES_THREAD, // Engine B scanlines drawn by its thread
     EC_COUNT
 };
 

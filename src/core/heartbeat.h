@@ -31,7 +31,7 @@ enum HeartbeatSlot {
     HB_JIT_BLOCK, // Address of the last block entered
     HB_JIT_INSIDE, // Whether generated code is running
     HB_JIT_ENTRIES, // Times generated code was entered
-    HB_2D_LINES, // Scanlines drawn by the 2D thread
+    HB_2D_LINES, // Engine scanlines drawn by the 2D threads
     HB_3D_LINES, // Scanlines finished by 3D threads
     HB_UI_FRAMES, // Frames drawn by the UI
     HB_UI_STAGE, // Step of the UI loop: 1 = get frame, 2 = start frame, 3 = draw, 4 = end frame, 5 = input
@@ -47,7 +47,8 @@ enum HeartbeatSlot {
     HB_3D_WAIT_US, // Total microseconds the 2D engine waited for 3D scanlines
     HB_EMU_3D_WAIT_US, // Total microseconds the emulator waited for the GPU 3D renderer to finish a frame
     HB_2D_JOIN_US, // Total microseconds the emulator waited for the 2D thread at the end of frames
-    HB_2D_EMU_LINES, // Scanlines the emulator drew because the 2D thread hadn't started them
+    HB_2D_EMU_LINES_A, // Engine A scanlines the emulator drew because its 2D thread hadn't started them
+    HB_2D_EMU_LINES_B, // Engine B scanlines the emulator drew because its 2D thread hadn't started them
     HB_2D_CORE, // Core the 2D thread last ran on, plus 1
     HB_GEOM_CORE, // Core the geometry worker last ran on, plus 1
     HB_COUNT

@@ -338,7 +338,7 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
                     lineCounts[i] = (EmuProfile::counts[i] - lastCount[i]) / frames;
                     lastCount[i] = EmuProfile::counts[i];
                 }
-                snprintf(text, sizeof(text), "2D lines/f: emu %.0f, emu B %.0f, thread %.0f; 3D help %.1fms/f, "
+                snprintf(text, sizeof(text), "2D lines/f: emu A %.0f, emu B %.0f, thread B %.0f; 3D help %.1fms/f, "
                     "3D wait %.1fms/f, capture %.1fms/f", lineCounts[EC_LINES_EMU], lineCounts[EC_LINES_HALF],
                     lineCounts[EC_LINES_THREAD], ms[EP_3D_HELP], ms[EP_3D_WAIT], ms[EP_CAPTURE]);
                 lines[6] = text;

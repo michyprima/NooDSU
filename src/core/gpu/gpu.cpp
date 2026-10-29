@@ -48,15 +48,14 @@ Gpu::Gpu(Core *core): core(core) {
     ready.store(false);
     running.store(false);
     drawing.store(0);
+    drawingB.store(0);
+    frameActive.store(false);
+    captureDone.store(false);
 }
 
 Gpu::~Gpu() {
-    // Clean up the thread
-    if (thread) {
-        running.store(false);
-        thread->join();
-        delete thread;
-    }
+    // Clean up the threads
+    stopThreads();
 
     // Clean up any queued framebuffers
     freeFramebuffer(drawBuffer);
@@ -365,37 +364,28 @@ void Gpu::gbaScanline308() {
 
 void Gpu::scanline256() {
     if (vCount < 192) {
-        int expected = 1;
-        if (thread && drawing.compare_exchange_strong(expected, 4)) {
-            // If the thread hasn't started the scanlines yet, draw them here instead of waiting for it
-            EP_START(draw);
-            core->gpu2D[0].drawScanline(vCount);
-            core->gpu2D[1].drawScanline(vCount);
-            drawing.store(0);
-            EP_ADD(EP_DRAW2D, draw);
-            EP_INC(EC_LINES_EMU);
-            HB_INC(HB_2D_EMU_LINES);
-        }
-        else if (thread) {
-            switch (drawing.exchange(3)) {
-            case 2: {
-                // Draw engine B's scanline if it hasn't started yet (and purposely fall through)
-                EP_START(draw);
-                core->gpu2D[1].drawScanline(vCount);
-                EP_ADD(EP_DRAW2D, draw);
-                EP_INC(EC_LINES_HALF);
-            }
-
-            case 3: {
-                // Wait for the thread to finish the scanlines
-                EP_START(wait);
-                HB_SET(HB_EMU_WAIT, 2);
-                while (drawing.load() != 0)
-                    std::this_thread::yield();
-                HB_SET(HB_EMU_WAIT, 0);
-                EP_ADD(EP_WAIT2D, wait);
-                break;
-            }
+        if (thread) {
+            // Finish each engine's scanline, drawing it here if its thread hasn't started it, or waiting for it
+            // Engine B comes first, since its thread shares a core and is more likely to be behind
+            for (int engine = 1; engine >= 0; engine--) {
+                std::atomic<int> &state = engine ? drawingB : drawing;
+                int expected = 1;
+                if (state.compare_exchange_strong(expected, 3)) {
+                    EP_START(draw);
+                    core->gpu2D[engine].drawScanline(vCount);
+                    state.store(0);
+                    EP_ADD(EP_DRAW2D, draw);
+                    EP_INC(engine ? EC_LINES_HALF : EC_LINES_EMU);
+                    HB_INC(engine ? HB_2D_EMU_LINES_B : HB_2D_EMU_LINES_A);
+                }
+                else {
+                    EP_START(wait);
+                    HB_SET(HB_EMU_WAIT, 2);
+                    while (state.load() != 0)
+                        std::this_thread::yield();
+                    HB_SET(HB_EMU_WAIT, 0);
+                    EP_ADD(EP_WAIT2D, wait);
+                }
             }
         }
         else if (frames == 0) {
@@ -411,110 +401,15 @@ void Gpu::scanline256() {
         if (vCount == 0 && (dispCapCnt & BIT(31)))
             displayCapture = true;
 
-        // Perform a display capture
+        // Perform a display capture, unless engine A's thread already did with the same settings
         if (displayCapture) {
             EP_START(capture);
-            // Determine the capture size
-            static const uint16_t sizes[] = { 128, 128, 256, 64, 256, 128, 256, 192 };
-            const uint16_t *size = &sizes[(dispCapCnt >> 19) & 0x6];
-            const uint16_t width = size[0];
-            const uint16_t height = size[1];
+            if (!thread || !captureDone.load() || captureCnt != dispCapCnt)
+                captureLine(dispCapCnt, false);
 
-            // Get the VRAM destination address for the current scanline
-            uint32_t base = 0x6800000 + ((dispCapCnt & 0x00030000) >> 16) * 0x20000;
-            uint32_t writeOffset = ((dispCapCnt & 0x000C0000) >> 3) + vCount * width * 2;
-
-            // Get direct pointers to a scanline's VRAM if it's mapped and within a page, or null to use memory accesses
-            auto linePtr = [&](uint32_t offset, bool write) -> uint8_t* {
-                offset &= 0x1FFFF;
-                if ((offset & 0xFFF) + width * 2 > 0x1000) return nullptr;
-                return write ? core->memory.getWritePtr(0, base + offset) : core->memory.getReadPtr(0, base + offset);
-            };
-            uint8_t *dst = linePtr(writeOffset, true);
-
-            // Copy the source contents to memory as a 15-bit bitmap
-            switch ((dispCapCnt & 0x60000000) >> 29) { // Capture source
-            case 0: { // Source A
-                // Choose from 2D engine A or the 3D engine
-                // In high-res mode, skip every other pixel when capturing 3D
-                uint32_t *source = (dispCapCnt & BIT(24)) ? core->gpu3DRenderer.getLine(vCount) : core->gpu2D[0].getRawLine();
-                bool resShift = (Settings::highRes3D && (dispCapCnt & BIT(24)));
-
-                // Copy a scanline to memory
-                for (int i = 0; i < width; i++) {
-                    uint16_t color = rgb6ToRgb5(source[i << resShift]);
-                    if (dst) writeLsb<uint16_t>(&dst[i * 2], color);
-                    else core->memory.write<uint16_t>(0, base + ((writeOffset + i * 2) & 0x1FFFF), color);
-                }
-                break;
-            }
-
-            case 1: { // Source B
-                if (dispCapCnt & BIT(25)) {
-                    LOG_CRIT("Unimplemented display capture source: display FIFO\n");
-                    break;
-                }
-
-                // Get the VRAM source address for the current scanline
-                uint32_t readOffset = ((dispCapCnt & 0x0C000000) >> 11) + vCount * width * 2;
-                uint8_t *src = linePtr(readOffset, false);
-
-                // Copy a scanline to memory
-                for (int i = 0; i < width; i++) {
-                    uint16_t color = src ? readLsb<uint16_t>(&src[i * 2]) :
-                        core->memory.read<uint16_t>(0, base + ((readOffset + i * 2) & 0x1FFFF));
-                    if (dst) writeLsb<uint16_t>(&dst[i * 2], color);
-                    else core->memory.write<uint16_t>(0, base + ((writeOffset + i * 2) & 0x1FFFF), color);
-                }
-                break;
-            }
-
-            default: { // Blended
-                if (dispCapCnt & BIT(25)) {
-                    LOG_CRIT("Unimplemented display capture source: display FIFO\n");
-                    break;
-                }
-
-                // Choose from 2D engine A or the 3D engine
-                // In high-res mode, skip every other pixel when capturing 3D
-                uint32_t *source = (dispCapCnt & BIT(24)) ? core->gpu3DRenderer.getLine(vCount) : core->gpu2D[0].getRawLine();
-                bool resShift = (Settings::highRes3D && (dispCapCnt & BIT(24)));
-
-                // Get the VRAM source address for the current scanline
-                uint32_t readOffset = ((dispCapCnt & 0x0C000000) >> 11) + vCount * width * 2;
-                uint8_t *src = linePtr(readOffset, false);
-
-                // Build a table of blended color channels for the current blending factors, indexed by the two sources
-                uint8_t eva = std::min((dispCapCnt >> 0) & 0x1F, 16U);
-                uint8_t evb = std::min((dispCapCnt >> 8) & 0x1F, 16U);
-                if (blendFactors != ((eva << 8) | evb)) {
-                    blendFactors = (eva << 8) | evb;
-                    for (int c1 = 0; c1 < 32; c1++)
-                        for (int c2 = 0; c2 < 32; c2++)
-                            blendTable[(c1 << 5) | c2] = std::min((c1 * eva + c2 * evb) / 16, 31);
-                }
-
-                // Copy a scanline to memory
-                for (int i = 0; i < width; i++) {
-                    // Get colors from the two sources
-                    uint16_t c1 = rgb6ToRgb5(source[i << resShift]);
-                    uint16_t c2 = src ? readLsb<uint16_t>(&src[i * 2]) :
-                        core->memory.read<uint16_t>(0, base + ((readOffset + i * 2) & 0x1FFFF));
-
-                    // Blend the color values
-                    uint8_t r = blendTable[((c1 << 5) & 0x3E0) | ((c2 >> 0) & 0x1F)];
-                    uint8_t g = blendTable[((c1 >> 0) & 0x3E0) | ((c2 >> 5) & 0x1F)];
-                    uint8_t b = blendTable[((c1 >> 5) & 0x3E0) | ((c2 >> 10) & 0x1F)];
-
-                    uint16_t color = BIT(15) | (b << 10) | (g << 5) | r;
-                    if (dst) writeLsb<uint16_t>(&dst[i * 2], color);
-                    else core->memory.write<uint16_t>(0, base + ((writeOffset + i * 2) & 0x1FFFF), color);
-                }
-                break;
-            }}
-
-            // End the display capture
-            if (vCount + 1 == height) {
+            // End the display capture after its last scanline, from the heights of the capture sizes
+            static const uint16_t heights[] = { 128, 64, 128, 192 };
+            if (vCount + 1 == heights[(dispCapCnt >> 20) & 0x3]) {
                 displayCapture = false;
                 dispCapCnt &= ~BIT(31);
             }
@@ -551,17 +446,8 @@ void Gpu::scanline355() {
     // Move to the next scanline
     switch (++vCount) {
     case 192: // End of visible scanlines
-        // Stop the thread now that the frame has been drawn
-        if (thread) {
-            EP_START(join);
-            HB_TIMER(hbJoin);
-            running.store(false);
-            thread->join();
-            delete thread;
-            thread = nullptr;
-            HB_ADD_US(HB_2D_JOIN_US, hbJoin);
-            EP_ADD(EP_JOIN2D, join);
-        }
+        // Let the threads sleep now that the frame has been drawn; every scanline was finished at its H-blank
+        frameActive.store(false);
 
         for (int i = 0; i < 2; i++) {
             // Set the V-blank flag
@@ -664,13 +550,24 @@ void Gpu::scanline355() {
             core->gpu2D[1].setFramebuffer(&drawBuffer[drawSwap ? (256 * 192) : 0]);
         }
 
-        // Start the 2D thread if enabled
-        if (Settings::threaded2D && frames == 0 && !thread) {
-            EP_START(start);
-            running.store(true);
-            thread = new WorkerThread(WorkerThread::CORE_0, &Gpu::drawThreaded, this);
-            EP_ADD(EP_JOIN2D, start);
+        // Start the 2D threads if enabled, one per engine, on different cores where threads can be placed
+        // Engine A's thread has core 0 to itself, since it also does display captures and waits on 3D
+        // Otherwise stop them, since they're kept between frames
+        EP_START(start);
+        if (Settings::threaded2D && frames == 0) {
+            if (!thread) {
+                running.store(true);
+                thread = new WorkerThread(WorkerThread::CORE_0, &Gpu::drawThreaded, this, 0);
+                threadB = new WorkerThread(WorkerThread::CORE_2, &Gpu::drawThreaded, this, 1);
+            }
+            std::lock_guard<std::mutex> guard(frameMutex);
+            frameActive.store(true);
+            frameCond.notify_all();
         }
+        else if (thread) {
+            stopThreads();
+        }
+        EP_ADD(EP_JOIN2D, start);
         break;
     }
 
@@ -678,9 +575,15 @@ void Gpu::scanline355() {
     core->gpu2D[0].updateWindows(vCount);
     core->gpu2D[1].updateWindows(vCount);
 
-    // Signal that the next scanline should start drawing
-    if (vCount < 192 && thread)
+    // Signal that the next scanline should start drawing, along with the display capture settings if it's captured
+    // The capture is checked again at H-blank, in case its settings changed
+    if (vCount < 192 && thread) {
+        bool capturing = displayCapture || (vCount == 0 && (dispCapCnt & BIT(31)));
+        captureCnt = capturing ? dispCapCnt : 0;
+        captureDone.store(false);
         drawing.store(1);
+        drawingB.store(1);
+    }
 
     for (int i = 0; i < 2; i++) {
         // Check if the current scanline matches the V-counter
@@ -721,29 +624,153 @@ void Gpu::drawGbaThreaded() {
     }
 }
 
-void Gpu::drawThreaded() {
-    HB_SET_CORE(HB_2D_CORE);
+void Gpu::drawThreaded(int engine) {
+    if (engine == 0) HB_SET_CORE(HB_2D_CORE);
+    std::atomic<int> &state = engine ? drawingB : drawing;
     while (running.load()) {
         // Wait until the next scanline should start, and claim it unless the emulator thread already did
+        // Between frames, sleep until the next one starts instead of spinning
         int expected = 1;
-        while (!drawing.compare_exchange_weak(expected, 2)) {
+        while (!state.compare_exchange_weak(expected, 2)) {
             if (!running.load()) return;
-            std::this_thread::yield();
+            if (!frameActive.load()) {
+                std::unique_lock<std::mutex> lock(frameMutex);
+                frameCond.wait(lock, [&] { return frameActive.load() || !running.load(); });
+            }
+            else {
+                std::this_thread::yield();
+            }
             expected = 1;
         }
 
-        // Draw engine A's scanline
+        // Draw the engine's scanline, and for engine A, the display capture that uses it, then signal that it's finished
         HB_INC(HB_2D_LINES);
-        core->gpu2D[0].drawScanline(vCount);
+        core->gpu2D[engine].drawScanline(vCount);
+        if (engine) EP_INC(EC_LINES_THREAD);
+        else if (captureCnt) captureDone.store(captureLine(captureCnt, true));
+        state.store(0);
+    }
+}
 
-        // Draw engine B's scanline if it hasn't started yet
-        if (drawing.exchange(3) == 2) {
-            core->gpu2D[1].drawScanline(vCount);
-            EP_INC(EC_LINES_THREAD);
+bool Gpu::captureLine(uint32_t cnt, bool directOnly) {
+    // Capture the current scanline with the given capture settings, from engine A's output that was just drawn
+    // Off the emulator thread, VRAM can only be accessed directly, so it gives up if that's not possible
+
+    // Determine the capture size
+    static const uint16_t sizes[] = { 128, 128, 256, 64, 256, 128, 256, 192 };
+    const uint16_t *size = &sizes[(cnt >> 19) & 0x6];
+    const uint16_t width = size[0];
+
+    // Get the VRAM destination address for the current scanline
+    uint32_t base = 0x6800000 + ((cnt & 0x00030000) >> 16) * 0x20000;
+    uint32_t writeOffset = ((cnt & 0x000C0000) >> 3) + vCount * width * 2;
+
+    // Get direct pointers to a scanline's VRAM if it's mapped and within a page, or null to use memory accesses
+    auto linePtr = [&](uint32_t offset, bool write) -> uint8_t* {
+        offset &= 0x1FFFF;
+        if ((offset & 0xFFF) + width * 2 > 0x1000) return nullptr;
+        return write ? core->memory.getWritePtr(0, base + offset) : core->memory.getReadPtr(0, base + offset);
+    };
+    uint8_t *dst = linePtr(writeOffset, true);
+    if (directOnly && !dst) return false;
+
+    // Copy the source contents to memory as a 15-bit bitmap
+    switch ((cnt & 0x60000000) >> 29) { // Capture source
+    case 0: { // Source A
+        // Choose from 2D engine A or the 3D engine
+        // In high-res mode, skip every other pixel when capturing 3D
+        uint32_t *source = (cnt & BIT(24)) ? core->gpu3DRenderer.getLine(vCount) : core->gpu2D[0].getRawLine();
+        bool resShift = (Settings::highRes3D && (cnt & BIT(24)));
+
+        // Copy a scanline to memory
+        for (int i = 0; i < width; i++) {
+            uint16_t color = rgb6ToRgb5(source[i << resShift]);
+            if (dst) writeLsb<uint16_t>(&dst[i * 2], color);
+            else core->memory.write<uint16_t>(0, base + ((writeOffset + i * 2) & 0x1FFFF), color);
+        }
+        break;
+    }
+
+    case 1: { // Source B
+        if (cnt & BIT(25)) {
+            LOG_CRIT("Unimplemented display capture source: display FIFO\n");
+            break;
         }
 
-        // Signal that the scanlines are finished
-        drawing.store(0);
+        // Get the VRAM source address for the current scanline
+        uint32_t readOffset = ((cnt & 0x0C000000) >> 11) + vCount * width * 2;
+        uint8_t *src = linePtr(readOffset, false);
+        if (directOnly && !src) return false;
+
+        // Copy a scanline to memory
+        for (int i = 0; i < width; i++) {
+            uint16_t color = src ? readLsb<uint16_t>(&src[i * 2]) :
+                core->memory.read<uint16_t>(0, base + ((readOffset + i * 2) & 0x1FFFF));
+            if (dst) writeLsb<uint16_t>(&dst[i * 2], color);
+            else core->memory.write<uint16_t>(0, base + ((writeOffset + i * 2) & 0x1FFFF), color);
+        }
+        break;
+    }
+
+    default: { // Blended
+        if (cnt & BIT(25)) {
+            LOG_CRIT("Unimplemented display capture source: display FIFO\n");
+            break;
+        }
+
+        // Choose from 2D engine A or the 3D engine
+        // In high-res mode, skip every other pixel when capturing 3D
+        uint32_t *source = (cnt & BIT(24)) ? core->gpu3DRenderer.getLine(vCount) : core->gpu2D[0].getRawLine();
+        bool resShift = (Settings::highRes3D && (cnt & BIT(24)));
+
+        // Get the VRAM source address for the current scanline
+        uint32_t readOffset = ((cnt & 0x0C000000) >> 11) + vCount * width * 2;
+        uint8_t *src = linePtr(readOffset, false);
+        if (directOnly && !src) return false;
+
+        // Build a table of blended color channels for the current blending factors, indexed by the two sources
+        uint8_t eva = std::min((cnt >> 0) & 0x1F, 16U);
+        uint8_t evb = std::min((cnt >> 8) & 0x1F, 16U);
+        if (blendFactors != ((eva << 8) | evb)) {
+            blendFactors = (eva << 8) | evb;
+            for (int c1 = 0; c1 < 32; c1++)
+                for (int c2 = 0; c2 < 32; c2++)
+                    blendTable[(c1 << 5) | c2] = std::min((c1 * eva + c2 * evb) / 16, 31);
+        }
+
+        // Copy a scanline to memory
+        for (int i = 0; i < width; i++) {
+            // Get colors from the two sources
+            uint16_t c1 = rgb6ToRgb5(source[i << resShift]);
+            uint16_t c2 = src ? readLsb<uint16_t>(&src[i * 2]) :
+                core->memory.read<uint16_t>(0, base + ((readOffset + i * 2) & 0x1FFFF));
+
+            // Blend the color values
+            uint8_t r = blendTable[((c1 << 5) & 0x3E0) | ((c2 >> 0) & 0x1F)];
+            uint8_t g = blendTable[((c1 >> 0) & 0x3E0) | ((c2 >> 5) & 0x1F)];
+            uint8_t b = blendTable[((c1 >> 5) & 0x3E0) | ((c2 >> 10) & 0x1F)];
+
+            uint16_t color = BIT(15) | (b << 10) | (g << 5) | r;
+            if (dst) writeLsb<uint16_t>(&dst[i * 2], color);
+            else core->memory.write<uint16_t>(0, base + ((writeOffset + i * 2) & 0x1FFFF), color);
+        }
+        break;
+    }}
+    return true;
+}
+
+void Gpu::stopThreads() {
+    // Stop the 2D threads and wake them if they're sleeping, then wait for them to finish
+    {
+        std::lock_guard<std::mutex> guard(frameMutex);
+        running.store(false);
+        frameCond.notify_all();
+    }
+    for (WorkerThread **worker : { &thread, &threadB }) {
+        if (!*worker) continue;
+        (*worker)->join();
+        delete *worker;
+        *worker = nullptr;
     }
 }
 
