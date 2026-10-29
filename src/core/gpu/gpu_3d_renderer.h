@@ -71,14 +71,13 @@ public:
     uint16_t getClearDepth() { return clearDepth; }
     uint16_t getToon(int index) { return toonTable[index]; }
     uint16_t getEdgeColor(int index) { return edgeColor[index]; }
+    uint32_t getFogColor() { return fogColor; }
+    uint16_t getFogOffset() { return fogOffset; }
+    uint8_t getFogTable(int index) { return fogTable[index]; }
     uint64_t hashTexture(_Polygon *polygon);
     void decodeTexture(_Polygon *polygon, uint32_t *out);
     uint32_t *hardwareLine(int line) { return &framebuffer[0][line * 256 * 2]; }
     void hardwareDone(int line) { ready[line].store(3); }
-    uint32_t *hardwareBackLine(int line) { return &framebuffer[1][line * 256 * 2]; }
-    uint32_t *hardwareAttribs(int line) { return &attribBuffer[0][line * 256 * 2]; }
-    int32_t *hardwareDepths(int line) { return &depthBuffer[0][line * 256 * 2]; }
-    void hardwareFinish(int line) { finishScanline(line); }
 #ifdef GPU_DUMP
     void softwareFrame(uint32_t *out);
     std::string dumpLayerPath; // Where to save the next finished 3D layer
