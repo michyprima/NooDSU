@@ -86,6 +86,7 @@ public:
 
 private:
     static const int MAX_VERTICES = 2048 * 8 * 3;
+    static constexpr float EDGE_BIAS = 1.0f / 64; // How far short of half a pixel vertices are moved
 
     WHBGfxShaderGroup groups[5];
     GX2Sampler samplers[9];
@@ -390,24 +391,39 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             dumpMap.push_back(count);
 #endif
 
-            // Convert a polygon vertex for the shaders
-            // Unclipped quad strip polygons have their last 2 vertices swapped, so they're swapped back
-            float scaleS = textured ? 1.0f / (polygon->sizeS * 16) : 0, scaleT = textured ? 1.0f / (polygon->sizeT * 16) : 0;
+            // Get a polygon vertex, swapping back the last 2 of unclipped quad strip polygons, which are swapped
+            auto vertex = [&](int k) -> Vertex& {
+                if (polygon->crossed && k >= 2) k ^= 1;
+                return verts[polygon->vertices + k];
+            };
+
+            // The DS samples pixels at their top-left corners while the GPU uses their centers, so vertices move half
+            // a pixel to line them up, but just short of that, so pixels exactly on an edge are drawn or skipped like
+            // on the DS; texture coordinates move back by the same amount, using how they change across the polygon
+            float shiftS = 0, shiftT = 0;
+            if (textured) {
+                Vertex &a = vertex(0), &b = vertex(1), &c = vertex(2);
+                float bx = b.x - a.x, by = b.y - a.y, cx = c.x - a.x, cy = c.y - a.y;
+                float bs = (b.s - a.s) / 16.0f, bt = (b.t - a.t) / 16.0f, cs = (c.s - a.s) / 16.0f, ct = (c.t - a.t) / 16.0f;
+                if (float det = bx * cy - cx * by) {
+                    shiftS = EDGE_BIAS * ((bs * cy - cs * by) + (cs * bx - bs * cx)) / det;
+                    shiftT = EDGE_BIAS * ((bt * cy - ct * by) + (ct * bx - bt * cx)) / det;
+                }
+            }
+
+            // Convert a polygon vertex for the shaders, with texture coordinates in texels
             float alpha = polygon->alpha / 63.0f;
             bool toon = (polygon->mode == 2 && !(disp3DCnt & BIT(1)));
             auto convert = [&](GpuVertex &out, int k) {
-                if (polygon->crossed && k >= 2) k ^= 1;
-                Vertex &v = verts[polygon->vertices + k];
+                Vertex &v = vertex(k);
                 float w = (v.w > 0) ? float(v.w) : 1.0f;
                 float depth = wBuffer ? (minW / w) : (float(v.z) / 0x1000000);
-                // The DS samples pixels at their top-left corners while the GPU uses their centers, so vertices move
-                // half a pixel to line them up, which keeps magnified textures from shifting
-                out.pos[0] = ((float(v.x) + 0.5f) / 128 - 1) * w;
-                out.pos[1] = (1 - (float(v.y) + 0.5f) / 96) * w;
+                out.pos[0] = ((float(v.x) + 0.5f - EDGE_BIAS) / 128 - 1) * w;
+                out.pos[1] = (1 - (float(v.y) + 0.5f - EDGE_BIAS) / 96) * w;
                 out.pos[2] = depth * w;
                 out.pos[3] = w;
-                out.tex[0] = v.s * scaleS;
-                out.tex[1] = v.t * scaleT;
+                out.tex[0] = v.s / 16.0f - shiftS;
+                out.tex[1] = v.t / 16.0f - shiftT;
                 if (toon) {
                     // Toon shading replaces the color with an entry from the toon table, picked by the red level
                     uint16_t entry = renderer->getToon(((v.color >> 0) & 0x3F) / 2);
@@ -521,8 +537,11 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2SetVertexShader(group.vertexShader);
             GX2SetPixelShader(group.pixelShader);
             if (draw.texture) {
+                // The shaders take texture coordinates in texels, and are given the size of a texel
+                float texelSize[] = { 1.0f / draw.texture->surface.width, 1.0f / draw.texture->surface.height, 0, 0 };
                 GX2SetPixelTexture(draw.texture, 0);
                 GX2SetPixelSampler(&samplers[draw.sampler], 0);
+                GX2SetPixelUniformReg(0, 4, texelSize);
             }
             GX2CompareFunction func = wBuffer ? (draw.depthEqual ? GX2_COMPARE_FUNC_GEQUAL : GX2_COMPARE_FUNC_GREATER) :
                 (draw.depthEqual ? GX2_COMPARE_FUNC_LEQUAL : GX2_COMPARE_FUNC_LESS);
