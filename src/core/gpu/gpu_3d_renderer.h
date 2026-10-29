@@ -69,6 +69,7 @@ public:
     uint32_t getClearColor() { return clearColor; }
     uint16_t getClearDepth() { return clearDepth; }
     uint16_t getToon(int index) { return toonTable[index]; }
+    uint16_t getEdgeColor(int index) { return edgeColor[index]; }
     uint64_t hashTexture(_Polygon *polygon);
     void decodeTexture(_Polygon *polygon, uint32_t *out);
     uint32_t *hardwareLine(int line) { return &framebuffer[0][line * 256 * 2]; }

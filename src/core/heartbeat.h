@@ -37,6 +37,7 @@ enum HeartbeatSlot {
     HB_AUDIO, // Audio callbacks
     HB_GPU_STAGE, // Step of the GPU 3D renderer: 1 = waiting, 2 = building, 3 = locking GX2, 4 = drawing, 5 = converting
     HB_GPU_FRAMES, // Frames finished by the GPU 3D renderer
+    HB_GPU_DISP3DCNT, // 3D display control of the frame the GPU 3D renderer is drawing
     HB_COUNT
 };
 

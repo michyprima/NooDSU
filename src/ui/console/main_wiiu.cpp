@@ -506,9 +506,9 @@ int logHeartbeat(int argc, const char **argv) {
         volatile uint32_t *v = Heartbeat::values;
         if (!(file = fopen(path.c_str(), "a"))) continue;
         fprintf(file, "%u: frames %u task %u wait %u | jit %08X in %u entries %u | 2D %u 3D %u | ui %u stage %u | audio %u"
-            " | gpu %u stage %u\n", tick, v[HB_EMU_FRAMES], v[HB_EMU_TASK], v[HB_EMU_WAIT], v[HB_JIT_BLOCK],
+            " | gpu %u stage %u 3dcnt %04X\n", tick, v[HB_EMU_FRAMES], v[HB_EMU_TASK], v[HB_EMU_WAIT], v[HB_JIT_BLOCK],
             v[HB_JIT_INSIDE], v[HB_JIT_ENTRIES], v[HB_2D_LINES], v[HB_3D_LINES], v[HB_UI_FRAMES], v[HB_UI_STAGE],
-            v[HB_AUDIO], v[HB_GPU_FRAMES], v[HB_GPU_STAGE]);
+            v[HB_AUDIO], v[HB_GPU_FRAMES], v[HB_GPU_STAGE], v[HB_GPU_DISP3DCNT]);
         fclose(file);
     }
     return 0;
