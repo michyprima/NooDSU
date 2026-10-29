@@ -649,6 +649,16 @@ void Gpu::drawThreaded(int engine) {
         if (engine) EP_INC(EC_LINES_THREAD);
         else if (captureCnt) captureDone.store(captureLine(captureCnt, true));
         state.store(0);
+
+        // Engine A's thread also draws engine B's scanline if its thread hasn't started it, since that one shares a core
+        // with the frontend and often falls behind
+        expected = 1;
+        if (engine == 0 && drawingB.compare_exchange_strong(expected, 2)) {
+            HB_INC(HB_2D_LINES);
+            core->gpu2D[1].drawScanline(vCount);
+            EP_INC(EC_LINES_THREAD);
+            drawingB.store(0);
+        }
     }
 }
 
