@@ -418,15 +418,14 @@ void Gpu::scanline256() {
     }
 
     // Draw 3D scanlines 48 lines in advance, if the current 3D is dirty
-    // A hardware renderer starts as soon as the buffers are swapped instead, since it draws the whole frame at once and
-    // the 2D engine waits for its first scanlines otherwise
+    // This is also when a hardware renderer starts a frame; starting at the buffer swap instead would miss 3D settings
+    // that games change during V-blank
     // If the 3D parameters haven't changed since the last frame, there's no need to draw it again
     // Bit 0 of the dirty variable represents invalidation, and bit 1 represents a frame currently drawing
-    int lead = (Gpu3DRenderer::hardware && Settings::hardware3D && !Settings::highRes3D) ? (263 - 192) : 48;
-    if (frames == 0 && dirty3D && (core->gpu2D[0].readDispCnt() & BIT(3)) && ((vCount + lead) % 263) < 192) {
-        if (vCount == 263 - lead) dirty3D = BIT(1);
-        core->gpu3DRenderer.drawScanline((vCount + lead) % 263);
-        if (vCount == 191 - lead) dirty3D &= ~BIT(1);
+    if (frames == 0 && dirty3D && (core->gpu2D[0].readDispCnt() & BIT(3)) && ((vCount + 48) % 263) < 192) {
+        if (vCount == 215) dirty3D = BIT(1);
+        core->gpu3DRenderer.drawScanline((vCount + 48) % 263);
+        if (vCount == 143) dirty3D &= ~BIT(1);
     }
 
     for (int i = 0; i < 2; i++) {
