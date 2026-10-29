@@ -34,6 +34,10 @@
 #include <gx2/surface.h>
 #include <gx2/texture.h>
 #include <whb/gfx.h>
+#ifdef GPU_DUMP
+#include <cstdio>
+#include "../../core/settings.h"
+#endif
 #include <atomic>
 #include <condition_variable>
 #include <cstring>
@@ -46,17 +50,20 @@
 #include "../../core/heartbeat.h"
 #include "../../core/worker_thread.h"
 
-extern const uint8_t gpu3d_color_gsh[], gpu3d_modulate_gsh[], gpu3d_decal_gsh[];
+extern const uint8_t gpu3d_color_gsh[], gpu3d_modulate_gsh[], gpu3d_decal_gsh[], gpu3d_modtrans_gsh[];
 
 std::mutex gx2Mutex;
 
 namespace {
 
 // The vertex layout the shaders read: clip-space position, texture coordinates and color
+const GX2ChannelMask NO_CHANNELS = (GX2ChannelMask)0;
+
 struct GpuVertex {
     float pos[4];
     float tex[2];
     float color[4];
+    float attrib[4]; // Polygon ID times 4 plus flags (1 = solid pixel, 2 = fog), unused, and two values for the depth
 };
 
 // A run of triangles drawn with the same state
@@ -67,6 +74,8 @@ struct GpuDraw {
     bool translucent;
     bool depthEqual;
     bool depthWrite;
+    uint8_t stencil; // 0 for solid polygons, or the translucent flag with the polygon ID
+    bool split; // Whether pixels can be opaque or translucent, so they're drawn separately to follow different rules
     uint32_t first, count;
 };
 
@@ -78,10 +87,11 @@ public:
 private:
     static const int MAX_VERTICES = 2048 * 8 * 3;
 
-    WHBGfxShaderGroup groups[3];
+    WHBGfxShaderGroup groups[4];
     GX2Sampler samplers[9];
     GX2ContextState *state = nullptr;
     GX2ColorBuffer colorBuffer;
+    GX2ColorBuffer attribBuffer; // Per-pixel attributes of solid polygons, for edge marking and fog
     GX2DepthBuffer depthBuffer;
     GpuVertex *vertices = nullptr;
 
@@ -111,13 +121,17 @@ private:
 
 bool Gpu3DWiiU::init() {
     // Load the shaders, which share one vertex shader and its layout
-    const uint8_t *shaders[] = { gpu3d_color_gsh, gpu3d_modulate_gsh, gpu3d_decal_gsh };
-    for (int i = 0; i < 3; i++) {
+    const uint8_t *shaders[] = { gpu3d_color_gsh, gpu3d_modulate_gsh, gpu3d_decal_gsh, gpu3d_modtrans_gsh };
+    for (int i = 0; i < 4; i++) {
         if (!WHBGfxLoadGFDShaderGroup(&groups[i], 0, shaders[i])) return false;
         WHBGfxInitShaderAttribute(&groups[i], "position", 0, offsetof(GpuVertex, pos), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
         WHBGfxInitShaderAttribute(&groups[i], "tex_coords", 0, offsetof(GpuVertex, tex), GX2_ATTRIB_FORMAT_FLOAT_32_32);
         WHBGfxInitShaderAttribute(&groups[i], "vtx_color", 0, offsetof(GpuVertex, color), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
+        WHBGfxInitShaderAttribute(&groups[i], "vtx_attr", 0, offsetof(GpuVertex, attrib), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
         if (!WHBGfxInitFetchShader(&groups[i])) return false;
+
+        // The assembler can only enable the red channel of a second output, so enable all of them here
+        groups[i].pixelShader->regs.cb_shader_mask = 0xFF;
     }
 
     // Set up nearest-neighbor samplers for each combination of clamping, repeating and flipping
@@ -143,13 +157,28 @@ bool Gpu3DWiiU::init() {
     GX2InitColorBufferRegs(&colorBuffer);
     colorBuffer.surface.image = MEMAllocFromDefaultHeapEx(colorBuffer.surface.imageSize, colorBuffer.surface.alignment);
 
+    // Create a linear float buffer for the attributes, written as a second render target
+    // Each pixel has the ID and flags, and the depth the DS would compare, which the shaders get by dividing the last 2
+    // attributes: W interpolates to itself across the screen, and Z times W over W interpolates to Z
+    memset(&attribBuffer, 0, sizeof(attribBuffer));
+    attribBuffer.surface = colorBuffer.surface;
+    attribBuffer.surface.format = GX2_SURFACE_FORMAT_FLOAT_R32_G32;
+    attribBuffer.surface.image = nullptr;
+    attribBuffer.viewNumSlices = 1;
+    GX2CalcSurfaceSizeAndAlignment(&attribBuffer.surface);
+    GX2InitColorBufferRegs(&attribBuffer);
+    attribBuffer.surface.image = MEMAllocFromDefaultHeapEx(attribBuffer.surface.imageSize, attribBuffer.surface.alignment);
+
     memset(&depthBuffer, 0, sizeof(depthBuffer));
     depthBuffer.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
     depthBuffer.surface.width = 256;
     depthBuffer.surface.height = 192;
     depthBuffer.surface.depth = 1;
     depthBuffer.surface.mipLevels = 1;
-    depthBuffer.surface.format = GX2_SURFACE_FORMAT_FLOAT_D24_S8;
+    // The depth is 24-bit fixed point with 8-bit stencil, which matches the DS's Z-buffer precision
+    // Stencil doesn't seem to work with the 32-bit float format, and the 24-bit float one loses too much precision
+    // with W-buffering, which is handled by scaling depths into a good range each frame
+    depthBuffer.surface.format = GX2_SURFACE_FORMAT_UNORM_R24_X8;
     depthBuffer.surface.aa = GX2_AA_MODE1X;
     depthBuffer.surface.use = GX2_SURFACE_USE_DEPTH_BUFFER;
     depthBuffer.surface.tileMode = GX2_TILE_MODE_DEFAULT;
@@ -162,7 +191,8 @@ bool Gpu3DWiiU::init() {
     // Allocate the vertex buffer and a context state of its own, so the UI's state isn't disturbed
     vertices = (GpuVertex*)MEMAllocFromDefaultHeapEx(MAX_VERTICES * sizeof(GpuVertex), GX2_VERTEX_BUFFER_ALIGNMENT);
     state = (GX2ContextState*)MEMAllocFromDefaultHeapEx(sizeof(GX2ContextState), GX2_CONTEXT_STATE_ALIGNMENT);
-    if (!colorBuffer.surface.image || !depthBuffer.surface.image || !vertices || !state) return false;
+    if (!colorBuffer.surface.image || !attribBuffer.surface.image || !depthBuffer.surface.image || !vertices || !state)
+        return false;
     GX2SetupContextStateEx(state, TRUE);
 
     // Render on a thread on the UI's core, which has to be the one that uses GX2, with priority over the UI
@@ -284,7 +314,19 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     // Build the triangles, with solid polygons first and then translucent ones, in order like the software renderer
     // W-buffered depth is 1/W, which interpolates linearly across the screen like Z, so the GPU compares it exactly;
     // it's reversed so precision is best up close, and compared with greater instead of less
+    // It's scaled by the smallest W so the closest polygon is at 1, using the whole range of the depth buffer
+    float minW = 0x7FFFFFFF;
+    if (wBuffer) {
+        for (int i = 0; i < polygonCount; i++)
+            for (int j = 0; j < polygons[i].size; j++)
+                if (verts[polygons[i].vertices + j].w > 0)
+                    minW = std::min(minW, float(verts[polygons[i].vertices + j].w));
+    }
+
     uint32_t count = 0;
+#ifdef GPU_DUMP
+    std::vector<uint32_t> dumpMap; // Pairs of polygon index and first vertex
+#endif
     for (int pass = 0; pass < 2; pass++) {
         for (int i = 0; i < polygonCount; i++) {
             _Polygon *polygon = &polygons[i];
@@ -304,41 +346,58 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             draw.translucent = translucent && blending;
             draw.depthEqual = polygon->depthTestEqual;
             draw.depthWrite = !translucent || polygon->transNewDepth;
+            // Pixels are translucent if their final alpha isn't full, which is all of them for translucent polygons,
+            // while full-alpha polygons with translucent textures can also give opaque pixels, which act like solid ones
+            draw.stencil = translucent ? (0x40 | polygon->id) : 0;
+            draw.split = translucent && polygon->alpha == 0x3F;
             draw.first = count;
+#ifdef GPU_DUMP
+            dumpMap.push_back(i);
+            dumpMap.push_back(count);
+#endif
 
-            // Add the polygon as a fan of triangles
+            // Convert a polygon vertex for the shaders
+            // Unclipped quad strip polygons have their last 2 vertices swapped, so they're swapped back
             float scaleS = textured ? 1.0f / (polygon->sizeS * 16) : 0, scaleT = textured ? 1.0f / (polygon->sizeT * 16) : 0;
             float alpha = polygon->alpha / 63.0f;
             bool toon = (polygon->mode == 2 && !(disp3DCnt & BIT(1)));
-            // Unclipped quad strip polygons have their last 2 vertices swapped, so they're swapped back
-            for (int j = 1; j + 1 < polygon->size; j++) {
-                int corners[] = { 0, j, j + 1 };
-                for (int k : corners) {
-                    if (polygon->crossed && k >= 2) k ^= 1;
-                    Vertex &v = verts[polygon->vertices + k];
-                    GpuVertex &out = vertices[count++];
-                    float w = (v.w > 0) ? float(v.w) : 1.0f;
-                    float depth = wBuffer ? (1.0f / w) : (float(v.z) / 0x1000000);
-                    out.pos[0] = (float(v.x) / 128 - 1) * w;
-                    out.pos[1] = (1 - float(v.y) / 96) * w;
-                    out.pos[2] = depth * w;
-                    out.pos[3] = w;
-                    out.tex[0] = v.s * scaleS;
-                    out.tex[1] = v.t * scaleT;
-                    if (toon) {
-                        // Toon shading replaces the color with an entry from the toon table, picked by the red level
-                        uint16_t entry = renderer->getToon(((v.color >> 0) & 0x3F) / 2);
-                        out.color[0] = ((entry >> 0) & 0x1F) / 31.0f;
-                        out.color[1] = ((entry >> 5) & 0x1F) / 31.0f;
-                        out.color[2] = ((entry >> 10) & 0x1F) / 31.0f;
-                    }
-                    else {
-                        out.color[0] = ((v.color >> 0) & 0x3F) / 63.0f;
-                        out.color[1] = ((v.color >> 6) & 0x3F) / 63.0f;
-                        out.color[2] = ((v.color >> 12) & 0x3F) / 63.0f;
-                    }
-                    out.color[3] = alpha;
+            auto convert = [&](GpuVertex &out, int k) {
+                if (polygon->crossed && k >= 2) k ^= 1;
+                Vertex &v = verts[polygon->vertices + k];
+                float w = (v.w > 0) ? float(v.w) : 1.0f;
+                float depth = wBuffer ? (minW / w) : (float(v.z) / 0x1000000);
+                // The DS samples pixels at their top-left corners while the GPU uses their centers, so vertices move
+                // half a pixel to line them up, which keeps magnified textures from shifting
+                out.pos[0] = ((float(v.x) + 0.5f) / 128 - 1) * w;
+                out.pos[1] = (1 - (float(v.y) + 0.5f) / 96) * w;
+                out.pos[2] = depth * w;
+                out.pos[3] = w;
+                out.tex[0] = v.s * scaleS;
+                out.tex[1] = v.t * scaleT;
+                if (toon) {
+                    // Toon shading replaces the color with an entry from the toon table, picked by the red level
+                    uint16_t entry = renderer->getToon(((v.color >> 0) & 0x3F) / 2);
+                    out.color[0] = ((entry >> 0) & 0x1F) / 31.0f;
+                    out.color[1] = ((entry >> 5) & 0x1F) / 31.0f;
+                    out.color[2] = ((entry >> 10) & 0x1F) / 31.0f;
                 }
+                else {
+                    out.color[0] = ((v.color >> 0) & 0x3F) / 63.0f;
+                    out.color[1] = ((v.color >> 6) & 0x3F) / 63.0f;
+                    out.color[2] = ((v.color >> 12) & 0x3F) / 63.0f;
+                }
+                out.color[3] = alpha;
+                out.attrib[0] = polygon->id * 4 + 1 + (polygon->fog ? 2 : 0);
+                out.attrib[1] = 0.0f;
+                out.attrib[2] = wBuffer ? 1.0f : w;
+                out.attrib[3] = wBuffer ? w : float(v.z) * w;
+            };
+
+            // Add the polygon as a fan of triangles
+            for (int j = 1; j + 1 < polygon->size; j++) {
+                convert(vertices[count++], 0);
+                convert(vertices[count++], j);
+                convert(vertices[count++], j + 1);
             }
 
             // Merge the triangles into the last draw if the state is the same
@@ -346,12 +405,16 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GpuDraw *last = draws.empty() ? nullptr : &draws.back();
             if (last && last->shader == draw.shader && last->texture == draw.texture && last->sampler == draw.sampler &&
                     last->translucent == draw.translucent && last->depthEqual == draw.depthEqual &&
-                    last->depthWrite == draw.depthWrite && last->first + last->count == draw.first)
+                    last->depthWrite == draw.depthWrite && last->stencil == draw.stencil && last->split == draw.split &&
+                    last->first + last->count == draw.first)
                 last->count += draw.count;
             else
                 draws.push_back(draw);
         }
     }
+    // Edge marking, fog, and anti-aliasing need the attributes of solid pixels
+    bool finish = disp3DCnt & (BIT(4) | BIT(5) | BIT(7));
+
     // Get the clear values; the clear color is 5-bit with a 5-bit alpha
     uint32_t clear = renderer->getClearColor();
     float clearR = ((clear >> 0) & 0x1F) / 31.0f, clearG = ((clear >> 5) & 0x1F) / 31.0f;
@@ -371,9 +434,11 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, vertices, count * sizeof(GpuVertex));
         GX2SetContextState(state);
         GX2ClearColor(&colorBuffer, clearR, clearG, clearB, clearA);
+        GX2ClearColor(&attribBuffer, 0.0f, 0.0f, 0.0f, 0.0f);
         GX2ClearDepthStencilEx(&depthBuffer, depthClear, 0, GX2_CLEAR_FLAGS_BOTH);
         GX2SetContextState(state);
         GX2SetColorBuffer(&colorBuffer, GX2_RENDER_TARGET_0);
+        GX2SetColorBuffer(&attribBuffer, GX2_RENDER_TARGET_1);
         GX2SetDepthBuffer(&depthBuffer);
         GX2SetViewport(0, 0, 256, 192, 0, 1);
         GX2SetScissor(0, 0, 256, 192);
@@ -395,19 +460,67 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             }
             GX2CompareFunction func = wBuffer ? (draw.depthEqual ? GX2_COMPARE_FUNC_GEQUAL : GX2_COMPARE_FUNC_GREATER) :
                 (draw.depthEqual ? GX2_COMPARE_FUNC_LEQUAL : GX2_COMPARE_FUNC_LESS);
-            GX2SetDepthOnlyControl(TRUE, draw.depthWrite, func);
             GX2SetColorControl(GX2_LOGIC_OP_COPY, draw.translucent ? 0x01 : 0x00, FALSE, TRUE);
+
+            // The stencil buffer tracks which polygon ID last drew a translucent pixel, since translucent pixels
+            // aren't drawn over ones from the same ID; opaque pixels clear it, and always write depth
+            if (draw.split) {
+                // Draw the opaque pixels first, then the translucent ones with a shader that drops opaque pixels
+                // Only modulated textures can give both, since other modes use the polygon's alpha
+                GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, 0.99f);
+                GX2SetDepthStencilControl(TRUE, TRUE, func, TRUE, FALSE,
+                    GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
+                    GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
+                    GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+                GX2SetStencilMask(0x7F, 0x7F, 0, 0x7F, 0x7F, 0);
+                GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, finish ? GX2_CHANNEL_MASK_RGBA : NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
+                    NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
+                GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
+                GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, 0.0f);
+                if (draw.shader != 1) continue;
+                WHBGfxShaderGroup &trans = groups[3];
+                GX2SetFetchShader(&trans.fetchShader);
+                GX2SetVertexShader(trans.vertexShader);
+                GX2SetPixelShader(trans.pixelShader);
+            }
+            GX2SetDepthStencilControl(TRUE, draw.depthWrite, func, TRUE, FALSE,
+                draw.stencil ? GX2_COMPARE_FUNC_NOT_EQUAL : GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE,
+                GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS,
+                GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+            GX2SetStencilMask(0x7F, 0x7F, draw.stencil, 0x7F, 0x7F, draw.stencil);
+            // Only solid pixels set the attributes, since translucent ones keep the solid polygon's ID underneath
+            GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, (finish && !draw.stencil) ? GX2_CHANNEL_MASK_RGBA : NO_CHANNELS,
+                NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
+                NO_CHANNELS, NO_CHANNELS);
             GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
         }
 
-        // Write the color buffer out to memory and wait for the GPU to finish
+        // Write the color buffers out to memory and wait for the GPU to finish
         GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, colorBuffer.surface.image, colorBuffer.surface.imageSize);
+        GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, attribBuffer.surface.image, attribBuffer.surface.imageSize);
         GX2DrawDone();
     }
 
+#ifdef GPU_DUMP
+    // Debug builds also draw dumped frames in software, before marking any scanline done so the frame can't change
+    std::vector<uint32_t> software;
+    if (frameCount % 15 == 0) {
+        software.resize(256 * 192);
+        renderer->softwareFrame(software.data());
+    }
+#endif
+
     // Convert each scanline to the renderer's format, with 6-bit channels and the 3D pixel bit, and mark it done
+    // If edge marking, fog, or anti-aliasing are enabled, the renderer applies them from the attributes the same way
+    // it does for its own scanlines, which needs the scanlines around each one converted first
     HB_SET(HB_GPU_STAGE, 5);
+    uint32_t clearAttrib = ((clear & BIT(15)) >> 2) | ((clear & 0x3F000000) >> 18) | ((clear & 0x3F000000) >> 24) | (0x3F << 15);
+    int32_t clearDepthValue = (clearDepth == 0x7FFF) ? 0xFFFFFF : (clearDepth << 9);
+    bool edges = disp3DCnt & BIT(5);
+    bool solid[2][256];
     DCInvalidateRange(colorBuffer.surface.image, colorBuffer.surface.imageSize);
+    if (finish)
+        DCInvalidateRange(attribBuffer.surface.image, attribBuffer.surface.imageSize);
     for (int y = 0; y < 192; y++) {
         const uint32_t *src = (uint32_t*)colorBuffer.surface.image + y * colorBuffer.surface.pitch;
         uint32_t *dst = renderer->hardwareLine(y);
@@ -415,8 +528,149 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             uint32_t p = src[x];
             dst[x] = BIT(26) | (((p >> 2) & 0x3F) << 18) | (((p >> 10) & 0x3F) << 12) | (((p >> 18) & 0x3F) << 6) | ((p >> 26) & 0x3F);
         }
-        renderer->hardwareDone(y);
+        if (!finish) {
+            renderer->hardwareDone(y);
+            continue;
+        }
+
+        // Fill in the polygon IDs, fog bits, and depths of solid pixels, or the clear values elsewhere
+        // The original colors go in the back layer, which anti-aliasing blends marked edges with
+        // The GPU writes the floats little-endian
+        const uint32_t *attrib = (uint32_t*)attribBuffer.surface.image + y * attribBuffer.surface.pitch * 2;
+        uint32_t *attribs = renderer->hardwareAttribs(y);
+        int32_t *depths = renderer->hardwareDepths(y);
+        uint32_t *back = renderer->hardwareBackLine(y);
+        bool *solidLine = solid[y & 1], *solidPrev = solid[(y - 1) & 1];
+        for (int x = 0; x < 256; x++) {
+            uint32_t bits[2] = { __builtin_bswap32(attrib[x * 2]), __builtin_bswap32(attrib[x * 2 + 1]) };
+            float a[2];
+            memcpy(a, bits, sizeof(a));
+            uint32_t value = uint32_t(a[0] + 0.5f);
+            back[x] = dst[x];
+            solidLine[x] = value & 1;
+            if (value & 1) {
+                attribs[x] = ((value >> 2) & 0x3F) | ((value & 2) << 12) | (0x3F << 15);
+                depths[x] = int32_t(a[1]);
+            }
+            else {
+                attribs[x] = clearAttrib;
+                depths[x] = clearDepthValue;
+            }
+        }
+
+        // Set the edge bit on solid pixels next to a different ID with greater depth, comparing each pair of
+        // neighbors once, so the renderer only checks those for edge marking instead of every solid pixel
+        // The depth has to be greater by a margin, since the GPU's depths for surfaces that touch, like windows on
+        // walls, can differ slightly where the DS's are equal, which made edges flicker
+        // Pixels on the screen border are compared to the clear values by the renderer, so they're always checked
+        auto further = [](int32_t depth, int32_t other) { return other - depth > (depth >> 8); };
+        if (edges) {
+            uint32_t *prevAttribs = renderer->hardwareAttribs(std::max(y - 1, 0));
+            int32_t *prevDepths = renderer->hardwareDepths(std::max(y - 1, 0));
+            for (int x = 0; x < 256; x++) {
+                if (x > 0 && ((attribs[x] ^ attribs[x - 1]) & 0x3F)) {
+                    if (solidLine[x] && further(depths[x], depths[x - 1])) attribs[x] |= BIT(14);
+                    if (solidLine[x - 1] && further(depths[x - 1], depths[x])) attribs[x - 1] |= BIT(14);
+                }
+                if (y > 0 && ((attribs[x] ^ prevAttribs[x]) & 0x3F)) {
+                    if (solidLine[x] && further(depths[x], prevDepths[x])) attribs[x] |= BIT(14);
+                    if (solidPrev[x] && further(prevDepths[x], depths[x])) prevAttribs[x] |= BIT(14);
+                }
+                if ((y == 0 || y == 191 || x == 0 || x == 255) && solidLine[x])
+                    attribs[x] |= BIT(14);
+            }
+        }
+        if (y > 0) {
+            renderer->hardwareFinish(y - 1);
+            renderer->hardwareDone(y - 1);
+        }
     }
+    if (finish) {
+        renderer->hardwareFinish(191);
+        renderer->hardwareDone(191);
+    }
+
+#ifdef GPU_DUMP
+    // Debug builds save what the GPU was given and what it drew 4 times a second, cycling through 20 files
+    // They also redraw the solid polygons untextured, colored by polygon index, to see which one won each pixel,
+    // and save the textures as the GPU has them
+    if (frameCount % 15 == 0) {
+        std::vector<uint32_t> image((uint32_t*)colorBuffer.surface.image,
+            (uint32_t*)colorBuffer.surface.image + colorBuffer.surface.pitch * 192);
+        std::vector<GpuVertex> original(vertices, vertices + count);
+        for (size_t k = 0; k < dumpMap.size(); k += 2) {
+            uint32_t end = (k + 2 < dumpMap.size()) ? dumpMap[k + 3] : count;
+            for (uint32_t v = dumpMap[k + 1]; v < end; v++) {
+                vertices[v].color[0] = (dumpMap[k] & 0xFF) / 255.0f;
+                vertices[v].color[1] = (dumpMap[k] >> 8) / 255.0f;
+                vertices[v].color[2] = 0.0f;
+                vertices[v].color[3] = 1.0f;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> guard(gx2Mutex);
+            GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, vertices, count * sizeof(GpuVertex));
+            GX2SetContextState(state);
+            GX2ClearColor(&colorBuffer, 1.0f, 1.0f, 1.0f, 1.0f);
+            GX2ClearDepthStencilEx(&depthBuffer, depthClear, 0, GX2_CLEAR_FLAGS_BOTH);
+            GX2SetContextState(state);
+            GX2SetColorBuffer(&colorBuffer, GX2_RENDER_TARGET_0);
+            GX2SetDepthBuffer(&depthBuffer);
+            GX2SetViewport(0, 0, 256, 192, 0, 1);
+            GX2SetScissor(0, 0, 256, 192);
+            GX2SetRasterizerClipControlHalfZ(TRUE, FALSE, TRUE);
+            GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
+            GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_GREATER, 0.0f);
+            GX2SetColorControl(GX2_LOGIC_OP_COPY, 0x00, FALSE, TRUE);
+            GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
+                NO_CHANNELS, NO_CHANNELS);
+            GX2SetAttribBuffer(0, count * sizeof(GpuVertex), sizeof(GpuVertex), vertices);
+            WHBGfxShaderGroup &group = groups[0];
+            GX2SetFetchShader(&group.fetchShader);
+            GX2SetVertexShader(group.vertexShader);
+            GX2SetPixelShader(group.pixelShader);
+            for (GpuDraw &draw : draws) {
+                if (draw.translucent || draw.stencil) continue;
+                GX2CompareFunction func = wBuffer ? (draw.depthEqual ? GX2_COMPARE_FUNC_GEQUAL : GX2_COMPARE_FUNC_GREATER) :
+                    (draw.depthEqual ? GX2_COMPARE_FUNC_LEQUAL : GX2_COMPARE_FUNC_LESS);
+                GX2SetDepthOnlyControl(TRUE, draw.depthWrite, func);
+                GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
+            }
+            GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, colorBuffer.surface.image, colorBuffer.surface.imageSize);
+            GX2DrawDone();
+        }
+        DCInvalidateRange(colorBuffer.surface.image, colorBuffer.surface.imageSize);
+
+        std::string path = Settings::basePath + "/gpudump" + std::to_string((frameCount / 15) % 20) + ".bin";
+        if (FILE *file = fopen(path.c_str(), "wb")) {
+            uint32_t header[] = { 0x47444D54, frameCount, count, (uint32_t)draws.size(), wBuffer, (uint32_t)dumpMap.size() / 2,
+                colorBuffer.surface.pitch, (uint32_t)sizeof(GpuDraw) };
+            fwrite(header, sizeof(header), 1, file);
+            fwrite(draws.data(), sizeof(GpuDraw), draws.size(), file);
+            fwrite(dumpMap.data(), 4, dumpMap.size(), file);
+            fwrite(original.data(), sizeof(GpuVertex), count, file);
+            fwrite(image.data(), 4, image.size(), file);
+            fwrite(colorBuffer.surface.image, 4, colorBuffer.surface.pitch * 192, file);
+            fwrite(software.data(), 4, software.size(), file);
+            fwrite(&disp3DCnt, 2, 1, file);
+            fwrite(&disp3DCnt, 2, 1, file);
+            for (int y = 0; y < 192; y++)
+                fwrite(renderer->hardwareLine(y), 4, 256, file);
+            fwrite(attribBuffer.surface.image, 8, attribBuffer.surface.pitch * 192, file);
+            for (auto &entry : textures) {
+                GX2Texture *texture = entry.second.texture;
+                if (!texture || entry.second.frame != frameCount) continue;
+                DCInvalidateRange(texture->surface.image, texture->surface.imageSize);
+                uint32_t info[] = { (uint32_t)texture, texture->surface.width, texture->surface.height,
+                    texture->surface.pitch, (uint32_t)entry.first, (uint32_t)(entry.first >> 32) };
+                fwrite(info, sizeof(info), 1, file);
+                for (uint32_t y = 0; y < texture->surface.height; y++)
+                    fwrite((uint32_t*)texture->surface.image + y * texture->surface.pitch, 4, texture->surface.width, file);
+            }
+            fclose(file);
+        }
+    }
+#endif
 }
 
 } // namespace

@@ -222,6 +222,19 @@ void Gpu3DRenderer::drawScanline(int line) {
     }
 }
 
+#ifdef GPU_DUMP
+void Gpu3DRenderer::softwareFrame(uint32_t *out) {
+    // Draw the current frame in software for debug builds to compare with a hardware renderer
+    for (int i = 0; i < 192; i++) {
+        drawScanline1(i);
+        if (i > 0) finishScanline(i - 1);
+    }
+    finishScanline(191);
+    for (int y = 0; y < 192; y++)
+        memcpy(&out[y * 256], &framebuffer[0][y * 256 * 2], 256 * sizeof(uint32_t));
+}
+#endif
+
 void Gpu3DRenderer::drawThreaded(int thread) {
     // Draw the 3D scanlines in a threaded sequence
     // The amount of scanlines skipped per thread depends on the number of active threads
