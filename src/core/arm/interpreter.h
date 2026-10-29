@@ -48,6 +48,7 @@ public:
     static void runCoreDsi(Core &core);
     static bool runArm7UntilArm9(Core &core);
     static bool runArm7Behind(Core &core);
+    static void stepArm7(Core &core);
 
     uint16_t getOpcode16();
     uint32_t getOpcode32();

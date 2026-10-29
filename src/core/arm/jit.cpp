@@ -47,7 +47,9 @@ void jitLog(const char *format, ...) {
 }
 #endif
 
-Jit::Jit(Core *core): core(core) {}
+bool Jit::testing = false;
+
+Jit::Jit(Core *core, bool arm7): core(core), arm7(arm7) {}
 
 Jit::~Jit() {
     // Free all blocks and give up the codegen area
@@ -59,13 +61,30 @@ Jit::~Jit() {
 }
 
 void Jit::enable(bool value) {
-    // Only run ARM9 code compiled in regular DS mode
+    // Only run code compiled in regular DS mode
     if (value && (core->dsiMode || core->gbaMode))
         value = false;
     if (!value) reset();
     enabled = value;
+
+    // Set up the memory that code is compiled from, with the writable parts first so their pages are numbered first
+    Memory &mem = core->memory;
+    regionCount = 0;
+    regions[regionCount++] = { mem.ram, RAM_SIZE, true };
+    if (arm7) {
+        regions[regionCount++] = { mem.wram, 0x8000, true };
+        regions[regionCount++] = { mem.wram7, 0x10000, true };
+        regions[regionCount++] = { mem.bios7, 0x4000, false };
+    }
+    else {
+        regions[regionCount++] = { mem.instrTcm, 0x8000, true };
+        regions[regionCount++] = { mem.bios9, 0x10000, false };
+    }
+    tableSize = 0;
+    for (int i = 0; i < regionCount; i++)
+        tableSize += regions[i].size;
     if (enabled && table.empty())
-        table.resize((RAM_SIZE + ITCM_SIZE + BIOS_SIZE) / 2);
+        table.resize(tableSize / 2);
 }
 
 void Jit::reset() {
@@ -74,7 +93,7 @@ void Jit::reset() {
         if (table[i]) graveyard.push_back(table[i]);
         table[i] = nullptr;
     }
-    for (int i = 0; i < RAM_PAGES + ITCM_PAGES; i++)
+    for (int i = 0; i < MAX_PAGES; i++)
         pages[i] = JitPage();
     pendingLinks.clear();
     unlinks.clear();
@@ -82,29 +101,42 @@ void Jit::reset() {
     codeChanged = 1;
     codePtr = codeStart;
 
-    // Map the pages that were unmapped for having code
+    // Map the pages that were unmapped for having code, which the other CPU's code might still keep unmapped
     if (codePages) {
         codePages = 0;
-        core->memory.updateMap9(0x00000000, 0x03000000);
-        core->memory.updateMap7(0x02000000, 0x03000000);
+        core->memory.updateMap9(0x00000000, 0x04000000);
+        core->memory.updateMap7(0x02000000, 0x04000000);
     }
+}
+
+uint8_t **Jit::codeMap() {
+    // Get the memory map that this CPU fetches code through
+    return arm7 ? core->memory.readMap7 : core->memory.readMap9A;
 }
 
 int Jit::tableIndex(uint8_t *host) {
     // Get the lookup table position for a host address, or -1 if code isn't compiled from there
-    Memory &mem = core->memory;
-    if (uintptr_t(host - mem.ram) < RAM_SIZE) return (host - mem.ram) >> 1;
-    if (uintptr_t(host - mem.instrTcm) < ITCM_SIZE) return (RAM_SIZE + (host - mem.instrTcm)) >> 1;
-    if (uintptr_t(host - mem.bios9) < BIOS_SIZE) return (RAM_SIZE + ITCM_SIZE + (host - mem.bios9)) >> 1;
+    // Regions are laid out one after another in the table
+    for (int i = 0, offset = 0; i < regionCount; offset += regions[i++].size)
+        if (uintptr_t(host - regions[i].base) < regions[i].size)
+            return (offset + (host - regions[i].base)) >> 1;
     return -1;
 }
 
 int Jit::pageIndex(uint8_t *host) {
     // Get the code page for a host address, or -1 if it's not in writable code memory
-    Memory &mem = core->memory;
-    if (uintptr_t(host - mem.ram) < RAM_SIZE) return (host - mem.ram) >> 12;
-    if (uintptr_t(host - mem.instrTcm) < ITCM_SIZE) return RAM_PAGES + ((host - mem.instrTcm) >> 12);
+    for (int i = 0, page = 0; i < regionCount && regions[i].writable; page += regions[i++].size >> 12)
+        if (uintptr_t(host - regions[i].base) < regions[i].size)
+            return page + ((host - regions[i].base) >> 12);
     return -1;
+}
+
+uint8_t *Jit::pageHost(int page) {
+    // Get the host memory of a code page
+    for (int i = 0; i < regionCount; page -= regions[i++].size >> 12)
+        if (page < int(regions[i].size >> 12))
+            return &regions[i].base[page << 12];
+    return nullptr;
 }
 
 void Jit::clearCache() {
@@ -113,9 +145,9 @@ void Jit::clearCache() {
 }
 
 void Jit::mapChanged(uint32_t start) {
-    // Forget cached guest addresses if ITCM might have been remapped, and stop any running code
+    // Forget cached guest addresses if ITCM or WRAM might have been remapped, and stop any running code
     // Main RAM and the BIOS are always at the same addresses, so other changes don't matter
-    if (start >= 0x02000000) return;
+    if (start >= (arm7 ? 0x04000000 : 0x02000000)) return;
     clearCache();
     codeChanged = 1;
 
@@ -299,7 +331,7 @@ void Jit::removeLinks(JitBlock *block) {
 
 JitBlock *Jit::lookup(uint32_t address, bool thumb) {
     // Find a compiled block with generated code for a guest address, if there is one
-    uint8_t *host = core->memory.readMap9A[address >> 12];
+    uint8_t *host = codeMap()[address >> 12];
     if (!host) return nullptr;
     int index = tableIndex(host + (address & 0xFFF));
     if (index < 0) return nullptr;
@@ -339,20 +371,20 @@ void Jit::linkBlock(JitBlock *block, std::vector<uint32_t*> &patched) {
 void Jit::protect(int page) {
     // Unmap every mirror of a page from the write maps, so writes to it go through the JIT
     // Mirrors are only unmapped if they point to the page, in case something else is mapped over them
+    // Main RAM and WRAM can be written by either CPU; ITCM only appears in the ARM9's lower addresses
     Memory &mem = core->memory;
+    uint8_t *host = pageHost(page);
     codePages++;
-    if (page < RAM_PAGES) {
-        uint8_t *host = &mem.ram[page << 12];
-        for (uint32_t i = 0x02000 + page; i < 0x03000; i += RAM_PAGES) {
+    if (uintptr_t(host - mem.instrTcm) < 0x8000) {
+        for (uint32_t i = 0; i < 0x02000; i++)
             if (mem.writeMap9A[i] == host) mem.writeMap9A[i] = nullptr;
-            if (mem.writeMap9B[i] == host) mem.writeMap9B[i] = nullptr;
-            if (mem.writeMap7[i] == host) mem.writeMap7[i] = nullptr;
-        }
+        return;
     }
-    else {
-        uint8_t *host = &mem.instrTcm[(page - RAM_PAGES) << 12];
-        for (uint32_t i = page - RAM_PAGES; i < 0x02000; i += ITCM_PAGES)
-            if (mem.writeMap9A[i] == host) mem.writeMap9A[i] = nullptr;
+    uint32_t start = (uintptr_t(host - mem.ram) < RAM_SIZE) ? 0x02000 : 0x03000;
+    for (uint32_t i = start; i < start + 0x1000; i++) {
+        if (mem.writeMap9A[i] == host) mem.unmapJit(mem.writeMap9A, i);
+        if (mem.writeMap9B[i] == host) mem.unmapJit(mem.writeMap9B, i);
+        if (mem.writeMap7[i] == host) mem.unmapJit(mem.writeMap7, i);
     }
 }
 
@@ -409,10 +441,10 @@ bool Jit::run(const uint32_t *limit) {
     }
 
     // Find the host memory for the next instruction, if it's somewhere code can be compiled from
-    Interpreter &arm = core->interpreter[0];
+    Interpreter &arm = core->interpreter[arm7];
     bool thumb = arm.cpsr & BIT(5);
     uint32_t address = arm.registersUsr[15] - (thumb ? 2 : 4);
-    uint8_t *host = core->memory.readMap9A[address >> 12];
+    uint8_t *host = codeMap()[address >> 12];
     if (!host) return false;
     host += address & 0xFFF;
     int index = tableIndex(host);
@@ -443,9 +475,11 @@ bool Jit::run(const uint32_t *limit) {
 }
 
 int Jit::interleave(const uint32_t *limit) {
-    // Called after an ARM9 instruction when the next one can't run straight away, with the global cycles
-    // still at the start of that instruction; returns whether the ARM9 can continue
+    // Called after an instruction when the next one can't run straight away, with the global cycles
+    // still at the start of that instruction; returns whether the CPU can continue
+    // The ARM7 always stops, letting its run loop decide what's next, since only the ARM9 or a task can be due
     // With only the ARM9 running, it stops, and the run loop catches up the global cycles
+    if (arm7) return 0;
     // With fast timing, the ARM7 catches up from behind and the ARM9 gets a new slice, like the run loop does
     if (limit == &core->sliceLimit) {
         if (!Interpreter::runArm7Behind(*core) || codeChanged) return 0;
@@ -466,7 +500,7 @@ int Jit::interleaveCall(Jit *jit, const uint32_t *limit) {
 
 void Jit::execute(JitBlock *block, const uint32_t *limit) {
     // Let jumps skip filling the pipeline, since it only matters once the interpreter takes over
-    Interpreter &arm = core->interpreter[0];
+    Interpreter &arm = core->interpreter[arm7];
     arm.lazyPipeline = true;
     running = true;
     codeChanged = 0;
@@ -493,7 +527,7 @@ void Jit::execute(JitBlock *block, const uint32_t *limit) {
 #endif
 
     // Run each instruction like the interpreter does, setting the program counter as if it was fetched
-    // When the next ARM9 instruction can't follow straight away, the ARM7 and scheduler are handled like the
+    // When the next instruction can't follow straight away, the other CPU and scheduler are handled like the
     // interpreter would; otherwise execution continues into the next block if it's cached
     while (block) {
         uint32_t step = block->thumb ? 2 : 4;
@@ -515,8 +549,9 @@ void Jit::execute(JitBlock *block, const uint32_t *limit) {
                 }
             }
 
-            // Count the cycles, and continue to the next instruction if nothing else needs to run first
-            uint32_t next = core->globalCycles + cycles;
+            // Count the cycles, doubled for the half-speed ARM7, and continue to the next instruction if nothing
+            // else needs to run first
+            uint32_t next = core->globalCycles + (cycles << arm7);
             arm.cycles = next;
             if (next > *limit || next >= core->events[0].cycles || codeChanged) {
                 if (!interleave(limit)) {

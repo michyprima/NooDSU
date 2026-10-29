@@ -191,7 +191,7 @@ public:
     Input input;
     Interpreter interpreter[2];
     Ipc ipc;
-    Jit jit;
+    Jit jit, jit7;
     Memory memory;
     Ndma ndma[2];
     Rtc rtc;
@@ -208,8 +208,12 @@ public:
     uint32_t globalCycles = 0;
 
     // With fast CPU timing, the ARM9 can run up to this many cycles ahead of the ARM7 before it catches up
-    static const uint32_t FAST_SLICE = 64;
+    // Longer slices let both CPUs run more instructions at a time; tasks still bring the ARM7 up to date
+    static const uint32_t FAST_SLICE = 256;
     uint32_t sliceLimit = 0;
+
+    // Compiled ARM7 code stops before reaching this, which is just before the ARM9 is due
+    uint32_t arm7Limit = 0;
 
     Core(std::string ndsRom = "", std::string gbaRom = "", int id = 0, int ndsRomFd = -1, int gbaRomFd = -1,
         int ndsSaveFd = -1, int gbaSaveFd = -1, int ndsStateFd = -1, int gbaStateFd = -1, int ndsCheatFd = -1);
@@ -217,6 +221,16 @@ public:
     void loadState(FILE *file);
 
     void runCore() { (*runFunc)(*this); }
+
+    // Pages with compiled code from either CPU are protected from writes the same way
+    bool jitHasCode() { return jit.hasCode() || jit7.hasCode(); }
+    bool jitIsCodePage(uint8_t *host) { return jit.isCodePage(host) || jit7.isCodePage(host); }
+    bool jitWriteCode(uint8_t *host, int size) {
+        // Both JITs drop overwritten code; returns whether either still has code in the page
+        bool code9 = jit.writeCode(host, size);
+        bool code7 = jit7.writeCode(host, size);
+        return code9 || code7;
+    }
     void schedule(SchedTask task, uint32_t cycles);
     void enterGbaMode();
     void endFrame();

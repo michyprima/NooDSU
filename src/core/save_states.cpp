@@ -123,6 +123,7 @@ bool SaveStates::loadState() {
 
     // Drop compiled code, since memory is about to change underneath it
     core->jit.reset();
+    core->jit7.reset();
 
     // Load the state of every component
     core->loadState(file);

@@ -45,6 +45,11 @@ public:
     uint8_t *writeMap9B[0x100000] = {};
     uint8_t *writeMap7[0x100000] = {};
 
+    // Where pages in main RAM and WRAM (0x2000000 to 0x3FFFFFF) point when unmapped for having compiled code
+    uint8_t *jitPages9A[0x2000] = {};
+    uint8_t *jitPages9B[0x2000] = {};
+    uint8_t *jitPages7[0x2000] = {};
+
     uint8_t palette[0x800] = {}; // 2KB palette
     uint8_t oam[0x800] = {}; // 2KB OAM
     uint8_t *engAExtPal[5] = {};
@@ -157,6 +162,8 @@ private:
     template <typename T> void writeFallback(bool arm7, uint32_t address, T value, bool tcm);
     template <typename T> bool writeJit(bool arm7, uint32_t address, T value, bool tcm);
     void protectJit(uint8_t **writeMap, uint32_t start, uint32_t end);
+    void unmapJit(uint8_t **writeMap, uint32_t index);
+    uint8_t **jitPages(uint8_t **writeMap);
 
     template <typename T> T ioRead9(uint32_t address);
     template <typename T> T ioRead7(uint32_t address);

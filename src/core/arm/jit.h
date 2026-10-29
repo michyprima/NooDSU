@@ -54,7 +54,7 @@ struct JitLink {
     JitBlock *target;
 };
 
-// A run of consecutive ARM9 instructions from one 4KB page of host memory
+// A run of consecutive instructions from one 4KB page of host memory
 struct JitBlock {
     uint32_t address; // Guest address of the first instruction
     bool thumb;
@@ -81,15 +81,22 @@ struct JitPage {
     uint32_t covered[0x1000 / 2 / 32] = {};
 };
 
-// Runs ARM9 code in compiled blocks, matching the interpreter instruction for instruction
-// Each instruction still runs through its interpreter handler; blocks remove the per-instruction
-// fetch and dispatch overhead, and are the base for generating native code later
+// Host memory that code is compiled from, and whether code there can be overwritten
+struct JitRegion {
+    uint8_t *base;
+    uint32_t size;
+    bool writable;
+};
+
+// Runs one CPU's code in compiled blocks, matching the interpreter instruction for instruction
+// Blocks remove the per-instruction fetch and dispatch overhead, and generate native code where possible
 class Jit {
 public:
     friend bool jitTestEmit(Jit &jit, uint8_t *buf, uint32_t op, uint32_t pc, uint32_t *size, uint32_t *start);
     bool enabled = false;
+    static bool testing; // Set by the self-test, so compiled code always checks every instruction like the interpreter
 
-    Jit(Core *core);
+    Jit(Core *core, bool arm7);
     ~Jit();
 
     void enable(bool value);
@@ -104,13 +111,16 @@ public:
 
 private:
     Core *core;
+    bool arm7;
 
     // Blocks are looked up by the host address of their first halfword
-    // Main RAM, ITCM and the ARM9 BIOS are the only memory that code is compiled from
-    static const int RAM_SIZE = 0x400000, ITCM_SIZE = 0x8000, BIOS_SIZE = 0x10000;
-    static const int RAM_PAGES = RAM_SIZE >> 12, ITCM_PAGES = ITCM_SIZE >> 12;
+    // The ARM9 compiles code from main RAM, ITCM and its BIOS; the ARM7 from main RAM, both WRAMs and its BIOS
+    static const int RAM_SIZE = 0x400000, RAM_PAGES = RAM_SIZE >> 12, MAX_PAGES = RAM_PAGES + 24;
+    JitRegion regions[4] = {};
+    int regionCount = 0;
+    uint32_t tableSize = 0;
     std::vector<JitBlock*> table;
-    JitPage pages[RAM_PAGES + ITCM_PAGES];
+    JitPage pages[MAX_PAGES];
     int codePages = 0;
 
     // The entry before the cache holds a flag that's set when code changes, so it's next to the cache
@@ -142,8 +152,10 @@ private:
     uint32_t addrCondition = 0, addrMemory = 0, addrReadMap = 0, addrWriteMap = 0;
     uint32_t addrLoad32 = 0, addrLoad8 = 0, addrStore32 = 0, addrStore8 = 0, addrLoad16 = 0, addrStore16 = 0;
 
+    uint8_t **codeMap();
     int tableIndex(uint8_t *host);
     int pageIndex(uint8_t *host);
+    uint8_t *pageHost(int page);
     JitBlock *compile(uint32_t address, bool thumb, uint8_t *host, int index);
     void retire(JitBlock *block);
     JitBlock *lookup(uint32_t address, bool thumb);
@@ -178,7 +190,7 @@ private:
     void emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitSwap(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitBranchReg(PpcEmitter &e, uint32_t op, uint32_t pc);
-    void emitJump(PpcEmitter &e, int rs);
+    void emitJump(PpcEmitter &e, int rs, bool interwork);
     void readReg(PpcEmitter &e, int rt, int reg, uint32_t pc);
     void writeReg(PpcEmitter &e, int rs, int reg);
     void clearCache();

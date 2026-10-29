@@ -176,34 +176,38 @@ static_assert(sizeof(JitCacheEntry) == 16, "Generated code expects 16-byte cache
 #endif
 
 // Memory accesses for native loads and stores that miss the memory maps, done like the interpreter
-static uint32_t jitLoad32(Memory *memory, uint32_t address) {
-    uint32_t value = memory->read<uint32_t>(false, address);
+template <bool arm7> static uint32_t jitLoad32(Memory *memory, uint32_t address) {
+    uint32_t value = memory->read<uint32_t>(arm7, address);
     uint8_t shift = (address & 0x3) << 3;
     return shift ? ((value << (32 - shift)) | (value >> shift)) : value;
 }
 
-static uint32_t jitLoad8(Memory *memory, uint32_t address) {
-    return memory->read<uint8_t>(false, address);
+template <bool arm7> static uint32_t jitLoad8(Memory *memory, uint32_t address) {
+    return memory->read<uint8_t>(arm7, address);
 }
 
-static uint32_t jitLoad16(Memory *memory, uint32_t address) {
-    return memory->read<uint16_t>(false, address);
+template <bool arm7> static uint32_t jitLoad16(Memory *memory, uint32_t address) {
+    return memory->read<uint16_t>(arm7, address);
 }
 
-static void jitStore16(Memory *memory, uint32_t address, uint32_t value) {
-    memory->write<uint16_t>(false, address, value);
+template <bool arm7> static void jitStore16(Memory *memory, uint32_t address, uint32_t value) {
+    memory->write<uint16_t>(arm7, address, value);
 }
 
-static void jitStore32(Memory *memory, uint32_t address, uint32_t value) {
-    memory->write<uint32_t>(false, address, value);
+template <bool arm7> static void jitStore32(Memory *memory, uint32_t address, uint32_t value) {
+    memory->write<uint32_t>(arm7, address, value);
 }
 
-static void jitStore8(Memory *memory, uint32_t address, uint32_t value) {
-    memory->write<uint8_t>(false, address, value);
+template <bool arm7> static void jitStore8(Memory *memory, uint32_t address, uint32_t value) {
+    memory->write<uint8_t>(arm7, address, value);
 }
 
-// Only one JIT can own the codegen area at a time
-static Jit *codeOwner = nullptr;
+// The codegen area is shared by one ARM9 and one ARM7 JIT at a time, with the ARM9 getting most of it
+static Jit *codeOwners[2] = {};
+#ifdef __WIIU__
+static uint8_t *sharedArea = nullptr;
+static uint32_t sharedSize = 0;
+#endif
 
 void Jit::initCodegen() {
     if (codeArea) return;
@@ -211,13 +215,15 @@ void Jit::initCodegen() {
     // Get the codegen area, which can only be used from one CPU core
     // Try again later if this thread isn't on that core yet, and give up for anything else
     if (OSGetCoreId() != (OSGetCodegenCore() & 3)) return;
-    void *area = nullptr;
-    uint32_t size = 0;
-    OSGetCodegenVirtAddrRange(&area, &size);
+    if (!sharedArea) {
+        void *area = nullptr;
+        OSGetCodegenVirtAddrRange(&area, &sharedSize);
+        sharedArea = (uint8_t*)area;
+    }
     JLOG("init: core %u, codegen core %X, area %p size %X, owner %p, mode %X, sec %X", OSGetCoreId(),
-        OSGetCodegenCore(), area, size, codeOwner, OSGetCodegenMode(), OSGetSecCodeGenMode());
+        OSGetCodegenCore(), sharedArea, sharedSize, codeOwners[arm7], OSGetCodegenMode(), OSGetSecCodeGenMode());
     codeFailed = true;
-    if (!area || size < 0x100000 || codeOwner) return;
+    if (!sharedArea || sharedSize < 0x100000 || codeOwners[arm7]) return;
 
     // Make sure the event vector can be read directly, as generated code does
     if ((void*)&core->events.head != (void*)&core->events) return;
@@ -225,20 +231,23 @@ void Jit::initCodegen() {
     JLOG("init: switch to RW returned %X, sec %X", rw, OSGetSecCodeGenMode());
     if (!rw) return;
     codeFailed = false;
+    uint32_t split = (sharedSize / 4 * 3) & ~0xFFF;
+    uint8_t *area = arm7 ? (sharedArea + split) : sharedArea;
+    uint32_t size = arm7 ? (sharedSize - split) : split;
 #else
     // When testing on other platforms, generate code into normal memory without running it
     uint32_t size = 0x2000000;
-    void *area = new uint8_t[size];
+    uint8_t *area = new uint8_t[size];
 #endif
-    codeOwner = this;
+    codeOwners[arm7] = this;
 #ifdef __WIIU__
     codeCore = OSGetCoreId();
 #endif
-    codeArea = (uint8_t*)area;
+    codeArea = area;
     codeEnd = codeArea + size;
 
     // Get offsets of the interpreter state that generated code uses
-    Interpreter &arm = core->interpreter[0];
+    Interpreter &arm = core->interpreter[arm7];
     offPc = (uint8_t*)&arm.registersUsr[15] - (uint8_t*)&arm;
     offCpsr = (uint8_t*)&arm.cpsr - (uint8_t*)&arm;
     offCycles = (uint8_t*)&arm.cycles - (uint8_t*)&arm;
@@ -247,14 +256,14 @@ void Jit::initCodegen() {
     offRegs = (uint8_t*)&arm.registers[0] - (uint8_t*)&arm;
     addrCondition = (uint32_t)(uintptr_t)&Interpreter::condition[0];
     addrMemory = (uint32_t)(uintptr_t)&core->memory;
-    addrReadMap = (uint32_t)(uintptr_t)&core->memory.readMap9A[0];
-    addrWriteMap = (uint32_t)(uintptr_t)&core->memory.writeMap9A[0];
-    addrLoad32 = (uint32_t)(uintptr_t)&jitLoad32;
-    addrLoad8 = (uint32_t)(uintptr_t)&jitLoad8;
-    addrStore32 = (uint32_t)(uintptr_t)&jitStore32;
-    addrStore8 = (uint32_t)(uintptr_t)&jitStore8;
-    addrLoad16 = (uint32_t)(uintptr_t)&jitLoad16;
-    addrStore16 = (uint32_t)(uintptr_t)&jitStore16;
+    addrReadMap = (uint32_t)(uintptr_t)(arm7 ? &core->memory.readMap7[0] : &core->memory.readMap9A[0]);
+    addrWriteMap = (uint32_t)(uintptr_t)(arm7 ? &core->memory.writeMap7[0] : &core->memory.writeMap9A[0]);
+    addrLoad32 = (uint32_t)(uintptr_t)(arm7 ? &jitLoad32<true> : &jitLoad32<false>);
+    addrLoad8 = (uint32_t)(uintptr_t)(arm7 ? &jitLoad8<true> : &jitLoad8<false>);
+    addrStore32 = (uint32_t)(uintptr_t)(arm7 ? &jitStore32<true> : &jitStore32<false>);
+    addrStore8 = (uint32_t)(uintptr_t)(arm7 ? &jitStore8<true> : &jitStore8<false>);
+    addrLoad16 = (uint32_t)(uintptr_t)(arm7 ? &jitLoad16<true> : &jitLoad16<false>);
+    addrStore16 = (uint32_t)(uintptr_t)(arm7 ? &jitStore16<true> : &jitStore16<false>);
     PpcEmitter e(codeArea);
     emitStubs(e);
     codeStart = (uint8_t*)e.here();
@@ -308,12 +317,14 @@ void Jit::emitStubs(PpcEmitter &e) {
     e.beq(codeExit);
     e.blr();
 
-    // After an instruction, with its cycles in r3: update the ARM9's cycles, then continue if nothing else
-    // needs to run first; the global cycles are only advanced here, since the helper expects them at the start
-    // of the last instruction; impure versions also check if code changed, since the block might be stale
+    // After an instruction, with its cycles in r3: update the CPU's cycles, doubled for the half-speed ARM7, then
+    // continue if nothing else needs to run first; the global cycles are only advanced here, since the helper
+    // expects them at the start of the last instruction; impure versions also check if code changed, since the
+    // block might be stale
     for (int store = 0; store < 2; store++) {
         for (int impure = 0; impure < 2; impure++) {
             codePost[impure][store] = e.here();
+            if (arm7) e.add(3, 3, 3);
             e.lwz(R_LAST, 0, R_GLOBAL);
             e.add(3, 3, R_LAST);
             e.stw(3, offCycles, R_ARM);
@@ -473,12 +484,12 @@ void Jit::emitStubs(PpcEmitter &e) {
 }
 
 void Jit::freeCodegen() {
-    // Let another JIT use the codegen area
-    if (codeOwner != this) return;
+    // Let another JIT use this part of the codegen area
+    if (codeOwners[arm7] != this) return;
 #ifndef __WIIU__
     delete[] codeArea;
 #endif
-    codeOwner = nullptr;
+    codeOwners[arm7] = nullptr;
     codeArea = codeStart = codePtr = codeEnd = nullptr;
 }
 
@@ -564,9 +575,11 @@ enum NativeKind {
     NK_SWAP // SWP/SWPB
 };
 
-static int nativeKind(uint32_t op) {
+static int nativeKind(uint32_t op, bool arm7) {
     // Check which kind of native code an ARM instruction can be generated as, or NK_NONE
     // Anything that writes the program counter, other than branches, is left to the interpreter
+    // The ARM7 leaves BLX to the interpreter, which ignores it, and stores with writeback of a listed base, which
+    // store the new base unless it's first
     if ((op >> 28) == 0xF) return NK_NONE;
     uint32_t rd = (op >> 12) & 0xF, rn = (op >> 16) & 0xF, rm = op & 0xF;
     if ((op & 0x0C000000) == 0x00000000) {
@@ -574,7 +587,7 @@ static int nativeKind(uint32_t op) {
             if ((op & 0x0FB00FF0) == 0x01000090) // SWP/SWPB
                 return (rd == 15 || rn == 15 || rm == 15) ? NK_NONE : NK_SWAP;
             if ((op & 0x0FFFFFD0) == 0x012FFF10) // BX/BLX
-                return (rm == 15) ? NK_NONE : NK_BRANCH_REG;
+                return (rm == 15 || (arm7 && (op & BIT(5)))) ? NK_NONE : NK_BRANCH_REG;
             if ((op & 0x0E000090) == 0x00000090 && (op & 0x60)) { // Halfword and signed transfers
                 if ((op & 0x01200000) != 0x01000000 || rd == 15) return NK_NONE; // Only offsets without writeback
                 if (!(op & BIT(20)) && (op & 0x60) != 0x20) return NK_NONE; // LDRD/STRD
@@ -601,6 +614,7 @@ static int nativeKind(uint32_t op) {
         uint32_t list = op & 0xFFFF;
         if (!list || (op & BIT(22)) || rn == 15) return NK_NONE;
         if ((op & BIT(20)) && (op & BIT(21)) && (list & BIT(rn))) return NK_NONE; // Loading the base with writeback
+        if (arm7 && !(op & BIT(20)) && (op & BIT(21)) && (list & BIT(rn))) return NK_NONE; // Storing it on ARM7
         if (list & BIT(15)) return (op & BIT(20)) ? NK_BLOCK_PC : NK_NONE; // Only loads of the program counter
         return NK_BLOCK;
     }
@@ -615,7 +629,7 @@ static bool nativeJumps(int kind) {
 bool Jit::emitNative(PpcEmitter &e, uint32_t op, uint32_t pc) {
     // Generate an ARM instruction as native code if possible, leaving its cycles in r3
     // Branches leave the program counter set in memory; other instructions leave it unchanged
-    int kind = nativeKind(op);
+    int kind = nativeKind(op, arm7);
     if (!kind) return false;
 
     // Skip the instruction if its condition fails, which takes 1 cycle
@@ -794,7 +808,7 @@ void Jit::emitTransfer(PpcEmitter &e, uint32_t op, uint32_t pc) {
     if (writeback) writeReg(e, 9, rn);
     e.call(codeMemory[(load ? 0 : 3) + byte]);
     if (load) writeReg(e, 8, rd);
-    e.li(3, 1);
+    e.li(3, arm7 ? (load ? 3 : 2) : 1);
 }
 
 void Jit::emitHalf(PpcEmitter &e, uint32_t op, uint32_t pc) {
@@ -819,16 +833,26 @@ void Jit::emitHalf(PpcEmitter &e, uint32_t op, uint32_t pc) {
     }
 
     if (load) {
+        // The ARM7 rotates halfwords loaded from odd addresses, and shifts signed ones down, keeping the address
+        // in a register that memory calls don't change
+        if (arm7 && type != 2) e.mr(R_TMP1, 5);
         e.call(codeMemory[(type == 2) ? 1 : 2]);
         if (type == 2) e.extsb(8, 8);
         if (type == 3) e.extsh(8, 8);
+        if (arm7 && type != 2) {
+            e.andi_(7, R_TMP1, 1);
+            uint32_t *even = e.here();
+            e.beq(nullptr);
+            (type == 1) ? e.rlwinm(8, 8, 24, 0, 31) : e.srawi(8, 8, 8);
+            e.patchBc(even);
+        }
         writeReg(e, 8, rd);
     }
     else {
         readReg(e, 8, rd, pc);
         e.call(codeMemory[5]);
     }
-    e.li(3, 1);
+    e.li(3, arm7 ? (load ? 3 : 2) : 1);
 }
 
 void Jit::emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc) {
@@ -856,7 +880,7 @@ void Jit::emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc) {
         e.rlwinm(5, 5, 0, 0, 29);
         if (load) {
             e.call(codeMemory[0]);
-            if (i == 15) emitJump(e, 8);
+            if (i == 15) emitJump(e, 8, !arm7);
             else writeReg(e, 8, i);
         }
         else {
@@ -868,7 +892,10 @@ void Jit::emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc) {
         e.addi(9, R_TMP1, end);
         writeReg(e, 9, rn);
     }
-    e.li(3, (list & BIT(15)) ? (count + 4) : (count + (count < 2)));
+    if (list & BIT(15))
+        e.li(3, count + 4);
+    else
+        e.li(3, count + (arm7 ? (load ? 2 : 1) : (count < 2)));
 }
 
 void Jit::emitSwap(PpcEmitter &e, uint32_t op, uint32_t pc) {
@@ -882,7 +909,7 @@ void Jit::emitSwap(PpcEmitter &e, uint32_t op, uint32_t pc) {
     e.mr(5, R_TMP1);
     e.mr(8, R_TMP2);
     e.call(codeMemory[byte ? 4 : 3]);
-    e.li(3, 2);
+    e.li(3, arm7 ? 4 : 2);
 }
 
 void Jit::emitBranchReg(PpcEmitter &e, uint32_t op, uint32_t pc) {
@@ -892,13 +919,20 @@ void Jit::emitBranchReg(PpcEmitter &e, uint32_t op, uint32_t pc) {
         e.loadConst(6, pc - 4);
         writeReg(e, 6, 14);
     }
-    emitJump(e, 5);
+    emitJump(e, 5, true);
     e.li(3, 3);
 }
 
-void Jit::emitJump(PpcEmitter &e, int rs) {
+void Jit::emitJump(PpcEmitter &e, int rs, bool interwork) {
     // Jump to an address in a register, switching to THUMB if bit 0 is set, like BX and loads of the program counter
+    // Without interworking, like loads of the program counter on the ARM7, it stays in ARM mode
     if (rs != 5) e.mr(5, rs);
+    if (!interwork) {
+        e.rlwinm(8, 5, 0, 0, 29);
+        e.addi(8, 8, 4);
+        e.stw(8, offPc, R_ARM);
+        return;
+    }
     e.lwz(6, offCpsr, R_ARM);
     e.rlwinm(7, 5, 5, 26, 26);
     e.or_(6, 6, 7);
@@ -953,14 +987,15 @@ static bool mayJump(uint32_t op, bool thumb) {
 
 bool Jit::batched(JitBlock *block, size_t i) {
     // Check if an instruction is in a run whose cycles are checked together, which is only done with fast timing
-    return codeFast && !block->thumb && i < block->instrs.size() && nativeKind(block->instrs[i].opcode) == NK_ALU;
+    return codeFast && !testing && !block->thumb && i < block->instrs.size() &&
+        nativeKind(block->instrs[i].opcode, arm7) == NK_ALU;
 }
 
 void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool &ok) {
     // Generate one instruction; the program counter register already holds its value
     uint32_t op = block->instrs[i].opcode;
     bool native = !block->thumb && emitNative(e, op, pc);
-    bool memoryPc = !native || nativeJumps(nativeKind(op));
+    bool memoryPc = !native || nativeJumps(nativeKind(op, arm7));
 
     if (!native) {
         // Call the interpreter handler, with the program counter stored for it to read
@@ -1006,7 +1041,7 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
     // Then check for jumps, which leave the program counter in memory different from the register
     // Branches to known addresses jump through a site that's linked to the target block once it exists
     e.call(codePost[!isPure(op, block->thumb)][!memoryPc]);
-    if (native && nativeKind(op) == NK_BRANCH) {
+    if (native && nativeKind(op, arm7) == NK_BRANCH) {
         uint32_t *same = nullptr;
         if ((op >> 28) != 0xE) {
             e.lwz(4, offPc, R_ARM);

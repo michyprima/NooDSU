@@ -1336,10 +1336,10 @@ void ConsoleUI::jitSelfTest() {
     // Run the interpreter and the JIT side by side with settings that keep them deterministic
     // Frames are skipped so most of the time goes to CPU emulation, which is what's being compared
     // The user's settings are restored afterwards, so they aren't saved with the test values
-    // Timing is exact for the test, since fast timing lets compiled code check for events less often than the interpreter
-    int saved[] = { Settings::threaded2D, Settings::threaded3D, Settings::emulateAudio, Settings::frameskip, Settings::jit,
-        Settings::fastTiming };
-    Settings::fastTiming = 0;
+    // The test uses the current CPU timing; compiled code checks for events after every instruction while testing,
+    // like the interpreter, since fast timing would otherwise let it check less often
+    int saved[] = { Settings::threaded2D, Settings::threaded3D, Settings::emulateAudio, Settings::frameskip, Settings::jit };
+    Jit::testing = true;
     Settings::threaded2D = 0;
     Settings::threaded3D = 0;
     Settings::emulateAudio = 0;
@@ -1362,7 +1362,7 @@ void ConsoleUI::jitSelfTest() {
         Settings::emulateAudio = saved[2];
         Settings::frameskip = saved[3];
         Settings::jit = saved[4];
-        Settings::fastTiming = saved[5];
+        Jit::testing = false;
         Rtc::fixedTime = 0;
     };
     if (!cores[1]) {
@@ -1441,7 +1441,8 @@ void ConsoleUI::jitSelfTest() {
     while (!done.load()) {
         if (getInputPress() & defaultKeys[INPUT_B])
             stop.store(true);
-        mode = !b.jit.enabled ? "JIT off" : (b.jit.isNative() ? "native code" : "portable executor");
+        mode = std::string(!b.jit.enabled ? "JIT off" : (b.jit.isNative() ? "native code" : "portable executor")) +
+            (Settings::fastTiming ? ", fast timing" : "");
         startFrame(palette[0]);
         drawString("JIT Self-Test (" + mode + ")", SCALE(72), SCALE(30), SCALE(42), palette[1]);
         drawString("Frame " + std::to_string(frames.load()) + " of " + std::to_string(targetFrames) +
@@ -1456,7 +1457,8 @@ void ConsoleUI::jitSelfTest() {
 #else
     testThread.join();
 #endif
-    mode = !b.jit.enabled ? "JIT off" : (b.jit.isNative() ? "native code" : "portable executor");
+    mode = std::string(!b.jit.enabled ? "JIT off" : (b.jit.isNative() ? "native code" : "portable executor")) +
+        (Settings::fastTiming ? ", fast timing" : "");
 
     // Show the result with the time each side took
     char times[128];

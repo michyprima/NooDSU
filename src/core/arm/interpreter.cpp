@@ -135,10 +135,11 @@ template <bool _arm7, int shift> void Interpreter::runCoreSingle(Core &core) {
         EP_START(cpu);
         core.globalCycles = std::max(core.globalCycles, arm.cycles);
         while (core.events[0].cycles > arm.cycles) {
-            // Run compiled ARM9 code if possible, falling back to the interpreter
+            // Run compiled code if possible, falling back to the interpreter; the ARM7 only has it in NDS mode
             // Blocks leave the global cycles at the start of their last instruction, so catch up after
-            if (!_arm7 && core.jit.enabled) {
-                if (core.jit.run(&noLimit)) {
+            Jit &jit = _arm7 ? core.jit7 : core.jit;
+            if ((!_arm7 || shift) && jit.enabled) {
+                if (jit.run(&noLimit)) {
                     core.globalCycles = arm.cycles;
                     continue;
                 }
@@ -179,7 +180,7 @@ void Interpreter::runCoreNds(Core &core) {
             }
             if (core.globalCycles >= arm7.cycles) {
                 EP_START(a7);
-                arm7.cycles = core.globalCycles + (arm7.runOpcode() << 1);
+                stepArm7(core);
                 EP_ADD(EP_BOTH_ARM7, a7);
             }
             core.globalCycles = std::min<uint32_t>(arm9.cycles, arm7.cycles);
@@ -252,8 +253,24 @@ bool Interpreter::runArm7Behind(Core &core) {
         core.globalCycles = std::min<uint32_t>(arm9.cycles, arm7.cycles);
         if (core.events[0].cycles <= core.globalCycles) return false;
         if (core.globalCycles >= arm9.cycles) return true;
-        arm7.cycles = core.globalCycles + (arm7.runOpcode() << 1);
+        stepArm7(core);
     }
+}
+
+void Interpreter::stepArm7(Core &core) {
+    // Run the ARM7 from the global cycles, which the NDS run loops do while it's behind the ARM9
+    // Compiled code keeps going while the ARM7 stays behind and no task is due, which is what the loops would do
+    // one instruction at a time; it stops just before the ARM9's cycles, since the ARM9 goes first when they're equal
+    // With exact timing, the CPUs take turns every few instructions, which is too often for compiled code to help
+    Interpreter &arm7 = core.interpreter[1];
+    if (core.jit7.enabled && Settings::fastTiming) {
+        core.arm7Limit = core.interpreter[0].cycles - 1;
+        if (core.jit7.run(&core.arm7Limit)) return;
+    }
+
+    // Compiled code might have run while the ARM7 was alone, leaving the pipeline for the interpreter to fill
+    if (arm7.pipelineStale) arm7.refillPipeline();
+    arm7.cycles = core.globalCycles + (arm7.runOpcode() << 1);
 }
 
 bool Interpreter::runArm7UntilArm9(Core &core) {
@@ -263,12 +280,12 @@ bool Interpreter::runArm7UntilArm9(Core &core) {
     Interpreter &arm9 = core.interpreter[0];
     Interpreter &arm7 = core.interpreter[1];
     if (core.globalCycles >= arm7.cycles)
-        arm7.cycles = core.globalCycles + (arm7.runOpcode() << 1);
+        stepArm7(core);
     while (true) {
         core.globalCycles = std::min<uint32_t>(arm9.cycles, arm7.cycles);
         if (core.events[0].cycles <= core.globalCycles) return false;
         if (core.globalCycles >= arm9.cycles) return true;
-        arm7.cycles = core.globalCycles + (arm7.runOpcode() << 1);
+        stepArm7(core);
     }
 }
 

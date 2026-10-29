@@ -42,7 +42,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
         this), dma { Dma(this, 0), Dma(this, 1) }, gpu(this), gpu2D { Gpu2D(this, 0), Gpu2D(this, 1) }, gpu3D(this),
         gpu3DRenderer(this), hleArm7(this), hleBios { HleBios(this, 0, HleBios::swiTable9), HleBios(this, 1, HleBios::
         swiTable7), HleBios(this, 1, HleBios::swiTableGba) }, i2c(this), input(this), interpreter { Interpreter(
-        this, 0), Interpreter(this, 1) }, ipc(this), jit(this), memory(this), ndma { Ndma(this, 0), Ndma(this, 1) }, rtc(this),
+        this, 0), Interpreter(this, 1) }, ipc(this), jit(this, 0), jit7(this, 1), memory(this), ndma { Ndma(this, 0), Ndma(this, 1) }, rtc(this),
         saveStates(this), sdMmc(this), spi(this), spu(this), timers { Timers(this, 0), Timers(this, 1) }, wifi(this) {
     // Set DSi mode now and ignore changes to it later
     dsiMode = Settings::dsiMode;
@@ -312,8 +312,9 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
         hleArm7.init();
     }
 
-    // Run ARM9 code with the JIT if enabled
+    // Run code with the JIT if enabled, for the ARM7 only if it isn't high-level emulated
     jit.enable(Settings::jit);
+    jit7.enable(Settings::jit && !arm7Hle);
 
     // Let the core run
     running.store(true);
@@ -389,6 +390,7 @@ void Core::schedule(SchedTask task, uint32_t cycles) {
 void Core::enterGbaMode() {
     // Switch to GBA mode, where the JIT isn't used
     jit.enable(false);
+    jit7.enable(false);
     gbaMode = true;
     interpreter[0].halt(2);
     updateRun();
