@@ -125,11 +125,62 @@ uint32_t *Gpu3DRenderer::getLine1(int line) {
     HB_ADD_US(HB_3D_WAIT_US, hbWait);
     EP_ADD_EMU(EP_3D_WAIT, wait);
     HB_SET(HB_EMU_WAIT, 0);
+#ifdef GPU_DUMP
+    // Save the finished 3D layer of frames whose polygons were dumped, as the 2D engine gets it
+    if (!dumpLayerPath.empty()) {
+        static uint32_t layer[256 * 192];
+        memcpy(&layer[line * 256], &framebuffer[0][line * 256 * 2], 256 * sizeof(uint32_t));
+        if (line == 191) {
+            if (FILE *file = fopen(dumpLayerPath.c_str(), "wb")) {
+                for (int i = 0; i < 256 * 192; i++) {
+                    uint8_t b[4] = { uint8_t(layer[i] >> 24), uint8_t(layer[i] >> 16), uint8_t(layer[i] >> 8), uint8_t(layer[i]) };
+                    fwrite(b, 4, 1, file);
+                }
+                fclose(file);
+            }
+            dumpLayerPath.clear();
+        }
+    }
+#endif
     return &framebuffer[0][line * 256 * 2];
 }
 
 void Gpu3DRenderer::drawScanline(int line) {
     if (line == 0) {
+#ifdef GPU_DUMP
+        // Debug builds save a frame's polygons and vertices every 60 frames, cycling through 4 files for each
+        // renderer, as plain big-endian words: polygon count, then for each the first vertex, size, crossed flag and
+        // texture size and address, then for each vertex x, y, z, w, s, t, and color
+        static uint32_t dumpFrames = 0;
+        if (++dumpFrames % 60 == 0) {
+            bool hw = hardware && Settings::hardware3D && !Settings::highRes3D;
+            std::string path = Settings::basePath + (hw ? "/polydump_gpu" : "/polydump_sw") +
+                std::to_string((dumpFrames / 60) % 4) + ".bin";
+            dumpLayerPath = Settings::basePath + (hw ? "/layer_gpu" : "/layer_sw") +
+                std::to_string((dumpFrames / 60) % 4) + ".bin";
+            if (FILE *file = fopen(path.c_str(), "wb")) {
+                Gpu3D &g = core->gpu3D;
+                auto put = [&](uint32_t value) {
+                    uint8_t b[4] = { uint8_t(value >> 24), uint8_t(value >> 16), uint8_t(value >> 8), uint8_t(value) };
+                    fwrite(b, 4, 1, file);
+                };
+                put(g.polygonCountOut);
+                uint32_t vertexCount = 0;
+                for (int i = 0; i < g.polygonCountOut; i++) {
+                    _Polygon &p = g.polygonsOut[i];
+                    put(p.vertices); put(p.size); put(p.crossed); put(p.sizeS); put(p.sizeT); put(p.textureAddr);
+                    vertexCount = std::max<uint32_t>(vertexCount, p.vertices + p.size);
+                }
+                put(vertexCount);
+                for (uint32_t i = 0; i < vertexCount; i++) {
+                    Vertex &v = g.verticesOut[i];
+                    put(v.x); put(v.y); put(v.z); put(v.w); put(v.s); put(v.t); put(v.color);
+                }
+                fclose(file);
+            }
+        }
+#endif
+
         // Calculate the scanline bounds for each polygon
         for (int i = 0; i < core->gpu3D.polygonCountOut; i++) {
             polygonTop[i] = 192 * 2;

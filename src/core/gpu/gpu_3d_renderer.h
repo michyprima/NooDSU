@@ -22,6 +22,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -80,6 +81,7 @@ public:
     void hardwareFinish(int line) { finishScanline(line); }
 #ifdef GPU_DUMP
     void softwareFrame(uint32_t *out);
+    std::string dumpLayerPath; // Where to save the next finished 3D layer
 #endif
 
     void writeDisp3DCnt(uint16_t mask, uint16_t value);
