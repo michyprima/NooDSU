@@ -70,6 +70,7 @@ enum HeartbeatSlot {
     HB_3D_WIREFRAME, // Polygons with alpha 0, drawn as wireframe
     HB_GPU_TEXTURES, // Textures cached by the GPU 3D renderer
     HB_GPU_TEXTURE_KB, // Kilobytes of textures cached by the GPU 3D renderer
+    HB_EMU_HIRES_US, // Total microseconds the emulator spent copying high-res 3D frames for the UI
     HB_UI_NEW_FRAMES, // UI frames that got a new emulated frame
     HB_UI_GETFRAME_US, // Total microseconds the UI spent getting frames from the emulator
     HB_UI_TEXTURE_US, // Total microseconds the UI spent copying frames into screen textures

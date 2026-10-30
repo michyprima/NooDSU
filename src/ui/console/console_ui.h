@@ -73,7 +73,7 @@ class ConsoleUI {
 public:
     static Core *core;
     static bool running;
-    static uint32_t framebuffer[256 * 192 * 8];
+    alignas(4096) static uint32_t framebuffer[256 * 192 * 8];
     static ScreenLayout layout;
     static bool gbaMode;
 

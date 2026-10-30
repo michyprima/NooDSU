@@ -63,6 +63,16 @@ Gpu3DRenderer::~Gpu3DRenderer() {
         delete threads[i];
     }
     delete softwareBuffers;
+    core->gpu.freeHiRes3D(hardwareCopy);
+}
+
+uint32_t *Gpu3DRenderer::takeHardwareCopy() {
+    // Hand over the high-res frame the hardware renderer copied, if it did, so the frontend can use it as it is
+    if (!hardwareFrame || !hardwareCopied) return nullptr;
+    uint32_t *copy = hardwareCopy;
+    hardwareCopy = nullptr;
+    hardwareCopied = false;
+    return copy;
 }
 
 void Gpu3DRenderer::saveState(FILE *file) {
@@ -276,6 +286,11 @@ void Gpu3DRenderer::drawScanline(int line) {
             hardwareLines = 192 << resShift;
             for (int i = 0; i < hardwareLines; i++)
                 ready[i].store(0);
+
+            // Give it somewhere to copy high-res frames for the frontend, so they don't have to be copied here
+            hardwareCopied = false;
+            if (resShift && !hardwareCopy)
+                hardwareCopy = core->gpu.newHiRes3D();
             hardware->render(this);
             EP_ADD(EP_JOIN3D, join);
             return;

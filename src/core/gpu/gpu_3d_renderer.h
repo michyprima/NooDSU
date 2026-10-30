@@ -82,6 +82,9 @@ public:
     void decodeTexture(_Polygon *polygon, uint32_t *out);
     uint32_t *hardwareLine(int line) { return allocBuffers() ? &framebuffer[0][line * 256 * 2] : nullptr; }
     void setHardwareBuffer(uint32_t *buffer) { hardwareBuffer = buffer; }
+    uint32_t *getHardwareCopy() { return hardwareCopy; }
+    void hardwareCopyDone() { hardwareCopied = true; }
+    uint32_t *takeHardwareCopy();
     void hardwareDone(int line) { ready[line].store(3); }
 #ifdef GPU_DUMP
     void softwareFrame(uint32_t *out);
@@ -106,6 +109,8 @@ private:
     bool hardwareFrame = false; // Whether the current frame is being rendered by the hardware renderer
     int hardwareLines = 192; // How many scanlines the hardware frame has, which doubles in high-res
     uint32_t *hardwareBuffer = nullptr; // Where a hardware renderer leaves its frames instead, with lines 512 apart
+    uint32_t *hardwareCopy = nullptr; // Where a hardware renderer also copies high-res frames for the frontend
+    bool hardwareCopied = false; // Whether the current frame was copied there
 
     // Get where a finished scanline is, which can be in the hardware renderer's own buffer
     uint32_t *lineData(int line) {

@@ -231,6 +231,17 @@ void *ConsoleUI::createTexture(uint32_t *data, int width, int height) {
     texture->compMap = 0x03020100;
     GX2CalcSurfaceSizeAndAlignment(&texture->surface);
     GX2InitTextureRegs(texture);
+    // Point screen textures straight at the UI's framebuffer when the rows line up, so nothing has to be copied
+    uint32_t *end = ConsoleUI::framebuffer + sizeof(ConsoleUI::framebuffer) / sizeof(uint32_t);
+    if (data >= ConsoleUI::framebuffer && (uint8_t*)data + texture->surface.imageSize <= (uint8_t*)end &&
+            texture->surface.pitch == uint32_t(width) && !((uintptr_t)data & (texture->surface.alignment - 1))) {
+        texture->surface.image = data;
+        if (!uiHoldsGx2) gx2Mutex.lock();
+        GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, texture->surface.image, texture->surface.imageSize);
+        if (!uiHoldsGx2) gx2Mutex.unlock();
+        return texture;
+    }
+
     texture->surface.image = allocImage(texture->surface);
     if (!texture->surface.image) {
         // Skip drawing it if there's no memory left, rather than crashing
@@ -254,7 +265,9 @@ void *ConsoleUI::createTexture(uint32_t *data, int width, int height) {
 void ConsoleUI::destroyTexture(void *texture) {
     // Clean up a texture
     if (!texture) return;
-    freeImage(((GX2Texture*)texture)->surface);
+    uint32_t *image = (uint32_t*)((GX2Texture*)texture)->surface.image;
+    if (image < ConsoleUI::framebuffer || image >= ConsoleUI::framebuffer + sizeof(ConsoleUI::framebuffer) / sizeof(uint32_t))
+        freeImage(((GX2Texture*)texture)->surface);
     delete (GX2Texture*)texture;
 }
 
@@ -668,10 +681,10 @@ int logHeartbeat(int argc, const char **argv) {
             per(HB_UI_GETFRAME_US, uiFrames), per(HB_UI_TEXTURE_US, uiFrames), per(HB_UI_DRAW_US, uiFrames),
             per(HB_UI_END_US, uiFrames));
         fprintf(file, "   fps %.1f | gpu frames %u: build %u (textures %u) lock %u draw %u convert %u us | "
-            "emu waits gpu %u 2D %u | 2D waits 3D %u us\n", frames / seconds, gpuFrames, per(HB_GPU_BUILD_US, gpuFrames),
+            "emu waits gpu %u 2D %u | 2D waits 3D %u us | hi-res copy %u us\n", frames / seconds, gpuFrames, per(HB_GPU_BUILD_US, gpuFrames),
             per(HB_GPU_TEXTURE_US, gpuFrames) / 1000, per(HB_GPU_LOCK_US, gpuFrames), per(HB_GPU_DRAW_US, gpuFrames),
             per(HB_GPU_CONVERT_US, gpuFrames), per(HB_EMU_3D_WAIT_US, frames), per(HB_2D_JOIN_US, frames),
-            per(HB_3D_WAIT_US, frames));
+            per(HB_3D_WAIT_US, frames), per(HB_EMU_HIRES_US, frames));
         uint32_t textureUs = per(HB_GPU_TEXTURE_US, gpuFrames) / 1000, vertexUs = per(HB_GPU_VERTEX_US, gpuFrames) / 1000;
         uint32_t fanUs = per(HB_GPU_FAN_US, gpuFrames) / 1000;
         fprintf(file, "   gpu build parts per frame: before polygons %u, vertices %u, triangles %u, after polygons %u, "

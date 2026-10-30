@@ -53,7 +53,7 @@ static uint32_t *newFramebuffer(size_t count) {
             return buffer;
         }
     }
-    return (uint32_t*)memalign(32, count * sizeof(uint32_t));
+    return (uint32_t*)memalign(0x1000, count * sizeof(uint32_t)); // Aligned enough for the GPU to write too
 #else
     return new uint32_t[count];
 #endif
@@ -130,11 +130,30 @@ uint32_t Gpu::rgb5ToRgb8(uint32_t color) {
     return (0xFF << 24) | (b << 16) | (g << 8) | r;
 }
 
+// Each 6-bit channel value scaled to 8 bits, looked up since the scaling divides
+struct Rgb6Table {
+    uint8_t values[64];
+    constexpr Rgb6Table(): values() {
+        for (int i = 0; i < 64; i++)
+            values[i] = i * 255 / 63;
+    }
+};
+static constexpr Rgb6Table rgb6Table;
+
+uint32_t *Gpu::newHiRes3D() {
+    // Allocate a buffer for a high-res 3D frame
+    return newFramebuffer(256 * 192 * 4);
+}
+
+void Gpu::freeHiRes3D(uint32_t *buffer) {
+    freeFramebuffer(buffer);
+}
+
 uint32_t Gpu::rgb6ToRgb8(uint32_t color) {
     // Convert an RGB6 value to an RGB8 value
-    uint8_t r = ((color >> 0) & 0x3F) * 255 / 63;
-    uint8_t g = ((color >> 6) & 0x3F) * 255 / 63;
-    uint8_t b = ((color >> 12) & 0x3F) * 255 / 63;
+    uint8_t r = rgb6Table.values[(color >> 0) & 0x3F];
+    uint8_t g = rgb6Table.values[(color >> 6) & 0x3F];
+    uint8_t b = rgb6Table.values[(color >> 12) & 0x3F];
     return (0xFF << 24) | (b << 16) | (g << 8) | r;
 }
 
@@ -209,24 +228,27 @@ bool Gpu::getFrame(uint32_t *out, bool gbaCrop) {
         if (Settings::highRes3D || Settings::screenFilter == 1) {
             if (buffers.hiRes3D) {
                 // Draw the screens upscaled, replacing any 3D pixels with high-res output
+                // Both screens use the same high-res lines, since 3D can be on either of them
                 for (int y = 0; y < 192 * 2; y++) {
+                    const uint32_t *line = &buffers.framebuffer[y * 256];
+                    const uint32_t *hiRes = &buffers.hiRes3D[(y % 192) * 256 * 4];
+                    uint32_t *out0 = &out[y * 256 * 4], *out1 = out0 + 256 * 2;
                     for (int x = 0; x < 256; x++) {
-                        uint32_t value = buffers.framebuffer[y * 256 + x];
-                        int i = (y * 2) * (256 * 2) + (x * 2);
+                        uint32_t value = line[x];
                         if (value & BIT(26)) { // 3D
-                            uint32_t value2 = buffers.hiRes3D[(i + 0) % (256 * 192 * 4)];
-                            out[i + 0] = rgb6ToRgb8((value2 & 0xFC0000) ? value2 : value);
-                            value2 = buffers.hiRes3D[(i + 1) % (256 * 192 * 4)];
-                            out[i + 1] = rgb6ToRgb8((value2 & 0xFC0000) ? value2 : value);
-                            value2 = buffers.hiRes3D[(i + 512) % (256 * 192 * 4)];
-                            out[i + 512] = rgb6ToRgb8((value2 & 0xFC0000) ? value2 : value);
-                            value2 = buffers.hiRes3D[(i + 513) % (256 * 192 * 4)];
-                            out[i + 513] = rgb6ToRgb8((value2 & 0xFC0000) ? value2 : value);
+                            uint32_t value2 = hiRes[x * 2 + 0];
+                            out0[x * 2 + 0] = rgb6ToRgb8((value2 & 0xFC0000) ? value2 : value);
+                            value2 = hiRes[x * 2 + 1];
+                            out0[x * 2 + 1] = rgb6ToRgb8((value2 & 0xFC0000) ? value2 : value);
+                            value2 = hiRes[x * 2 + 512];
+                            out1[x * 2 + 0] = rgb6ToRgb8((value2 & 0xFC0000) ? value2 : value);
+                            value2 = hiRes[x * 2 + 513];
+                            out1[x * 2 + 1] = rgb6ToRgb8((value2 & 0xFC0000) ? value2 : value);
                         }
                         else {
                             uint32_t color = rgb6ToRgb8(value);
-                            out[i + 0] = out[i + 1] = color;
-                            out[i + 512] = out[i + 513] = color;
+                            out0[x * 2 + 0] = out0[x * 2 + 1] = color;
+                            out1[x * 2 + 0] = out1[x * 2 + 1] = color;
                         }
                     }
                 }
@@ -547,8 +569,13 @@ void Gpu::scanline355() {
 
             // Copy the upscaled 3D output to a new buffer if enabled
             if (Settings::highRes3D && (core->gpu2D[0].readDispCnt() & BIT(3))) {
-                buffers.hiRes3D = newFramebuffer(256 * 192 * 4);
-                memcpy(buffers.hiRes3D, core->gpu3DRenderer.getLine(0), 256 * 192 * 4 * sizeof(uint32_t));
+                // Use the copy a hardware renderer made if there is one, since reading its output is slow
+                HB_TIMER(hbHiRes);
+                if (!(buffers.hiRes3D = core->gpu3DRenderer.takeHardwareCopy())) {
+                    buffers.hiRes3D = newFramebuffer(256 * 192 * 4);
+                    memcpy(buffers.hiRes3D, core->gpu3DRenderer.getLine(0), 256 * 192 * 4 * sizeof(uint32_t));
+                }
+                HB_ADD_US(HB_EMU_HIRES_US, hbHiRes);
                 buffers.top3D = (powCnt1 & BIT(15));
             }
 

@@ -67,7 +67,7 @@ bool ConsoleUI::running;
 std::string ConsoleUI::ndsPath, ConsoleUI::gbaPath;
 std::string ConsoleUI::basePath, ConsoleUI::curPath;
 
-uint32_t ConsoleUI::framebuffer[256 * 192 * 8];
+alignas(4096) uint32_t ConsoleUI::framebuffer[256 * 192 * 8];
 ScreenLayout ConsoleUI::layout;
 bool ConsoleUI::gbaMode;
 bool ConsoleUI::changed;

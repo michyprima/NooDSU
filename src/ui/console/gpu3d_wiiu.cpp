@@ -769,6 +769,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     }
 
     bool packed = false; // Whether the finished frame has been packed as the 2D engine's 3D pixels yet
+    uint32_t *copy = nullptr; // Where the high-res frame was copied for the UI, if it was
     {
         // Draw the frame while holding GX2, setting this context's state up again after clearing
         HB_ADD_US(HB_GPU_POSTLOOP_US, hbPostLoop);
@@ -1048,6 +1049,19 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         // Write out the packed frame, then let the UI submit while the GPU finishes this frame
         HB_SET(HB_GPU_STAGE, 6);
         GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, packedBuffer.surface.image, packedBuffer.surface.imageSize);
+
+        // Copy high-res frames for the UI too, which is much faster on the GPU than reading them with the CPU
+        copy = renderer->getHardwareCopy();
+        if (copy && height == 384 && !((uintptr_t)copy & (packedBuffer.surface.alignment - 1))) {
+            GX2Surface surface = packedBuffer.surface;
+            surface.image = copy;
+            DCFlushRange(copy, surface.imageSize);
+            GX2CopySurface(&packedBuffer.surface, 0, 0, &surface, 0, 0);
+            GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, copy, surface.imageSize);
+        }
+        else {
+            copy = nullptr;
+        }
         GX2Flush();
         OSTime submitted = GX2GetLastSubmittedTimeStamp();
         guard.unlock();
@@ -1102,6 +1116,10 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     HB_SET(HB_GPU_STAGE, 5);
     HB_TIMER(hbConvert);
     DCInvalidateRange(packedBuffer.surface.image, packedBuffer.surface.imageSize);
+    if (copy) {
+        DCInvalidateRange(copy, packedBuffer.surface.imageSize);
+        renderer->hardwareCopyDone();
+    }
     bool direct = (packedBuffer.surface.pitch == 512);
     renderer->setHardwareBuffer(direct ? (uint32_t*)packedBuffer.surface.image : nullptr);
     for (int y = 0; y < height; y++) {
