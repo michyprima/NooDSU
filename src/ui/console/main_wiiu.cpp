@@ -65,6 +65,7 @@
 #define MAX_DRAWS 1024
 #define NO_INVALIDATE GX2RResourceFlags(GX2R_RESOURCE_DISABLE_CPU_INVALIDATE | GX2R_RESOURCE_DISABLE_GPU_INVALIDATE)
 extern const uint8_t shader_wiiu_gsh[];
+extern const uint8_t screen_wiiu_gsh[];
 
 ScreenLayout gpLayout;
 GX2Texture *gpTexture;
@@ -78,6 +79,7 @@ uint32_t extHeld[4];
 bool scanned;
 
 WHBGfxShaderGroup group;
+WHBGfxShaderGroup screenGroup; // Draws native screens with high-res 3D over them
 GX2RBuffer posBuffer, texBuffer, colBuffer;
 GX2Sampler samplers[2];
 
@@ -271,6 +273,62 @@ void ConsoleUI::destroyTexture(void *texture) {
     delete (GX2Texture*)texture;
 }
 
+static void drawQuad(GX2Texture *texture, GX2Texture *hiRes, bool filter) {
+    // Draw a texture with the regular shader, or with the screen shader to put high-res 3D over it
+    if (!hiRes) {
+        GX2SetPixelTexture(texture, group.pixelShader->samplerVars[0].location);
+        GX2SetPixelSampler(&samplers[filter], group.pixelShader->samplerVars[0].location);
+        GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, 4, 0, 1);
+        return;
+    }
+    GX2SetFetchShader(&screenGroup.fetchShader);
+    GX2SetVertexShader(screenGroup.vertexShader);
+    GX2SetPixelShader(screenGroup.pixelShader);
+    GX2SetPixelTexture(texture, screenGroup.pixelShader->samplerVars[0].location);
+    GX2SetPixelSampler(&samplers[filter], screenGroup.pixelShader->samplerVars[0].location);
+    GX2SetPixelTexture(hiRes, screenGroup.pixelShader->samplerVars[1].location);
+    GX2SetPixelSampler(&samplers[0], screenGroup.pixelShader->samplerVars[1].location);
+    GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, 4, 0, 1);
+    GX2SetFetchShader(&group.fetchShader);
+    GX2SetVertexShader(group.vertexShader);
+    GX2SetPixelShader(group.pixelShader);
+}
+
+void *ConsoleUI::createHiResTexture(uint32_t *data) {
+    // Wrap a high-res 3D frame from the core in a texture, using it in place; it has the 2D engine's packed 3D pixels,
+    // 512 pixels to a line, which the screen shader unpacks
+    if (!data) return blankHiRes;
+    GX2Texture *texture = new GX2Texture;
+    memset(texture, 0, sizeof(GX2Texture));
+    texture->surface.width = 512;
+    texture->surface.height = 384;
+    texture->surface.depth = 1;
+    texture->surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+    texture->surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+    texture->surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+    texture->viewNumSlices = 1;
+    texture->compMap = 0x00010203;
+    GX2CalcSurfaceSizeAndAlignment(&texture->surface);
+    GX2InitTextureRegs(texture);
+    if (texture->surface.pitch != 512 || ((uintptr_t)data & (texture->surface.alignment - 1))) {
+        delete texture;
+        return blankHiRes;
+    }
+    texture->surface.image = data;
+
+    // The GPU wrote the frame, but the CPU might have, so flush it and drop any of it the texture cache has
+    if (!uiHoldsGx2) gx2Mutex.lock();
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, texture->surface.image, texture->surface.imageSize);
+    if (!uiHoldsGx2) gx2Mutex.unlock();
+    return texture;
+}
+
+void ConsoleUI::destroyHiResTexture(void *texture) {
+    // Clean up a high-res 3D texture, leaving its frame to the caller
+    if (texture && texture != blankHiRes)
+        delete (GX2Texture*)texture;
+}
+
 void ConsoleUI::drawTexture(void *texture, float tx, float ty, float tw, float th,
     float x, float y, float w, float h, bool filter, int rotation, uint32_t color) {
     // Skip textures that couldn't be created
@@ -345,22 +403,21 @@ void ConsoleUI::drawTexture(void *texture, float tx, float ty, float tw, float t
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, &buffer[bufOffset * 2], colBuffer.elemSize * 4);
     GX2RUnlockBufferEx(&colBuffer, NO_INVALIDATE);
 
-    // Draw a texture on the TV
+    // Draw a texture on the TV, with high-res 3D over it if given
     WHBGfxBeginRenderTV();
     GX2RSetAttributeBuffer(&posBuffer, 0, posBuffer.elemSize, bufOffset * 2);
     GX2RSetAttributeBuffer(&texBuffer, 1, texBuffer.elemSize, bufOffset);
     GX2RSetAttributeBuffer(&colBuffer, 2, colBuffer.elemSize, bufOffset * 2);
-    GX2SetPixelTexture((GX2Texture*)texture, group.pixelShader->samplerVars[0].location);
-    GX2SetPixelSampler(&samplers[filter], group.pixelShader->samplerVars[0].location);
-    GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, 4, 0, 1);
+    drawQuad((GX2Texture*)texture, (GX2Texture*)drawHiRes, filter);
 
     // Override the gamepad screen texture with the other screen in single screen mode
-    GX2Texture *tempTexture = nullptr;
+    GX2Texture *tempTexture = nullptr, *tempHiRes = (GX2Texture*)drawHiRes;
     if (running && tw >= 240 && !(ConsoleUI::gbaMode && ScreenLayout::gbaCrop) && ScreenLayout::screenArrangement == 3) {
-        bool shift = (Settings::highRes3D || Settings::screenFilter == 1);
-        uint32_t *data = &ConsoleUI::framebuffer[(256 * 192 * (ScreenLayout::screenSizing < 2)) << (shift * 2)];
+        bool shift = screenShift, bottom = (ScreenLayout::screenSizing < 2);
+        uint32_t *data = &ConsoleUI::framebuffer[(256 * 192 * bottom) << (shift * 2)];
         if (gpTexture) destroyTexture(gpTexture);
         tempTexture = gpTexture = (GX2Texture*)createTexture(data, 256 << shift, 192 << shift);
+        if (drawHiRes) tempHiRes = (GX2Texture*)((bottom != hiResTop) ? hiResTexture : blankHiRes);
     }
 
     // Draw a texture on the gamepad
@@ -368,9 +425,7 @@ void ConsoleUI::drawTexture(void *texture, float tx, float ty, float tw, float t
     GX2RSetAttributeBuffer(&posBuffer, 0, posBuffer.elemSize, bufOffset * 2 + 8 * sizeof(float));
     GX2RSetAttributeBuffer(&texBuffer, 1, texBuffer.elemSize, bufOffset);
     GX2RSetAttributeBuffer(&colBuffer, 2, colBuffer.elemSize, bufOffset * 2);
-    GX2SetPixelTexture(tempTexture ? tempTexture : (GX2Texture*)texture, group.pixelShader->samplerVars[0].location);
-    GX2SetPixelSampler(&samplers[filter], group.pixelShader->samplerVars[0].location);
-    GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, 4, 0, 1);
+    drawQuad(tempTexture ? tempTexture : (GX2Texture*)texture, tempHiRes, filter);
 
     // Adjust the buffer offset if there's still room
     if (bufOffset < 8 * sizeof(float) * MAX_DRAWS)
@@ -507,6 +562,15 @@ int runUi(int argc, const char **argv) {
     WHBGfxInitShaderAttribute(&group, "tex_coords", 1, 0, GX2_ATTRIB_FORMAT_FLOAT_32_32);
     WHBGfxInitShaderAttribute(&group, "vtx_color", 2, 0, GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
     WHBGfxInitFetchShader(&group);
+    WHBGfxLoadGFDShaderGroup(&screenGroup, 0, screen_wiiu_gsh);
+    WHBGfxInitShaderAttribute(&screenGroup, "position", 0, 0, GX2_ATTRIB_FORMAT_FLOAT_32_32);
+    WHBGfxInitShaderAttribute(&screenGroup, "tex_coords", 1, 0, GX2_ATTRIB_FORMAT_FLOAT_32_32);
+    WHBGfxInitShaderAttribute(&screenGroup, "vtx_color", 2, 0, GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
+    WHBGfxInitFetchShader(&screenGroup);
+
+    // Make a blank high-res 3D texture for screens without one, so their native 3D shows
+    static uint32_t blank = 0;
+    ConsoleUI::blankHiRes = ConsoleUI::createTexture(&blank, 1, 1);
 
     // Initialize the position buffer
     posBuffer.flags = GX2R_RESOURCE_BIND_VERTEX_BUFFER | GX2R_RESOURCE_USAGE_CPU_READ |

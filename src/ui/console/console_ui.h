@@ -76,6 +76,14 @@ public:
     alignas(4096) static uint32_t framebuffer[256 * 192 * 8];
     static ScreenLayout layout;
     static bool gbaMode;
+    static bool screenShift; // Whether the screen textures are upscaled
+
+    // With high-res 3D, the GPU draws the 3D over native screens, so the CPU doesn't have to read the 3D output
+    static uint32_t *hiResData; // The high-res 3D frame taken from the core
+    static void *hiResTexture; // A texture of that frame, or a blank one when there isn't one
+    static void *blankHiRes; // A blank texture for screens without high-res 3D, which shows their native 3D
+    static bool hiResTop; // Whether the 3D is on the top screen
+    static void *drawHiRes; // What to draw over the next screen, or null to draw it normally
 
     static int showFpsCounter;
     static int menuTheme;
@@ -90,6 +98,8 @@ public:
     static void endFrame();
     static void *createTexture(uint32_t *data, int width, int height);
     static void destroyTexture(void *texture);
+    static void *createHiResTexture(uint32_t *data);
+    static void destroyHiResTexture(void *texture);
     static void drawTexture(void *texture, float tx, float ty, float tw, float th, float x, float y,
         float w, float h, bool filter = true, int rotation = 0, uint32_t color = 0xFFFFFFFF);
     static uint32_t getInputHeld();

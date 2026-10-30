@@ -70,6 +70,12 @@ std::string ConsoleUI::basePath, ConsoleUI::curPath;
 alignas(4096) uint32_t ConsoleUI::framebuffer[256 * 192 * 8];
 ScreenLayout ConsoleUI::layout;
 bool ConsoleUI::gbaMode;
+bool ConsoleUI::screenShift;
+uint32_t *ConsoleUI::hiResData;
+void *ConsoleUI::hiResTexture;
+void *ConsoleUI::blankHiRes;
+bool ConsoleUI::hiResTop;
+void *ConsoleUI::drawHiRes;
 bool ConsoleUI::changed;
 
 std::thread *ConsoleUI::coreThread;
@@ -251,10 +257,30 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         }
 
         // Update the framebuffer and start rendering
-        bool shift = (Settings::highRes3D || Settings::screenFilter == 1);
+        // With high-res 3D on Wii U, frames stay native and the GPU draws the high-res 3D over them
+#ifdef __WIIU__
+        bool compose = Settings::highRes3D && !Settings::screenGhost && !gbaMode;
+#else
+        bool compose = false;
+#endif
+        bool shift = (Settings::highRes3D || Settings::screenFilter == 1) && !compose;
+        screenShift = shift;
         HB_SET(HB_UI_STAGE, 1);
         HB_TIMER(hbGetFrame);
-        bool update = core->gpu.getFrame(framebuffer, gbaMode) || shift != texShift || gbaMode != texGba;
+        uint32_t *hiRes = nullptr;
+        bool top3D = false;
+        bool newFrame = core->gpu.getFrame(framebuffer, gbaMode, compose ? &hiRes : nullptr, &top3D);
+        bool update = newFrame || shift != texShift || gbaMode != texGba;
+#ifdef __WIIU__
+        // Replace the high-res 3D frame with a new one, or drop it when it's not used
+        if (newFrame || !compose) {
+            if (hiResTexture) destroyHiResTexture(hiResTexture);
+            Gpu::freeHiRes3D(hiResData);
+            hiResData = hiRes;
+            hiResTop = top3D;
+            hiResTexture = compose ? createHiResTexture(hiRes) : nullptr;
+        }
+#endif
         HB_ADD_US(HB_UI_GETFRAME_US, hbGetFrame);
         if (update) HB_INC(HB_UI_NEW_FRAMES);
         HB_TIMER(hbTexture);
@@ -295,15 +321,18 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         else { // DS mode
             // Draw the DS top screen
             if (showTop) {
+                drawHiRes = compose ? (hiResTop ? hiResTexture : blankHiRes) : nullptr;
                 drawTexture(topTexture, 0, 0, 256 << shift, 192 << shift, layout.topX, layout.topY,
                     layout.topWidth, layout.topHeight, Settings::screenFilter, ScreenLayout::screenRotation);
             }
 
             // Draw the DS bottom screen
             if (showBot) {
+                drawHiRes = compose ? (hiResTop ? blankHiRes : hiResTexture) : nullptr;
                 drawTexture(botTexture, 0, 0, 256 << shift, 192 << shift, layout.botX, layout.botY,
                     layout.botWidth, layout.botHeight, Settings::screenFilter, ScreenLayout::screenRotation);
             }
+            drawHiRes = nullptr;
         }
 
         // Draw the FPS counter if enabled
@@ -501,6 +530,12 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
     if (gbaTexture) destroyTexture(gbaTexture);
     if (topTexture) destroyTexture(topTexture);
     if (botTexture) destroyTexture(botTexture);
+#ifdef __WIIU__
+    if (hiResTexture) destroyHiResTexture(hiResTexture);
+    Gpu::freeHiRes3D(hiResData);
+    hiResTexture = nullptr;
+    hiResData = nullptr;
+#endif
 }
 
 int ConsoleUI::setPath(std::string path) {

@@ -146,6 +146,7 @@ uint32_t *Gpu::newHiRes3D() {
 }
 
 void Gpu::freeHiRes3D(uint32_t *buffer) {
+    // Free a high-res 3D frame taken from getFrame
     freeFramebuffer(buffer);
 }
 
@@ -165,7 +166,7 @@ uint16_t Gpu::rgb6ToRgb5(uint32_t color) {
     return BIT(15) | (b << 10) | (g << 5) | r;
 }
 
-bool Gpu::getFrame(uint32_t *out, bool gbaCrop) {
+bool Gpu::getFrame(uint32_t *out, bool gbaCrop, uint32_t **hiRes3D, bool *top3D) {
     // Check if a new frame is ready
     if (!ready.load())
         return false;
@@ -173,9 +174,12 @@ bool Gpu::getFrame(uint32_t *out, bool gbaCrop) {
     // Get the next queued buffers
     Buffers &buffers = framebuffers.front();
 
+    // When the caller takes high-res 3D frames to draw them itself, output native frames with 3D pixels marked
+    bool upscale = (Settings::highRes3D || Settings::screenFilter == 1) && !hiRes3D;
+
     if (gbaCrop) {
         // Output the frame in RGB8 format, cropped for GBA
-        if (Settings::highRes3D || Settings::screenFilter == 1) {
+        if (upscale) {
             // GBA doesn't have 3D, but draw the screen upscaled for consistency
             for (int y = 0; y < 160; y++) {
                 uint32_t *line = &out[y * 240 * 4];
@@ -199,7 +203,7 @@ bool Gpu::getFrame(uint32_t *out, bool gbaCrop) {
         // The DS draws the GBA screen by capturing it to alternating VRAM blocks and then displaying that
         // While not used officially, it's possible to copy images into VRAM before entering GBA mode to use as a border
         // Output the GBA frame, centered, with the current VRAM border around it
-        if (Settings::highRes3D || Settings::screenFilter == 1) {
+        if (upscale) {
             // GBA doesn't have 3D, but draw the screen upscaled for consistency
             for (int y = 0; y < 192; y++) {
                 uint32_t *line = &out[offset * 4 + y * 256 * 4];
@@ -225,7 +229,7 @@ bool Gpu::getFrame(uint32_t *out, bool gbaCrop) {
     }
     else {
         // Output the full frame in RGB8 format
-        if (Settings::highRes3D || Settings::screenFilter == 1) {
+        if (upscale) {
             if (buffers.hiRes3D) {
                 // Draw the screens upscaled, replacing any 3D pixels with high-res output
                 // Both screens use the same high-res lines, since 3D can be on either of them
@@ -263,6 +267,13 @@ bool Gpu::getFrame(uint32_t *out, bool gbaCrop) {
                 }
             }
         }
+        else if (hiRes3D) {
+            // Draw to a native resolution buffer, with alpha cleared where pixels show 3D
+            for (int i = 0; i < 256 * 192 * 2; i++) {
+                uint32_t value = buffers.framebuffer[i];
+                out[i] = rgb6ToRgb8(value) & ((value & BIT(26)) ? 0x00FFFFFF : 0xFFFFFFFF);
+            }
+        }
         else {
             // Draw to a native resolution buffer
             for (int i = 0; i < 256 * 192 * 2; i++)
@@ -270,15 +281,21 @@ bool Gpu::getFrame(uint32_t *out, bool gbaCrop) {
         }
     }
 
-    // Free the used buffers
+    // Free the used buffers, handing over the high-res 3D frame if the caller takes it
     freeFramebuffer(buffers.framebuffer);
-    freeFramebuffer(buffers.hiRes3D);
+    if (hiRes3D) {
+        *hiRes3D = buffers.hiRes3D;
+        if (top3D) *top3D = buffers.top3D;
+    }
+    else {
+        freeFramebuffer(buffers.hiRes3D);
+    }
 
     if (Settings::screenGhost) {
         // Get the size of the output framebuffer
         static uint32_t prev[256 * 192 * 8];
-        uint32_t width = (gbaCrop ? 240 : 256) << (Settings::highRes3D || Settings::screenFilter == 1);
-        uint32_t height = (gbaCrop ? 160 : (192 * 2)) << (Settings::highRes3D || Settings::screenFilter == 1);
+        uint32_t width = (gbaCrop ? 240 : 256) << upscale;
+        uint32_t height = (gbaCrop ? 160 : (192 * 2)) << upscale;
         uint32_t size = width * height;
 
         // Blend output with the previous frame if ghosting is enabled

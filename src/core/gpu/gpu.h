@@ -49,9 +49,9 @@ public:
     void saveState(FILE *file);
     void loadState(FILE *file);
 
-    bool getFrame(uint32_t *out, bool gbaCrop);
+    bool getFrame(uint32_t *out, bool gbaCrop, uint32_t **hiRes3D = nullptr, bool *top3D = nullptr);
     uint32_t *newHiRes3D();
-    void freeHiRes3D(uint32_t *buffer);
+    static void freeHiRes3D(uint32_t *buffer);
     void invalidate3D() { dirty3D |= BIT(0); }
 
     void gbaScanline240();
