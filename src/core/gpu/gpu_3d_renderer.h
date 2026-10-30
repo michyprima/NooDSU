@@ -69,6 +69,7 @@ public:
     // For hardware renderers, which get the frame's state and textures here and write scanlines back
     static Gpu3DHardware *hardware;
     Core *getCore() { return core; }
+    bool getResShift() { return resShift; }
     uint32_t getClearColor() { return clearColor; }
     uint16_t getClearDepth() { return clearDepth; }
     uint16_t getToon(int index) { return toonTable[index]; }
@@ -102,6 +103,7 @@ private:
 
     bool resShift = false;
     bool hardwareFrame = false; // Whether the current frame is being rendered by the hardware renderer
+    int hardwareLines = 192; // How many scanlines the hardware frame has, which doubles in high-res
     // Each layer is padded by 512 bytes, since the layers' sizes are a multiple of the cache's way size, which would
     // make the same pixel in all of them compete for the same cache set
     static const int LAYER_SIZE = 256 * 192 * 4 + 128;

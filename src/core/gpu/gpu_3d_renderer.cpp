@@ -35,7 +35,7 @@ Gpu3DHardware *Gpu3DRenderer::hardware = nullptr;
 void Gpu3DRenderer::finishHardwareFrame() {
     if (!hardwareFrame) return;
     SpinWait spin;
-    while (ready[191].load() < 3) spin.pause();
+    while (ready[hardwareLines - 1].load() < 3) spin.pause();
 }
 
 Gpu3DRenderer::~Gpu3DRenderer() {
@@ -161,7 +161,7 @@ void Gpu3DRenderer::drawScanline(int line) {
         // texture size and address, then for each vertex x, y, z, w, s, t, and color
         static uint32_t dumpFrames = 0;
         if (++dumpFrames % 60 == 0) {
-            bool hw = hardware && Settings::hardware3D && !Settings::highRes3D;
+            bool hw = hardware && Settings::hardware3D;
             std::string path = Settings::basePath + (hw ? "/polydump_gpu" : "/polydump_sw") +
                 std::to_string((dumpFrames / 60) % 4) + ".bin";
             dumpLayerPath = Settings::basePath + (hw ? "/layer_gpu" : "/layer_sw") +
@@ -250,15 +250,15 @@ void Gpu3DRenderer::drawScanline(int line) {
         threads.clear();
 
         // Render the frame on the host's GPU if enabled, which marks scanlines as done when they're ready
-        // It only renders at the native resolution so far
         // The last hardware frame has to finish first, since the 2D engine might not have waited for all of it
         HB_TIMER(hbWait);
         finishHardwareFrame();
         HB_ADD_US(HB_EMU_3D_WAIT_US, hbWait);
-        hardwareFrame = hardware && Settings::hardware3D && !resShift;
+        hardwareFrame = hardware && Settings::hardware3D;
         if (hardwareFrame) {
             activeThreads = 0;
-            for (int i = 0; i < 192; i++)
+            hardwareLines = 192 << resShift;
+            for (int i = 0; i < hardwareLines; i++)
                 ready[i].store(0);
             hardware->render(this);
             EP_ADD(EP_JOIN3D, join);

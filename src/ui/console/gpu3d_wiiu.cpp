@@ -171,8 +171,8 @@ bool Gpu3DWiiU::init() {
     // Create a linear color buffer the CPU can read, and a float depth buffer for precision with W-buffering
     memset(&colorBuffer, 0, sizeof(colorBuffer));
     colorBuffer.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
-    colorBuffer.surface.width = 256;
-    colorBuffer.surface.height = 192;
+    colorBuffer.surface.width = 512; // Big enough for high-res frames; native ones use the top-left quarter
+    colorBuffer.surface.height = 384;
     colorBuffer.surface.depth = 1;
     colorBuffer.surface.mipLevels = 1;
     colorBuffer.surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
@@ -279,8 +279,8 @@ bool Gpu3DWiiU::init() {
 
     memset(&depthBuffer, 0, sizeof(depthBuffer));
     depthBuffer.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
-    depthBuffer.surface.width = 256;
-    depthBuffer.surface.height = 192;
+    depthBuffer.surface.width = 512;
+    depthBuffer.surface.height = 384;
     depthBuffer.surface.depth = 1;
     depthBuffer.surface.mipLevels = 1;
     // The depth is 24-bit fixed point with 8-bit stencil, which matches the DS's Z-buffer precision
@@ -464,6 +464,11 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     HB_SET(HB_GPU_DISP3DCNT, disp3DCnt);
     HB_TIMER(hbBuild);
     frameCount++;
+
+    // High-res frames are drawn at twice the size, with vertices already at that scale, in the same buffers
+    int shift = renderer->getResShift();
+    int width = 256 << shift, height = 192 << shift;
+    float xScale = 1.0f / (128 << shift), yScale = 1.0f / (96 << shift);
     freeTextures();
     updated.clear();
     draws.clear();
@@ -569,8 +574,8 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                 Vertex &v = vertex(k);
                 float w = (v.w > 0) ? float(v.w) : 1.0f;
                 float depth = wBuffer ? (minW / w) : (float(v.z) / 0x1000000);
-                out.pos[0] = ((float(v.x) + 0.5f - EDGE_BIAS) / 128 - 1) * w;
-                out.pos[1] = (1 - (float(v.y) + 0.5f - EDGE_BIAS) / 96) * w;
+                out.pos[0] = ((float(v.x) + 0.5f - EDGE_BIAS) * xScale - 1) * w;
+                out.pos[1] = (1 - (float(v.y) + 0.5f - EDGE_BIAS) * yScale) * w;
                 out.pos[2] = depth * w;
                 out.pos[3] = w;
                 out.tex[0] = v.s / 16.0f - shiftS;
@@ -751,8 +756,9 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     for (int i = 0; i < 6; i++) {
         float u = corners[i][0], v = corners[i][1];
         GpuVertex &out = vertices[count + i];
-        out = { { u * 2 - 1, 1 - v * 2, 0, 1 }, { u, v }, { u + 1.0f / 256, v, u - 1.0f / 256, v },
-            { u, v + 1.0f / 192, u, v - 1.0f / 192 } };
+        float tu = u * width / 512, tv = v * height / 384;
+        out = { { u * 2 - 1, 1 - v * 2, 0, 1 }, { tu, tv }, { tu + 1.0f / 512, tv, tu - 1.0f / 512, tv },
+            { tu, tv + 1.0f / 384, tu, tv - 1.0f / 384 } };
     }
 
     GX2ColorBuffer *output = &colorBuffer; // Where the finished frame ends up
@@ -796,8 +802,8 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2SetColorBuffer(&target, GX2_RENDER_TARGET_0);
             GX2SetColorBuffer(&attribTarget, GX2_RENDER_TARGET_1);
             GX2SetDepthBuffer(&depthTarget);
-            GX2SetViewport(0, 0, 256, 192, 0, 1);
-            GX2SetScissor(0, 0, 256, 192);
+            GX2SetViewport(0, 0, width, height, 0, 1);
+            GX2SetScissor(0, 0, width, height);
             GX2SetRasterizerClipControlHalfZ(TRUE, FALSE, TRUE);
             GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
             GX2SetLineWidth(1.0f);
@@ -1066,10 +1072,10 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     HB_SET(HB_GPU_STAGE, 5);
     HB_TIMER(hbConvert);
     DCInvalidateRange(output->surface.image, output->surface.imageSize);
-    for (int y = 0; y < 192; y++) {
+    for (int y = 0; y < height; y++) {
         const uint32_t *src = (uint32_t*)output->surface.image + y * output->surface.pitch;
         uint32_t *dst = renderer->hardwareLine(y);
-        for (int x = 0; x < 256; x++) {
+        for (int x = 0; x < width; x++) {
             uint32_t p = src[x];
             dst[x] = BIT(26) | (((p >> 2) & 0x3F) << 18) | (((p >> 10) & 0x3F) << 12) | (((p >> 18) & 0x3F) << 6) | ((p >> 26) & 0x3F);
         }
