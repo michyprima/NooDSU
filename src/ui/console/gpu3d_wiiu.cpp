@@ -70,6 +70,9 @@ struct GpuVertex {
                      // values for the depth
 };
 
+// Vertices fill 2 whole cache blocks in the 64-byte aligned vertex buffer, so they can be claimed before being written
+static_assert(sizeof(GpuVertex) == 64, "GpuVertex must fill 2 cache blocks");
+
 // A run of triangles drawn with the same state
 struct GpuDraw {
     int shader; // 0 = vertex color, 1 = modulate, 2 = decal
@@ -455,6 +458,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                     minW = std::min(minW, float(verts[polygons[i].vertices + j].w));
     }
 
+    HB_ADD_US(HB_GPU_PRELOOP_US, hbBuild);
     uint32_t count = 0;
     bool inMasks = false;
 #ifdef GPU_DUMP
@@ -475,7 +479,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             bool textured = texturing && polygon->textureFmt != 0;
             HB_TIMER(hbTexture);
             draw.texture = textured ? getTexture(renderer, polygon) : nullptr;
-            HB_ADD_US(HB_GPU_TEXTURE_US, hbTexture);
+            HB_ADD_NS(HB_GPU_TEXTURE_US, hbTexture);
             draw.shader = !draw.texture ? 0 : (polygon->mode == 1 || polygon->mode == 3) ? 2 : 1;
             draw.sampler = (polygon->repeatS ? (polygon->flipS ? 2 : 1) : 0) + (polygon->repeatT ? (polygon->flipT ? 2 : 1) : 0) * 3;
             draw.translucent = translucent && blending;
@@ -565,9 +569,12 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             // They're interpolated with perspective like the other values, which is close enough within a pixel
             // Only solid polygons give coverage, and only when anti-aliasing like the DS, so others skip the work
             bool distances = dsAntiAlias && !translucent;
+            HB_TIMER(hbVertex);
             GpuVertex converted[10]; // Each polygon vertex is converted once, since the fan shares the first one
             for (int k = 0; k < polygon->size; k++)
                 convert(converted[k], k);
+            HB_ADD_NS(HB_GPU_VERTEX_US, hbVertex);
+            HB_TIMER(hbFan);
             for (int j = 1; j + 1 < polygon->size; j++) {
                 int tri[3] = { 0, j, j + 1 };
                 float dist[3][3] = {};
@@ -599,13 +606,18 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                     }
                 }
                 for (int c = 0; c < 3; c++) {
+                    // Claim the vertex's cache blocks first, so writing it doesn't read the old contents from memory
                     GpuVertex &out = vertices[count++];
+                    claimBlock(&out);
+                    claimBlock(&out.color);
                     out = converted[tri[c]];
                     out.tex[2] = dist[c][0];
                     out.tex[3] = dist[c][1];
                     out.attrib[1] = dist[c][2];
                 }
             }
+
+            HB_ADD_NS(HB_GPU_FAN_US, hbFan);
 
             // Merge the triangles into the last draw if the state is the same
             draw.count = count - draw.first;
@@ -619,6 +631,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                 draws.push_back(draw);
         }
     }
+    HB_TIMER(hbPostLoop);
 
     // Edge marking, fog and anti-aliasing like the DS are done on the GPU after the polygons, from the attributes of
     // solid pixels
@@ -701,6 +714,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     GX2ColorBuffer *output = &colorBuffer; // Where the finished frame ends up
     {
         // Draw the frame while holding GX2, setting this context's state up again after clearing
+        HB_ADD_US(HB_GPU_POSTLOOP_US, hbPostLoop);
         HB_ADD_US(HB_GPU_BUILD_US, hbBuild);
         HB_SET(HB_GPU_STAGE, 3);
         HB_TIMER(hbLock);

@@ -608,9 +608,15 @@ int logHeartbeat(int argc, const char **argv) {
         auto per = [&](int slot, uint32_t count) { return count ? (v[slot] - last[slot]) / count : 0; };
         fprintf(file, "   fps %.1f | gpu frames %u: build %u (textures %u) lock %u draw %u convert %u us | "
             "emu waits gpu %u 2D %u | 2D waits 3D %u us\n", frames * 4.0f, gpuFrames, per(HB_GPU_BUILD_US, gpuFrames),
-            per(HB_GPU_TEXTURE_US, gpuFrames), per(HB_GPU_LOCK_US, gpuFrames), per(HB_GPU_DRAW_US, gpuFrames),
+            per(HB_GPU_TEXTURE_US, gpuFrames) / 1000, per(HB_GPU_LOCK_US, gpuFrames), per(HB_GPU_DRAW_US, gpuFrames),
             per(HB_GPU_CONVERT_US, gpuFrames), per(HB_EMU_3D_WAIT_US, frames), per(HB_2D_JOIN_US, frames),
             per(HB_3D_WAIT_US, frames));
+        uint32_t textureUs = per(HB_GPU_TEXTURE_US, gpuFrames) / 1000, vertexUs = per(HB_GPU_VERTEX_US, gpuFrames) / 1000;
+        uint32_t fanUs = per(HB_GPU_FAN_US, gpuFrames) / 1000;
+        fprintf(file, "   gpu build parts per frame: before polygons %u, vertices %u, triangles %u, after polygons %u, "
+            "textures %u, rest %d us\n", per(HB_GPU_PRELOOP_US, gpuFrames), vertexUs, fanUs, per(HB_GPU_POSTLOOP_US, gpuFrames),
+            textureUs, int(per(HB_GPU_BUILD_US, gpuFrames)) - int(per(HB_GPU_PRELOOP_US, gpuFrames) + vertexUs + fanUs +
+            per(HB_GPU_POSTLOOP_US, gpuFrames) + textureUs));
         fprintf(file, "   2D lines drawn by the emulator per frame: A %u, B %u | cores: 2D %u, geometry %u | "
             "ROM misses %u, waited %u us\n", per(HB_2D_EMU_LINES_A, frames), per(HB_2D_EMU_LINES_B, frames),
             v[HB_2D_CORE], v[HB_GEOM_CORE], v[HB_ROM_MISSES] - last[HB_ROM_MISSES],

@@ -43,7 +43,11 @@ enum HeartbeatSlot {
     HB_GPU_LOCK_US, // Total microseconds the GPU 3D renderer waited for GX2
     HB_GPU_DRAW_US, // Total microseconds the GPU 3D renderer spent drawing, until the GPU was done
     HB_GPU_CONVERT_US, // Total microseconds the GPU 3D renderer spent converting scanlines
-    HB_GPU_TEXTURE_US, // Total microseconds the GPU 3D renderer spent checking and decoding textures, within building
+    HB_GPU_TEXTURE_US, // Total nanoseconds the GPU 3D renderer spent checking and decoding textures, within building
+    HB_GPU_PRELOOP_US, // Within building: setup before the polygons, like freeing textures and finding the smallest W
+    HB_GPU_VERTEX_US, // Within building, in nanoseconds: converting polygon vertices
+    HB_GPU_FAN_US, // Within building, in nanoseconds: writing the triangles, with edge distances for anti-aliasing
+    HB_GPU_POSTLOOP_US, // Within building: after the polygons, until GX2 is locked
     HB_3D_WAIT_US, // Total microseconds the 2D engine waited for 3D scanlines
     HB_EMU_3D_WAIT_US, // Total microseconds the emulator waited for the GPU 3D renderer to finish a frame
     HB_2D_JOIN_US, // Total microseconds the emulator waited for the 2D thread at the end of frames
@@ -82,10 +86,14 @@ namespace Heartbeat {
 #define HB_TIMER(name) auto name = std::chrono::steady_clock::now()
 #define HB_ADD_US(slot, name) (Heartbeat::values[slot] += \
     std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - name).count())
+// For short steps that are timed many times per frame, which would round down to nothing in microseconds
+#define HB_ADD_NS(slot, name) (Heartbeat::values[slot] += \
+    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - name).count())
 #else
 #define HB_SET(slot, value) do {} while (0)
 #define HB_INC(slot) do {} while (0)
 #define HB_SET_CORE(slot) do {} while (0)
 #define HB_TIMER(name) do {} while (0)
 #define HB_ADD_US(slot, name) do {} while (0)
+#define HB_ADD_NS(slot, name) do {} while (0)
 #endif
