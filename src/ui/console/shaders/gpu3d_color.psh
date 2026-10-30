@@ -10,9 +10,21 @@
 ; $CB_SHADER_CONTROL.RT0_ENABLE = true
 ; $CB_SHADER_CONTROL.RT1_ENABLE = true
 
-00 ALU: ADDR(32) CNT(2)
-    0  t: RECIP_IEEE R4.x, R2.z
-    1  y: MUL R2.y, R2.w, R4.x
+; R0.zw and R2.y have the distances to the polygon's outer edges from the pixel center; the nearest one gives how much
+; of the pixel the polygon covers, for anti-aliasing. How much isn't covered goes in the fraction of the ID and flags
+; attribute, which is whole otherwise, scaled to stay below 1.
+00 ALU: ADDR(32) CNT(12)
+    0  x: MIN R5.x, R0.z, R0.w
+    1  x: MIN R5.x, R5.x, R2.y
+    2  x: ADD R5.x, R5.x, 0.5f
+    3  x: MAX R5.x, R5.x, 0.0f
+    4  x: MIN R5.x, R5.x, 1.0f
+    5  x: ADD R5.x, -R5.x, 1.0f
+    6  t: RECIP_IEEE R4.x, R2.z
+    7  y: MUL R2.y, R2.w, R4.x
+    8  x: ADD R2.x, R2.x, 0.5f
+    9  x: FLOOR R2.x, R2.x
+   10  x: MULADD R2.x, R5.x, (0x3F7C0000, 0.984375f).x, R2.x
 01 EXP: PIX0, R1
 02 EXP_DONE: PIX1, R2
 END_OF_PROGRAM

@@ -907,6 +907,8 @@ void ConsoleUI::settingsMenu() {
     const std::vector<std::string> gap = { "None", "Quarter", "Half", "Full" };
     const std::vector<std::string> filter = { "Nearest", "Upscaled", "Linear" };
     const std::vector<std::string> aspect = { "Default", "16:10", "16:9", "18:9" };
+    const std::vector<std::string> antiAlias = { "DS-Style", "Multisample", "Off" };
+    if (Settings::gpuAntiAlias >= (int)antiAlias.size()) Settings::gpuAntiAlias = 0;
 
     int index = 0;
     while (true) {
@@ -953,7 +955,7 @@ void ConsoleUI::settingsMenu() {
         settings.push_back(MenuItem("Fast CPU Timing (Experimental)", toggle[Settings::fastTiming]));
         settings.push_back(MenuItem("GPU 3D Renderer (Experimental)", toggle[Settings::hardware3D]));
         settings.push_back(MenuItem("Fast 2D Threads (Experimental)", toggle[Settings::fast2D]));
-        settings.push_back(MenuItem("GPU 3D Multisampling (Experimental)", toggle[Settings::gpuAntiAlias]));
+        settings.push_back(MenuItem("GPU 3D Anti-Aliasing", antiAlias[Settings::gpuAntiAlias]));
 #endif
 
         // Create the settings menu
@@ -992,7 +994,7 @@ void ConsoleUI::settingsMenu() {
                 case 34: Settings::fastTiming = (Settings::fastTiming + 1) % 2; break;
                 case 35: Settings::hardware3D = (Settings::hardware3D + 1) % 2; break;
                 case 36: Settings::fast2D = (Settings::fast2D + 1) % 2; break;
-                case 37: Settings::gpuAntiAlias = (Settings::gpuAntiAlias + 1) % 2; break;
+                case 37: Settings::gpuAntiAlias = (Settings::gpuAntiAlias + 1) % antiAlias.size(); break;
 
             case 5:
                 // Update the palette when changing themes

@@ -20,8 +20,11 @@
 #ifdef __WIIU__
 
 #include <coreinit/cache.h>
+#include <coreinit/debug.h>
+#include <coreinit/internal.h>
 #include <coreinit/memdefaultheap.h>
 #include <coreinit/thread.h>
+#include <coreinit/time.h>
 #include <gx2/clear.h>
 #include <gx2/context.h>
 #include <gx2/draw.h>
@@ -34,12 +37,10 @@
 #include <gx2/surface.h>
 #include <gx2/texture.h>
 #include <whb/gfx.h>
-#ifdef GPU_DUMP
-#include <cstdio>
-#include "../../core/settings.h"
-#endif
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <thread>
 #include <unordered_map>
@@ -48,10 +49,11 @@
 #include "gpu3d_wiiu.h"
 #include "../../core/core.h"
 #include "../../core/heartbeat.h"
+#include "../../core/settings.h"
 #include "../../core/worker_thread.h"
 
 extern const uint8_t gpu3d_color_gsh[], gpu3d_modulate_gsh[], gpu3d_decal_gsh[], gpu3d_modtrans_gsh[], gpu3d_edge_gsh[],
-    gpu3d_fog_gsh[];
+    gpu3d_fog_gsh[], gpu3d_aa_gsh[];
 
 std::mutex gx2Mutex;
 
@@ -62,9 +64,10 @@ const GX2ChannelMask NO_CHANNELS = (GX2ChannelMask)0;
 
 struct GpuVertex {
     float pos[4];
-    float tex[2];
+    float tex[4]; // Texture coordinates, then the distances to 2 of the triangle's edges for anti-aliasing
     float color[4];
-    float attrib[4]; // Polygon ID times 4 plus flags (1 = solid pixel, 2 = fog), unused, and two values for the depth
+    float attrib[4]; // Polygon ID times 4 plus flags (1 = solid pixel, 2 = fog), the distance to the third edge, and two
+                     // values for the depth
 };
 
 // A run of triangles drawn with the same state
@@ -93,12 +96,14 @@ private:
     static const int MAX_VERTICES = 2048 * 8 * 3;
     static constexpr float EDGE_BIAS = 1.0f / 64; // How far short of half a pixel vertices are moved
 
-    WHBGfxShaderGroup groups[6];
+    WHBGfxShaderGroup groups[7];
     GX2Sampler samplers[9];
     GX2ContextState *state = nullptr;
     GX2ColorBuffer colorBuffer;
     GX2ColorBuffer attribBuffer; // Per-pixel attributes of solid polygons, for edge marking and fog
     GX2Texture attribTexture; // The attributes again, for the edge marking pass to read
+    GX2Texture colorTexture; // The colors again, for the anti-aliasing pass to read
+    GX2ColorBuffer aaBuffer; // The colors after anti-aliasing, which reads neighbors so can't draw over them in place
     GX2Texture edgeTexture; // The 8 edge colors, with how much they're blended in as alpha
     GX2Texture fogTexture; // The fog density for each depth / 0x200, from 0 to 128
     uint8_t fogSettings[35] = {}; // The fog table, offset and shift the densities were made from
@@ -137,11 +142,11 @@ private:
 bool Gpu3DWiiU::init() {
     // Load the shaders, which share one vertex shader and its layout
     const uint8_t *shaders[] = { gpu3d_color_gsh, gpu3d_modulate_gsh, gpu3d_decal_gsh, gpu3d_modtrans_gsh, gpu3d_edge_gsh,
-        gpu3d_fog_gsh };
-    for (int i = 0; i < 6; i++) {
+        gpu3d_fog_gsh, gpu3d_aa_gsh };
+    for (int i = 0; i < 7; i++) {
         if (!WHBGfxLoadGFDShaderGroup(&groups[i], 0, shaders[i])) return false;
         WHBGfxInitShaderAttribute(&groups[i], "position", 0, offsetof(GpuVertex, pos), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
-        WHBGfxInitShaderAttribute(&groups[i], "tex_coords", 0, offsetof(GpuVertex, tex), GX2_ATTRIB_FORMAT_FLOAT_32_32);
+        WHBGfxInitShaderAttribute(&groups[i], "tex_coords", 0, offsetof(GpuVertex, tex), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
         WHBGfxInitShaderAttribute(&groups[i], "vtx_color", 0, offsetof(GpuVertex, color), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
         WHBGfxInitShaderAttribute(&groups[i], "vtx_attr", 0, offsetof(GpuVertex, attrib), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
         if (!WHBGfxInitFetchShader(&groups[i])) return false;
@@ -166,7 +171,7 @@ bool Gpu3DWiiU::init() {
     colorBuffer.surface.mipLevels = 1;
     colorBuffer.surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
     colorBuffer.surface.aa = GX2_AA_MODE1X;
-    colorBuffer.surface.use = GX2_SURFACE_USE_COLOR_BUFFER;
+    colorBuffer.surface.use = (GX2SurfaceUse)(GX2_SURFACE_USE_COLOR_BUFFER | GX2_SURFACE_USE_TEXTURE);
     colorBuffer.surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
     colorBuffer.viewNumSlices = 1;
     GX2CalcSurfaceSizeAndAlignment(&colorBuffer.surface);
@@ -191,6 +196,22 @@ bool Gpu3DWiiU::init() {
     attribTexture.viewNumSlices = 1;
     attribTexture.compMap = 0x00010405;
     GX2InitTextureRegs(&attribTexture);
+
+    // Let the colors be read as a texture too, and create another color buffer like it for anti-aliasing to write
+    memset(&colorTexture, 0, sizeof(colorTexture));
+    colorTexture.surface = colorBuffer.surface;
+    colorTexture.surface.use = GX2_SURFACE_USE_TEXTURE;
+    colorTexture.viewNumSlices = 1;
+    colorTexture.compMap = 0x00010203;
+    GX2InitTextureRegs(&colorTexture);
+    memset(&aaBuffer, 0, sizeof(aaBuffer));
+    aaBuffer.surface = colorBuffer.surface;
+    aaBuffer.surface.use = GX2_SURFACE_USE_COLOR_BUFFER;
+    aaBuffer.surface.image = nullptr;
+    aaBuffer.viewNumSlices = 1;
+    GX2CalcSurfaceSizeAndAlignment(&aaBuffer.surface);
+    GX2InitColorBufferRegs(&aaBuffer);
+    aaBuffer.surface.image = MEMAllocFromDefaultHeapEx(aaBuffer.surface.imageSize, aaBuffer.surface.alignment);
 
     // Create the edge color texture
     memset(&edgeTexture, 0, sizeof(edgeTexture));
@@ -251,6 +272,7 @@ bool Gpu3DWiiU::init() {
     vertices = (GpuVertex*)MEMAllocFromDefaultHeapEx((MAX_VERTICES + 6) * sizeof(GpuVertex), GX2_VERTEX_BUFFER_ALIGNMENT);
     state = (GX2ContextState*)MEMAllocFromDefaultHeapEx(sizeof(GX2ContextState), GX2_CONTEXT_STATE_ALIGNMENT);
     if (!colorBuffer.surface.image || !attribBuffer.surface.image || !edgeTexture.surface.image || !fogTexture.surface.image ||
+            !aaBuffer.surface.image ||
             !depthBuffer.surface.image || !vertices || !state)
         return false;
     GX2SetupContextStateEx(state, TRUE);
@@ -533,10 +555,34 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             };
 
             // Add the polygon as a fan of triangles
+            // For anti-aliasing, each vertex also gets its distance to each of the triangle's edges that are edges of
+            // the polygon, measured across rows for mostly horizontal edges and across columns for others like the DS
+            // does, and from the pixel center; inner edges are far away, so the nearest one gives the coverage
+            // They're interpolated with perspective like the other values, which is close enough within a pixel
             for (int j = 1; j + 1 < polygon->size; j++) {
-                convert(vertices[count++], 0);
-                convert(vertices[count++], j);
-                convert(vertices[count++], j + 1);
+                int tri[3] = { 0, j, j + 1 };
+                bool outer[3] = { true, j + 2 == polygon->size, j == 1 }; // The edges opposite each vertex
+                float dist[3][3];
+                for (int e = 0; e < 3; e++) {
+                    Vertex &a = vertex(tri[(e + 1) % 3]), &b = vertex(tri[(e + 2) % 3]), &o = vertex(tri[e]);
+                    float dx = b.x - a.x, dy = b.y - a.y;
+                    auto across = [&](float x, float y) {
+                        return (fabsf(dx) > fabsf(dy)) ? (y - a.y - (x - a.x) * dy / dx) : (x - a.x - (y - a.y) * dx / dy);
+                    };
+                    float side = (dx || dy) ? across(o.x, o.y) : 0;
+                    for (int c = 0; c < 3; c++) {
+                        Vertex &v = vertex(tri[c]);
+                        dist[c][e] = (outer[e] && side) ? across(v.x + 0.5f - EDGE_BIAS, v.y + 0.5f - EDGE_BIAS) *
+                            (side > 0 ? 1 : -1) : 1000.0f;
+                    }
+                }
+                for (int c = 0; c < 3; c++) {
+                    GpuVertex &out = vertices[count++];
+                    convert(out, tri[c]);
+                    out.tex[2] = dist[c][0];
+                    out.tex[3] = dist[c][1];
+                    out.attrib[1] = dist[c][2];
+                }
             }
 
             // Merge the triangles into the last draw if the state is the same
@@ -553,16 +599,19 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     }
 
     // Edge marking and fog are done on the GPU after the polygons, from the attributes of solid pixels
+    // Anti-aliasing is done like the DS by default, from how much of each edge pixel its polygon covers, or optionally
+    // by multisampling
     bool gpuEdges = disp3DCnt & BIT(5);
     bool fog = disp3DCnt & BIT(7);
-    bool writeAttribs = gpuEdges || fog;
+    bool dsAntiAlias = (disp3DCnt & BIT(4)) && Settings::gpuAntiAlias == 0;
+    bool writeAttribs = gpuEdges || fog || dsAntiAlias;
 
     // Pixels are dropped if their alpha is 0, or with the alpha test, if their 5-bit alpha isn't greater than the
     // reference value; the GPU's alphas are 6-bit ones out of 63, so the cutoff is between the 6-bit values
     float alphaMin = (disp3DCnt & BIT(2)) ? (renderer->getAlphaTestRef() * 2 + 1.5f) / 63 : 0.0f;
 
     // Make the buffers for anti-aliasing by multisampling the first time it's enabled
-    if (Settings::gpuAntiAlias && !msaaState)
+    if (Settings::gpuAntiAlias == 1 && !msaaState)
         msaaState = initMultisampling() ? 1 : -1;
 
     // Get the clear values; the clear color is 5-bit with a 5-bit alpha
@@ -618,7 +667,8 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         }
     }
 
-    // Add a quad covering the screen, for edge marking, fog, and clearing shadow marks; it passes the coordinates of each
+    // Add a quad covering the screen, for edge marking, fog, anti-aliasing, and clearing shadow marks; it passes the
+    // coordinates of each
     // pixel and its left and right, then down and up neighbors in the attributes texture
     static const float corners[6][2] = { { 0, 0 }, { 1, 0 }, { 0, 1 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
     for (int i = 0; i < 6; i++) {
@@ -628,6 +678,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             { u, v + 1.0f / 192, u, v - 1.0f / 192 } };
     }
 
+    GX2ColorBuffer *output = &colorBuffer; // Where the finished frame ends up
     {
         // Draw the frame while holding GX2, setting this context's state up again after clearing
         HB_ADD_US(HB_GPU_BUILD_US, hbBuild);
@@ -649,7 +700,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         // With anti-aliasing, the polygons are first drawn multisampled and averaged down, and then again without
         // color for the attributes, since polygon IDs and depths can't be averaged; this isn't how the DS does it,
         // but it smooths the same edges, and more
-        bool msaa = (msaaState == 1) && Settings::gpuAntiAlias && (disp3DCnt & BIT(4));
+        bool msaa = (msaaState == 1) && Settings::gpuAntiAlias == 1 && (disp3DCnt & BIT(4));
         for (int pass = msaa ? 0 : 1; pass < 2; pass++) {
             if (pass == 1 && msaa && !writeAttribs) break;
             GX2ColorBuffer &target = pass ? colorBuffer : msaaColor;
@@ -843,13 +894,70 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 6, count, 1);
         }
 
-        // Write the color buffer out to memory, and wait for the GPU to finish without holding GX2, so the UI can
-        // submit its frame in the meantime
-        GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, colorBuffer.surface.image, colorBuffer.surface.imageSize);
+        if (dsAntiAlias && !msaa) {
+            // Blend partly covered pixels with the color behind them, after edge marking and fog like the DS, into
+            // another buffer since neighbors are read
+            GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE),
+                colorBuffer.surface.image, colorBuffer.surface.imageSize);
+            if (!gpuEdges && !fog)
+                GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE),
+                    attribBuffer.surface.image, attribBuffer.surface.imageSize);
+            output = &aaBuffer;
+            GX2SetColorBuffer(&aaBuffer, GX2_RENDER_TARGET_0);
+            WHBGfxShaderGroup &group = groups[6];
+            GX2SetFetchShader(&group.fetchShader);
+            GX2SetVertexShader(group.vertexShader);
+            GX2SetPixelShader(group.pixelShader);
+            GX2SetPixelTexture(&attribTexture, 0);
+            GX2SetPixelSampler(&samplers[0], 0);
+            GX2SetPixelTexture(&colorTexture, 1);
+            GX2SetPixelSampler(&samplers[0], 1);
+            float margin[] = { wBuffer ? (1.0f + 1.0f / 256) : 1.0f, wBuffer ? 0.0f : 0x200, 0, 0 };
+            GX2SetPixelUniformReg(0, 4, margin);
+            GX2SetDepthStencilControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS, FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS,
+                GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS,
+                GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+            GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
+            GX2SetColorControl(GX2_LOGIC_OP_COPY, 0x00, FALSE, TRUE);
+            GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
+                NO_CHANNELS, NO_CHANNELS);
+            GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 6, count, 1);
+        }
+
+        // Write out the color buffer, then let the UI submit while the GPU finishes this frame
+        HB_SET(HB_GPU_STAGE, 6);
+        GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, output->surface.image, output->surface.imageSize);
         GX2Flush();
         OSTime submitted = GX2GetLastSubmittedTimeStamp();
         guard.unlock();
-        GX2WaitTimeStamp(submitted);
+        // Wait for the GPU, but show an error screen if it stops responding, which would otherwise freeze silently
+        HB_SET(HB_GPU_STAGE, 7);
+        OSTime start = OSGetSystemTime();
+        while (GX2GetRetiredTimeStamp() < submitted) {
+            if (OSTicksToMilliseconds(OSGetSystemTime() - start) > 2000) {
+                HB_SET(HB_GPU_STAGE, 8);
+                // Display the timeout without depending on C runtime locks or working file access
+                char message[256];
+                __os_snprintf(message, sizeof(message), "The GPU stopped responding to the GPU 3D renderer\n"
+                    "Frame %u: %u draws, %u vertices, 3D display control %04X, anti-aliasing setting %d",
+                    frameCount, (uint32_t)draws.size(), count, disp3DCnt, Settings::gpuAntiAlias);
+#ifdef GPU_DUMP
+                if (FILE *file = fopen((Settings::basePath + "/gpuhang.txt").c_str(), "w")) {
+                    fprintf(file, "%s\nmultisample %d, edges %d, fog %d, DS anti-aliasing %d, attributes %d, alpha cutoff %f\n",
+                        message, msaa, gpuEdges, fog, dsAntiAlias, writeAttribs, alphaMin);
+                    for (GpuDraw &draw : draws)
+                        fprintf(file, "shader %d texture %ux%u sampler %d translucent %d depthEqual %d depthWrite %d solid %d "
+                            "stencil %02X shadow %d clearMask %d split %d first %u count %u\n", draw.shader,
+                            draw.texture ? draw.texture->surface.width : 0, draw.texture ? draw.texture->surface.height : 0,
+                            draw.sampler, draw.translucent, draw.depthEqual, draw.depthWrite, draw.solid, draw.stencil,
+                            draw.shadow, draw.clearMask, draw.split, draw.first, draw.count);
+                    fclose(file);
+                }
+#endif
+                OSFatal(message);
+            }
+            OSSleepTicks(OSMicrosecondsToTicks(100));
+        }
         HB_ADD_US(HB_GPU_DRAW_US, hbDraw);
     }
 
@@ -865,9 +973,9 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     // Convert each scanline to the renderer's format, with 6-bit channels and the 3D pixel bit, and mark it done
     HB_SET(HB_GPU_STAGE, 5);
     HB_TIMER(hbConvert);
-    DCInvalidateRange(colorBuffer.surface.image, colorBuffer.surface.imageSize);
+    DCInvalidateRange(output->surface.image, output->surface.imageSize);
     for (int y = 0; y < 192; y++) {
-        const uint32_t *src = (uint32_t*)colorBuffer.surface.image + y * colorBuffer.surface.pitch;
+        const uint32_t *src = (uint32_t*)output->surface.image + y * output->surface.pitch;
         uint32_t *dst = renderer->hardwareLine(y);
         for (int x = 0; x < 256; x++) {
             uint32_t p = src[x];

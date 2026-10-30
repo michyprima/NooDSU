@@ -1,0 +1,81 @@
+; $MODE = "UniformRegister"
+; $SAMPLER_VARS[0].name = "attribs"
+; $SAMPLER_VARS[0].type = "sampler2D"
+; $SAMPLER_VARS[0].location = 0
+; $SAMPLER_VARS[1].name = "colors"
+; $SAMPLER_VARS[1].type = "sampler2D"
+; $SAMPLER_VARS[1].location = 1
+; $UNIFORM_VARS[0].name = "depthMargin"
+; $UNIFORM_VARS[0].type = "float4"
+; $UNIFORM_VARS[0].count = 1
+; $UNIFORM_VARS[0].offset = 0
+; $UNIFORM_VARS[0].block = -1
+; $NUM_SPI_PS_INPUT_CNTL = 3
+; $SPI_PS_INPUT_CNTL[0].SEMANTIC = 0
+; $SPI_PS_INPUT_CNTL[0].DEFAULT_VAL = 1
+; $SPI_PS_INPUT_CNTL[1].SEMANTIC = 1
+; $SPI_PS_INPUT_CNTL[1].DEFAULT_VAL = 1
+; $SPI_PS_INPUT_CNTL[2].SEMANTIC = 2
+; $SPI_PS_INPUT_CNTL[2].DEFAULT_VAL = 1
+
+; Anti-aliasing: R0 has this pixel's coordinates, and R1 and R2 have those of the neighbors right and left, then down
+; and up. The attributes texture has the depth, and how much of the pixel its solid polygon doesn't cover in the
+; fraction of the ID and flags. A partly covered
+; pixel is blended with the color behind it, which is taken from the farthest neighbor, if that's further than its
+; own depth times C0.x plus C0.y, like edge marking; if that color is transparent, only the alpha is set to the
+; coverage, like on the DS. Other pixels keep their color, since this writes every pixel to a new buffer. Each
+; instruction group has a single instruction, since groups can't read the same channel of different registers at
+; once, which the assembler doesn't check.
+00 TEX: ADDR(80) CNT(10) VALID_PIX
+    0  SAMPLE R3, R0.xy00, t0, s0
+    1  SAMPLE R4, R1.xy00, t0, s0
+    2  SAMPLE R5, R1.zw00, t0, s0
+    3  SAMPLE R6, R2.xy00, t0, s0
+    4  SAMPLE R7, R2.zw00, t0, s0
+    5  SAMPLE R8, R1.xy00, t1, s1
+    6  SAMPLE R9, R1.zw00, t1, s1
+    7  SAMPLE R10, R2.xy00, t1, s1
+    8  SAMPLE R11, R2.zw00, t1, s1
+    9  SAMPLE R12, R0.xy00, t1, s1
+01 ALU: ADDR(32) CNT(40)
+   10  x: FRACT R18.x, R3.x
+   11  x: MULADD R18.x, R18.x, (0xBF820821, -1.015873f).x, 1.0f
+   12  y: ADD R14.y, R5.y, -R4.y
+   13  x: CNDGT R13.x, R14.y, R9.x, R8.x
+   14  y: CNDGT R13.y, R14.y, R9.y, R8.y
+   15  z: CNDGT R13.z, R14.y, R9.z, R8.z
+   16  w: CNDGT R13.w, R14.y, R9.w, R8.w
+   17  x: MAX R14.x, R4.y, R5.y
+   18  y: ADD R14.y, R7.y, -R6.y
+   19  x: CNDGT R15.x, R14.y, R11.x, R10.x
+   20  y: CNDGT R15.y, R14.y, R11.y, R10.y
+   21  z: CNDGT R15.z, R14.y, R11.z, R10.z
+   22  w: CNDGT R15.w, R14.y, R11.w, R10.w
+   23  z: MAX R14.z, R6.y, R7.y
+   24  y: ADD R14.y, R14.z, -R14.x
+   25  x: CNDGT R13.x, R14.y, R15.x, R13.x
+   26  y: CNDGT R13.y, R14.y, R15.y, R13.y
+   27  z: CNDGT R13.z, R14.y, R15.z, R13.z
+   28  w: CNDGT R13.w, R14.y, R15.w, R13.w
+   29  x: MAX R14.x, R14.x, R14.z
+   30  w: MULADD R14.w, R3.y, C0.x, C0.y
+   31  x: SETGT R17.x, R14.x, R14.w
+   32  y: SETGT R17.y, 1.0f, R18.x
+   33  x: MUL R17.x, R17.x, R17.y
+   34  x: ADD R16.x, R12.x, -R13.x
+   35  y: ADD R16.y, R12.y, -R13.y
+   36  z: ADD R16.z, R12.z, -R13.z
+   37  x: MULADD R16.x, R16.x, R18.x, R13.x
+   38  y: MULADD R16.y, R16.y, R18.x, R13.y
+   39  z: MULADD R16.z, R16.z, R18.x, R13.z
+   40  w: MAX R16.w, R12.w, R13.w
+   41  x: CNDE R16.x, R13.w, R12.x, R16.x
+   42  y: CNDE R16.y, R13.w, R12.y, R16.y
+   43  z: CNDE R16.z, R13.w, R12.z, R16.z
+   44  w: CNDE R16.w, R13.w, R18.x, R16.w
+   45  x: CNDE R16.x, R17.x, R12.x, R16.x
+   46  y: CNDE R16.y, R17.x, R12.y, R16.y
+   47  z: CNDE R16.z, R17.x, R12.z, R16.z
+   48  w: CNDE R16.w, R17.x, R12.w, R16.w
+02 EXP_DONE: PIX0, R16
+END_OF_PROGRAM
