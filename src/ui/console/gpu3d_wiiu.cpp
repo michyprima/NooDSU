@@ -53,7 +53,7 @@
 #include "../../core/worker_thread.h"
 
 extern const uint8_t gpu3d_color_gsh[], gpu3d_modulate_gsh[], gpu3d_decal_gsh[], gpu3d_modtrans_gsh[], gpu3d_edge_gsh[],
-    gpu3d_fog_gsh[], gpu3d_aa_gsh[];
+    gpu3d_fog_gsh[], gpu3d_aa_gsh[], gpu3d_toon_gsh[];
 
 std::mutex gx2Mutex;
 
@@ -75,7 +75,7 @@ static_assert(sizeof(GpuVertex) == 64, "GpuVertex must fill 2 cache blocks");
 
 // A run of triangles drawn with the same state
 struct GpuDraw {
-    int shader; // 0 = vertex color, 1 = modulate, 2 = decal
+    int shader; // 0 = vertex color, 1 = modulate, 2 = decal, 7 = toon or highlight
     GX2Texture *texture; // Null for untextured polygons
     int sampler;
     bool translucent;
@@ -86,6 +86,7 @@ struct GpuDraw {
     uint8_t shadow; // 0 for normal polygons, 1 for shadow masks, 2 for shadows
     bool clearMask; // Whether this starts a group of shadow masks, which clears the shadow bits first
     bool split; // Whether pixels can be opaque or translucent, so they're drawn separately to follow different rules
+    bool lines; // Whether this draws the edges of wireframe polygons as lines, instead of triangles
     uint32_t first, count;
 };
 
@@ -99,7 +100,7 @@ private:
     static const int MAX_VERTICES = 2048 * 8 * 3;
     static constexpr float EDGE_BIAS = 1.0f / 64; // How far short of half a pixel vertices are moved
 
-    WHBGfxShaderGroup groups[7];
+    WHBGfxShaderGroup groups[8];
     GX2Sampler samplers[9];
     GX2ContextState *state = nullptr;
     GX2ColorBuffer colorBuffer;
@@ -108,6 +109,8 @@ private:
     GX2Texture colorTexture; // The colors again, for the anti-aliasing pass to read
     GX2ColorBuffer aaBuffer; // The colors after anti-aliasing, which reads neighbors so can't draw over them in place
     GX2Texture edgeTexture; // The 8 edge colors, with how much they're blended in as alpha
+    GX2Texture toonTexture; // The 32 toon colors, for toon and highlight shading
+    GX2Texture whiteTexture; // A white texel, for toon and highlight polygons without a texture
     GX2Texture fogTexture; // The fog density for each depth / 0x200, from 0 to 128
     uint8_t fogSettings[35] = {}; // The fog table, offset and shift the densities were made from
     GX2DepthBuffer depthBuffer;
@@ -145,8 +148,8 @@ private:
 bool Gpu3DWiiU::init() {
     // Load the shaders, which share one vertex shader and its layout
     const uint8_t *shaders[] = { gpu3d_color_gsh, gpu3d_modulate_gsh, gpu3d_decal_gsh, gpu3d_modtrans_gsh, gpu3d_edge_gsh,
-        gpu3d_fog_gsh, gpu3d_aa_gsh };
-    for (int i = 0; i < 7; i++) {
+        gpu3d_fog_gsh, gpu3d_aa_gsh, gpu3d_toon_gsh };
+    for (int i = 0; i < 8; i++) {
         if (!WHBGfxLoadGFDShaderGroup(&groups[i], 0, shaders[i])) return false;
         WHBGfxInitShaderAttribute(&groups[i], "position", 0, offsetof(GpuVertex, pos), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
         WHBGfxInitShaderAttribute(&groups[i], "tex_coords", 0, offsetof(GpuVertex, tex), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
@@ -155,7 +158,7 @@ bool Gpu3DWiiU::init() {
         if (!WHBGfxInitFetchShader(&groups[i])) return false;
 
         // The assembler can only enable the red channel of a second output, so enable all of them here
-        if (i < 4) groups[i].pixelShader->regs.cb_shader_mask = 0xFF;
+        if (i < 4 || i == 7) groups[i].pixelShader->regs.cb_shader_mask = 0xFF;
     }
 
     // Set up nearest-neighbor samplers for each combination of clamping, repeating and flipping
@@ -215,6 +218,29 @@ bool Gpu3DWiiU::init() {
     GX2CalcSurfaceSizeAndAlignment(&aaBuffer.surface);
     GX2InitColorBufferRegs(&aaBuffer);
     aaBuffer.surface.image = MEMAllocFromDefaultHeapEx(aaBuffer.surface.imageSize, aaBuffer.surface.alignment);
+
+    // Create the toon color texture and a white one, which are small textures like the edge colors
+    auto smallTexture = [](GX2Texture &texture, uint32_t width) {
+        memset(&texture, 0, sizeof(texture));
+        texture.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+        texture.surface.width = width;
+        texture.surface.height = 1;
+        texture.surface.depth = 1;
+        texture.surface.mipLevels = 1;
+        texture.surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+        texture.surface.aa = GX2_AA_MODE1X;
+        texture.surface.use = GX2_SURFACE_USE_TEXTURE;
+        texture.surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+        texture.viewNumSlices = 1;
+        texture.compMap = 0x00010203;
+        GX2CalcSurfaceSizeAndAlignment(&texture.surface);
+        GX2InitTextureRegs(&texture);
+        texture.surface.image = MEMAllocFromDefaultHeapEx(texture.surface.imageSize, texture.surface.alignment);
+        return texture.surface.image != nullptr;
+    };
+    if (!smallTexture(toonTexture, 32) || !smallTexture(whiteTexture, 1)) return false;
+    *(uint32_t*)whiteTexture.surface.image = 0xFFFFFFFF;
+    DCFlushRange(whiteTexture.surface.image, whiteTexture.surface.imageSize);
 
     // Create the edge color texture
     memset(&edgeTexture, 0, sizeof(edgeTexture));
@@ -467,20 +493,26 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     for (int pass = 0; pass < 2; pass++) {
         for (int i = 0; i < polygonCount; i++) {
             _Polygon *polygon = &polygons[i];
-            bool translucent = (polygon->alpha < 0x3F || polygon->textureFmt == 1 || polygon->textureFmt == 6);
+            // Wireframe polygons have alpha 0, and their edges are drawn solid
+            bool wireframe = (polygon->alpha == 0);
+            bool translucent = ((polygon->alpha < 0x3F && !wireframe) || polygon->textureFmt == 1 ||
+                polygon->textureFmt == 6);
             if (translucent != (pass == 1)) continue;
+            if (polygon->size < 3) continue;
+            if (count + (wireframe ? (polygon->size * 2) : ((polygon->size - 2) * 3)) > MAX_VERTICES) break;
 
-            // Skip what isn't supported yet: wireframe polygons
-            if (polygon->size < 3 || polygon->alpha == 0) continue;
-            if (count + (polygon->size - 2) * 3 > MAX_VERTICES) break;
-
-            // Pick the shader and texture; toon and highlight polygons are drawn like modulated ones for now
+            // Pick the shader and texture; toon and highlight polygons use a white texel if they aren't textured
             GpuDraw draw = {};
             bool textured = texturing && polygon->textureFmt != 0;
             HB_TIMER(hbTexture);
             draw.texture = textured ? getTexture(renderer, polygon) : nullptr;
             HB_ADD_NS(HB_GPU_TEXTURE_US, hbTexture);
+            draw.lines = wireframe;
             draw.shader = !draw.texture ? 0 : (polygon->mode == 1 || polygon->mode == 3) ? 2 : 1;
+            if (polygon->mode == 2) {
+                draw.shader = 7;
+                if (!draw.texture) draw.texture = &whiteTexture;
+            }
             draw.sampler = (polygon->repeatS ? (polygon->flipS ? 2 : 1) : 0) + (polygon->repeatT ? (polygon->flipT ? 2 : 1) : 0) * 3;
             draw.translucent = translucent && blending;
             draw.depthEqual = polygon->depthTestEqual;
@@ -531,8 +563,8 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             }
 
             // Convert a polygon vertex for the shaders, with texture coordinates in texels
-            float alpha = polygon->alpha / 63.0f;
-            bool toon = (polygon->mode == 2 && !(disp3DCnt & BIT(1)));
+            // Wireframe edges are opaque; toon and highlight colors come from the shader, by the red level
+            float alpha = wireframe ? 1.0f : (polygon->alpha / 63.0f);
             auto convert = [&](GpuVertex &out, int k) {
                 Vertex &v = vertex(k);
                 float w = (v.w > 0) ? float(v.w) : 1.0f;
@@ -543,18 +575,9 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                 out.pos[3] = w;
                 out.tex[0] = v.s / 16.0f - shiftS;
                 out.tex[1] = v.t / 16.0f - shiftT;
-                if (toon) {
-                    // Toon shading replaces the color with an entry from the toon table, picked by the red level
-                    uint16_t entry = renderer->getToon(((v.color >> 0) & 0x3F) / 2);
-                    out.color[0] = ((entry >> 0) & 0x1F) / 31.0f;
-                    out.color[1] = ((entry >> 5) & 0x1F) / 31.0f;
-                    out.color[2] = ((entry >> 10) & 0x1F) / 31.0f;
-                }
-                else {
-                    out.color[0] = ((v.color >> 0) & 0x3F) / 63.0f;
-                    out.color[1] = ((v.color >> 6) & 0x3F) / 63.0f;
-                    out.color[2] = ((v.color >> 12) & 0x3F) / 63.0f;
-                }
+                out.color[0] = ((v.color >> 0) & 0x3F) / 63.0f;
+                out.color[1] = ((v.color >> 6) & 0x3F) / 63.0f;
+                out.color[2] = ((v.color >> 12) & 0x3F) / 63.0f;
                 out.color[3] = alpha;
                 out.attrib[0] = polygon->id * 4 + 1 + (polygon->fog ? 2 : 0);
                 out.attrib[1] = 0.0f;
@@ -575,7 +598,16 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                 convert(converted[k], k);
             HB_ADD_NS(HB_GPU_VERTEX_US, hbVertex);
             HB_TIMER(hbFan);
-            for (int j = 1; j + 1 < polygon->size; j++) {
+
+            // Wireframe polygons are drawn as lines along their edges instead, which aren't anti-aliased
+            for (int k = 0; wireframe && k < polygon->size; k++) {
+                for (int c = 0; c < 2; c++) {
+                    GpuVertex &out = vertices[count++];
+                    out = converted[(k + c) % polygon->size];
+                    out.tex[2] = out.tex[3] = out.attrib[1] = 1000.0f;
+                }
+            }
+            for (int j = 1; !wireframe && j + 1 < polygon->size; j++) {
                 int tri[3] = { 0, j, j + 1 };
                 float dist[3][3] = {};
                 if (distances) {
@@ -625,7 +657,8 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             if (last && last->shader == draw.shader && last->texture == draw.texture && last->sampler == draw.sampler &&
                     last->translucent == draw.translucent && last->depthEqual == draw.depthEqual &&
                     last->depthWrite == draw.depthWrite && last->stencil == draw.stencil && last->split == draw.split &&
-                    last->shadow == draw.shadow && !draw.clearMask && last->first + last->count == draw.first)
+                    last->shadow == draw.shadow && !draw.clearMask && last->lines == draw.lines &&
+                    last->first + last->count == draw.first)
                 last->count += draw.count;
             else
                 draws.push_back(draw);
@@ -655,6 +688,17 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     float depthClear = wBuffer ? 0.0f : (clearDepth == 0x7FFF) ? 1.0f : float(clearDepth << 9) / 0x1000000;
     uint32_t clearAttrib = ((clear & BIT(15)) >> 2) | ((clear & 0x3F000000) >> 18) | ((clear & 0x3F000000) >> 24) | (0x3F << 15);
     int32_t clearDepthValue = (clearDepth == 0x7FFF) ? 0xFFFFFF : (clearDepth << 9);
+
+    // Set the toon colors, which toon and highlight shading look up by red level
+    {
+        uint32_t *texels = (uint32_t*)toonTexture.surface.image;
+        for (int i = 0; i < 32; i++) {
+            uint16_t color = renderer->getToon(i);
+            texels[i] = ((((color >> 0) & 0x1F) * 255 / 31) << 24) | ((((color >> 5) & 0x1F) * 255 / 31) << 16) |
+                ((((color >> 10) & 0x1F) * 255 / 31) << 8) | 0xFF;
+        }
+    }
+    float toonMode[] = { (disp3DCnt & BIT(1)) ? 1.0f : 0.0f, (disp3DCnt & BIT(1)) ? 0.0f : 1.0f, 0, 0 };
 
     if (gpuEdges) {
         // Set the edge colors, blended in halfway with anti-aliasing, which softens marked edges
@@ -729,6 +773,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, vertices, (count + 6) * sizeof(GpuVertex));
         if (gpuEdges)
             GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, edgeTexture.surface.image, edgeTexture.surface.imageSize);
+        GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, toonTexture.surface.image, toonTexture.surface.imageSize);
         if (fogUpdated)
             GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, fogTexture.surface.image, fogTexture.surface.imageSize);
         // With anti-aliasing, the polygons are first drawn multisampled and averaged down, and then again without
@@ -755,6 +800,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2SetScissor(0, 0, 256, 192);
             GX2SetRasterizerClipControlHalfZ(TRUE, FALSE, TRUE);
             GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
+            GX2SetLineWidth(1.0f);
             GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
             GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
                 GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ONE, GX2_BLEND_COMBINE_MODE_MAX);
@@ -772,6 +818,13 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                     GX2SetPixelSampler(&samplers[draw.sampler], 0);
                     GX2SetPixelUniformReg(0, 4, texelSize);
                 }
+                if (draw.shader == 7) {
+                    // Toon and highlight shading also get the toon colors and which of them it is
+                    GX2SetPixelTexture(&toonTexture, 1);
+                    GX2SetPixelSampler(&samplers[0], 1);
+                    GX2SetPixelUniformReg(4, 4, toonMode);
+                }
+                GX2PrimitiveMode primitive = draw.lines ? GX2_PRIMITIVE_MODE_LINES : GX2_PRIMITIVE_MODE_TRIANGLES;
                 GX2CompareFunction func = wBuffer ? (draw.depthEqual ? GX2_COMPARE_FUNC_GEQUAL : GX2_COMPARE_FUNC_GREATER) :
                     (draw.depthEqual ? GX2_COMPARE_FUNC_LEQUAL : GX2_COMPARE_FUNC_LESS);
                 GX2SetColorControl(GX2_LOGIC_OP_COPY, draw.translucent ? 0x01 : 0x00, FALSE, TRUE);
@@ -841,7 +894,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                     GX2SetStencilMask(0x7F, 0x7F, draw.stencil & 0x3F, 0x7F, 0x7F, draw.stencil & 0x3F);
                     GX2SetTargetChannelMasks(colorMask, attribs ? GX2_CHANNEL_MASK_RGBA : NO_CHANNELS,
                         NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
-                    GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
+                    GX2DrawEx(primitive, draw.count, draw.first, 1);
                     GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
                     if (draw.shader != 1) continue;
                     WHBGfxShaderGroup &trans = groups[3];
@@ -858,7 +911,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                 GX2SetTargetChannelMasks(colorMask,
                     (attribs && draw.solid) ? GX2_CHANNEL_MASK_RGBA : NO_CHANNELS,
                     NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
-                GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
+                GX2DrawEx(primitive, draw.count, draw.first, 1);
             }
 
             // Average the multisampled colors into the color buffer, through a tiled surface the GPU can resolve to
@@ -1068,7 +1121,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                 GX2CompareFunction func = wBuffer ? (draw.depthEqual ? GX2_COMPARE_FUNC_GEQUAL : GX2_COMPARE_FUNC_GREATER) :
                     (draw.depthEqual ? GX2_COMPARE_FUNC_LEQUAL : GX2_COMPARE_FUNC_LESS);
                 GX2SetDepthOnlyControl(TRUE, draw.depthWrite, func);
-                GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
+                GX2DrawEx(draw.lines ? GX2_PRIMITIVE_MODE_LINES : GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
             }
             GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, colorBuffer.surface.image, colorBuffer.surface.imageSize);
             GX2DrawDone();

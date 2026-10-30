@@ -1,0 +1,82 @@
+; $MODE = "UniformRegister"
+; $SAMPLER_VARS[0].name = "texture"
+; $SAMPLER_VARS[0].type = "sampler2D"
+; $SAMPLER_VARS[0].location = 0
+; $SAMPLER_VARS[1].name = "toonTable"
+; $SAMPLER_VARS[1].type = "sampler2D"
+; $SAMPLER_VARS[1].location = 1
+; $UNIFORM_VARS[0].name = "texelSize"
+; $UNIFORM_VARS[0].type = "float4"
+; $UNIFORM_VARS[0].count = 1
+; $UNIFORM_VARS[0].offset = 0
+; $UNIFORM_VARS[0].block = -1
+; $UNIFORM_VARS[1].name = "toonMode"
+; $UNIFORM_VARS[1].type = "float4"
+; $UNIFORM_VARS[1].count = 1
+; $UNIFORM_VARS[1].offset = 4
+; $UNIFORM_VARS[1].block = -1
+; $NUM_SPI_PS_INPUT_CNTL = 3
+; $SPI_PS_INPUT_CNTL[0].SEMANTIC = 0
+; $SPI_PS_INPUT_CNTL[0].DEFAULT_VAL = 1
+; $SPI_PS_INPUT_CNTL[1].SEMANTIC = 1
+; $SPI_PS_INPUT_CNTL[1].DEFAULT_VAL = 1
+; $SPI_PS_INPUT_CNTL[2].SEMANTIC = 2
+; $SPI_PS_INPUT_CNTL[2].DEFAULT_VAL = 1
+; $SQ_PGM_EXPORTS_PS.EXPORT_MODE = 4
+; $CB_SHADER_CONTROL.RT0_ENABLE = true
+; $CB_SHADER_CONTROL.RT1_ENABLE = true
+
+; Toon and highlight shading: the toon table texture has the 32 toon colors, picked for each pixel by half its red
+; level, like the DS. With C1 = (1, 0), it's highlight shading, which adds the toon color to the texel times the
+; vertex color; with C1 = (0, 1), it's toon shading, which multiplies the texel by the toon color. Untextured
+; polygons use a white texel. Texture coordinates are handled like the modulate shader, with C0 the size of a texel.
+; R0.zw and R2.y have the distances to the polygon's outer edges from the pixel center; the nearest one gives how much
+; of the pixel the polygon covers, for anti-aliasing. How much isn't covered goes in the fraction of the ID and flags
+; attribute, which is whole otherwise, scaled to stay below 1. Each instruction group has a single instruction, since
+; groups can't read the same channel of different registers at once, which the assembler doesn't check.
+00 ALU: ADDR(32) CNT(25)
+    0  x: MIN R5.x, R0.z, R0.w
+    1  x: MIN R5.x, R5.x, R2.y
+    2  x: ADD R5.x, R5.x, 0.5f
+    3  x: MAX R5.x, R5.x, 0.0f
+    4  x: MIN R5.x, R5.x, 1.0f
+    5  x: ADD R5.x, -R5.x, 1.0f
+    6  x: ADD R0.x, R0.x, (0x3B000000, 0.001953125f).x
+    7  y: ADD R0.y, R0.y, (0x3B000000, 0.001953125f).x
+    8  x: FLOOR R0.x, R0.x
+    9  y: FLOOR R0.y, R0.y
+   10  x: ADD R0.x, R0.x, 0.5f
+   11  y: ADD R0.y, R0.y, 0.5f
+   12  x: MUL R0.x, R0.x, C0.x
+   13  y: MUL R0.y, R0.y, C0.y
+   14  x: MUL R6.x, R1.x, (0x41FC0000, 31.5f).x
+   15  x: ADD R6.x, R6.x, (0x3A83126F, 0.001f).x
+   16  x: FLOOR R6.x, R6.x
+   17  x: ADD R6.x, R6.x, 0.5f
+   18  x: MUL R6.x, R6.x, (0x3D000000, 0.03125f).x
+   19  y: MOV R6.y, 0.5f
+01 TEX: ADDR(80) CNT(2) VALID_PIX
+   20  SAMPLE R0, R0.xy00, t0, s0
+   21  SAMPLE R7, R6.xy00, t1, s1
+02 ALU: ADDR(57) CNT(19)
+   22  x: MUL R8.x, R1.x, C1.x
+   23  y: MUL R8.y, R1.y, C1.x
+   24  z: MUL R8.z, R1.z, C1.x
+   25  x: MULADD R8.x, R7.x, C1.y, R8.x
+   26  y: MULADD R8.y, R7.y, C1.y, R8.y
+   27  z: MULADD R8.z, R7.z, C1.y, R8.z
+   28  x: MUL R0.x, R0.x, R8.x
+   29  y: MUL R0.y, R0.y, R8.y
+   30  z: MUL R0.z, R0.z, R8.z
+   31  x: MULADD R0.x, R7.x, C1.x, R0.x
+   32  y: MULADD R0.y, R7.y, C1.x, R0.y
+   33  z: MULADD R0.z, R7.z, C1.x, R0.z
+   34  w: MUL R0.w, R0.w, R1.w
+   35  t: RECIP_IEEE R4.x, R2.z
+   36  y: MUL R2.y, R2.w, R4.x
+   37  x: ADD R2.x, R2.x, 0.5f
+   38  x: FLOOR R2.x, R2.x
+   39  x: MULADD R2.x, R5.x, (0x3F7C0000, 0.984375f).x, R2.x
+03 EXP: PIX0, R0
+04 EXP_DONE: PIX1, R2
+END_OF_PROGRAM
