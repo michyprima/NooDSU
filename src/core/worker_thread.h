@@ -27,38 +27,15 @@
 #include <cstring>
 #include <malloc.h>
 #include <coreinit/thread.h>
-#include <coreinit/time.h>
 #endif
 
-// Waits in a loop for something another thread does, by yielding, which on Wii U only lets threads of the same or
-// higher priority run; once a wait has gone on for a millisecond, it also sleeps a little each time, so a long wait
-// can't starve the lower-priority threads the system needs, like for finishing file reads
+// Waits in a loop for something another thread does, by yielding; it's one place to change how waits behave
 class SpinWait {
 public:
-    void pause() {
-#ifdef __WIIU__
-        if (!start) {
-            start = OSGetSystemTime();
-        }
-        else if (OSTicksToMicroseconds(OSGetSystemTime() - start) > 1000) {
-            OSSleepTicks(OSMicrosecondsToTicks(50));
-            return;
-        }
-#endif
-        std::this_thread::yield();
-    }
+    void pause() { std::this_thread::yield(); }
 
-    // Start timing again after the wait ended, for loops that keep the same one
-    void reset() {
-#ifdef __WIIU__
-        start = 0;
-#endif
-    }
-
-private:
-#ifdef __WIIU__
-    OSTime start = 0;
-#endif
+    // Start a new wait, for loops that keep the same one
+    void reset() {}
 };
 
 // A helper thread for work like rendering, used in place of std::thread

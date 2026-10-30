@@ -439,6 +439,10 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     updated.clear();
     draws.clear();
 
+    // Anti-aliasing is done like the DS by default, from how much of each edge pixel its polygon covers, or optionally
+    // by multisampling
+    bool dsAntiAlias = (disp3DCnt & BIT(4)) && Settings::gpuAntiAlias == 0;
+
     // Build the triangles, with solid polygons first and then translucent ones, in order like the software renderer
     // W-buffered depth is 1/W, which interpolates linearly across the screen like Z, so the GPU compares it exactly;
     // it's reversed so precision is best up close, and compared with greater instead of less
@@ -559,26 +563,44 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             // the polygon, measured across rows for mostly horizontal edges and across columns for others like the DS
             // does, and from the pixel center; inner edges are far away, so the nearest one gives the coverage
             // They're interpolated with perspective like the other values, which is close enough within a pixel
+            // Only solid polygons give coverage, and only when anti-aliasing like the DS, so others skip the work
+            bool distances = dsAntiAlias && !translucent;
+            GpuVertex converted[10]; // Each polygon vertex is converted once, since the fan shares the first one
+            for (int k = 0; k < polygon->size; k++)
+                convert(converted[k], k);
             for (int j = 1; j + 1 < polygon->size; j++) {
                 int tri[3] = { 0, j, j + 1 };
-                bool outer[3] = { true, j + 2 == polygon->size, j == 1 }; // The edges opposite each vertex
-                float dist[3][3];
-                for (int e = 0; e < 3; e++) {
-                    Vertex &a = vertex(tri[(e + 1) % 3]), &b = vertex(tri[(e + 2) % 3]), &o = vertex(tri[e]);
-                    float dx = b.x - a.x, dy = b.y - a.y;
-                    auto across = [&](float x, float y) {
-                        return (fabsf(dx) > fabsf(dy)) ? (y - a.y - (x - a.x) * dy / dx) : (x - a.x - (y - a.y) * dx / dy);
-                    };
-                    float side = (dx || dy) ? across(o.x, o.y) : 0;
-                    for (int c = 0; c < 3; c++) {
-                        Vertex &v = vertex(tri[c]);
-                        dist[c][e] = (outer[e] && side) ? across(v.x + 0.5f - EDGE_BIAS, v.y + 0.5f - EDGE_BIAS) *
-                            (side > 0 ? 1 : -1) : 1000.0f;
+                float dist[3][3] = {};
+                if (distances) {
+                    bool outer[3] = { true, j + 2 == polygon->size, j == 1 }; // The edges opposite each vertex
+                    for (int e = 0; e < 3; e++) {
+                        // Write the edge's distance as a line along its major axis, with the vertex opposite on the
+                        // positive side; it only needs one division
+                        Vertex &a = vertex(tri[(e + 1) % 3]), &b = vertex(tri[(e + 2) % 3]), &o = vertex(tri[e]);
+                        float dx = b.x - a.x, dy = b.y - a.y;
+                        bool xMajor = fabsf(dx) > fabsf(dy);
+                        if (!outer[e] || (!dx && !dy)) {
+                            dist[0][e] = dist[1][e] = dist[2][e] = 1000.0f;
+                            continue;
+                        }
+                        float k = xMajor ? (dy / dx) : (dx / dy);
+                        float c0 = xMajor ? (k * a.x - a.y) : (k * a.y - a.x);
+                        auto across = [&](float x, float y) { return xMajor ? (y - k * x + c0) : (x - k * y + c0); };
+                        float side = across(o.x, o.y);
+                        if (!side) {
+                            dist[0][e] = dist[1][e] = dist[2][e] = 1000.0f;
+                            continue;
+                        }
+                        float sign = (side > 0) ? 1.0f : -1.0f;
+                        for (int c = 0; c < 3; c++) {
+                            Vertex &v = vertex(tri[c]);
+                            dist[c][e] = across(v.x + 0.5f - EDGE_BIAS, v.y + 0.5f - EDGE_BIAS) * sign;
+                        }
                     }
                 }
                 for (int c = 0; c < 3; c++) {
                     GpuVertex &out = vertices[count++];
-                    convert(out, tri[c]);
+                    out = converted[tri[c]];
                     out.tex[2] = dist[c][0];
                     out.tex[3] = dist[c][1];
                     out.attrib[1] = dist[c][2];
@@ -598,12 +620,10 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         }
     }
 
-    // Edge marking and fog are done on the GPU after the polygons, from the attributes of solid pixels
-    // Anti-aliasing is done like the DS by default, from how much of each edge pixel its polygon covers, or optionally
-    // by multisampling
+    // Edge marking, fog and anti-aliasing like the DS are done on the GPU after the polygons, from the attributes of
+    // solid pixels
     bool gpuEdges = disp3DCnt & BIT(5);
     bool fog = disp3DCnt & BIT(7);
-    bool dsAntiAlias = (disp3DCnt & BIT(4)) && Settings::gpuAntiAlias == 0;
     bool writeAttribs = gpuEdges || fog || dsAntiAlias;
 
     // Pixels are dropped if their alpha is 0, or with the alpha test, if their 5-bit alpha isn't greater than the

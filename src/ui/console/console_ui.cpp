@@ -256,36 +256,45 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         bool update = core->gpu.getFrame(framebuffer, gbaMode) || shift != texShift || gbaMode != texGba;
         texShift = shift;
         texGba = gbaMode;
+        // Update the screen textures before starting the frame, since copying them doesn't need to hold up the GPU
+        // renderer's access to the GPU
+        bool showTop = (ScreenLayout::screenArrangement != 3 || ScreenLayout::screenSizing < 2);
+        bool showBot = (ScreenLayout::screenArrangement != 3 || ScreenLayout::screenSizing == 2);
+        if (gbaMode) {
+            if (update || !gbaTexture) {
+                if (gbaTexture) destroyTexture(gbaTexture);
+                gbaTexture = createTexture(&framebuffer[0], 240 << shift, 160 << shift);
+            }
+        }
+        else {
+            if (showTop && (update || !topTexture)) {
+                if (topTexture) destroyTexture(topTexture);
+                topTexture = createTexture(&framebuffer[0], 256 << shift, 192 << shift);
+            }
+            if (showBot && (update || !botTexture)) {
+                if (botTexture) destroyTexture(botTexture);
+                botTexture = createTexture(&framebuffer[(256 * 192) << (shift * 2)], 256 << shift, 192 << shift);
+            }
+        }
+
         HB_SET(HB_UI_STAGE, 2);
         startFrame(0);
         HB_SET(HB_UI_STAGE, 3);
 
         if (gbaMode) {
             // Draw the GBA screen
-            if (update || !gbaTexture) {
-                if (gbaTexture) destroyTexture(gbaTexture);
-                gbaTexture = createTexture(&framebuffer[0], 240 << shift, 160 << shift);
-            }
             drawTexture(gbaTexture, 0, 0, 240 << shift, 160 << shift, layout.topX, layout.topY,
                 layout.topWidth, layout.topHeight, Settings::screenFilter, ScreenLayout::screenRotation);
         }
         else { // DS mode
             // Draw the DS top screen
-            if (ScreenLayout::screenArrangement != 3 || ScreenLayout::screenSizing < 2) {
-                if (update || !topTexture) {
-                    if (topTexture) destroyTexture(topTexture);
-                    topTexture = createTexture(&framebuffer[0], 256 << shift, 192 << shift);
-                }
+            if (showTop) {
                 drawTexture(topTexture, 0, 0, 256 << shift, 192 << shift, layout.topX, layout.topY,
                     layout.topWidth, layout.topHeight, Settings::screenFilter, ScreenLayout::screenRotation);
             }
 
             // Draw the DS bottom screen
-            if (ScreenLayout::screenArrangement != 3 || ScreenLayout::screenSizing == 2) {
-                if (update || !botTexture) {
-                    if (botTexture) destroyTexture(botTexture);
-                    botTexture = createTexture(&framebuffer[(256 * 192) << (shift * 2)], 256 << shift, 192 << shift);
-                }
+            if (showBot) {
                 drawTexture(botTexture, 0, 0, 256 << shift, 192 << shift, layout.botX, layout.botY,
                     layout.botWidth, layout.botHeight, Settings::screenFilter, ScreenLayout::screenRotation);
             }
