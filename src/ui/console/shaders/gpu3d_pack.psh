@@ -1,0 +1,48 @@
+; $MODE = "UniformRegister"
+; $SAMPLER_VARS[0].name = "colors"
+; $SAMPLER_VARS[0].type = "sampler2D"
+; $SAMPLER_VARS[0].location = 0
+; $NUM_SPI_PS_INPUT_CNTL = 3
+; $SPI_PS_INPUT_CNTL[0].SEMANTIC = 0
+; $SPI_PS_INPUT_CNTL[0].DEFAULT_VAL = 1
+; $SPI_PS_INPUT_CNTL[1].SEMANTIC = 1
+; $SPI_PS_INPUT_CNTL[1].DEFAULT_VAL = 1
+; $SPI_PS_INPUT_CNTL[2].SEMANTIC = 2
+; $SPI_PS_INPUT_CNTL[2].DEFAULT_VAL = 1
+
+; Packing: R0 has this pixel's coordinates in the finished colors. Each color is written as the bytes of the 3D pixel
+; the 2D engine uses, so the CPU only has to copy it: 6-bit red, green, blue and alpha from bit 0 up, then bit 26 set.
+; The output channels land in memory in order, from the top byte of that word down. All the values are whole numbers
+; below 256, which floats hold exactly, and bits are split with floor. Each instruction group has a single instruction,
+; since groups can't read the same channel of different registers at once, which the assembler doesn't check.
+00 TEX: ADDR(80) CNT(1) VALID_PIX
+    0  SAMPLE R3, R0.xy00, t0, s0
+01 ALU: ADDR(32) CNT(46)
+    1  x: MUL R4.x, R3.x, (0x427F0000, 63.75f).x
+    2  x: ADD R4.x, R4.x, (0x3A83126F, 0.001f).x
+    3  y: MUL R4.y, R3.y, (0x427F0000, 63.75f).x
+    4  y: ADD R4.y, R4.y, (0x3A83126F, 0.001f).x
+    5  z: MUL R4.z, R3.z, (0x427F0000, 63.75f).x
+    6  z: ADD R4.z, R4.z, (0x3A83126F, 0.001f).x
+    7  w: MUL R4.w, R3.w, (0x427F0000, 63.75f).x
+    8  w: ADD R4.w, R4.w, (0x3A83126F, 0.001f).x
+    9  x: FLOOR R4.x, R4.x
+   10  y: FLOOR R4.y, R4.y
+   11  z: FLOOR R4.z, R4.z
+   12  w: FLOOR R4.w, R4.w
+   13  y: MUL R5.y, R4.y, 0.25f
+   14  y: FLOOR R5.y, R5.y
+   15  x: MULADD R5.x, R5.y, (0xC0800000, -4.0f).x, R4.y
+   16  z: MUL R5.z, R4.z, (0x3D800000, 0.0625f).x
+   17  z: FLOOR R5.z, R5.z
+   18  w: MULADD R5.w, R5.z, (0xC1800000, -16.0f).x, R4.z
+   19  w: MULADD R6.w, R5.x, (0x42800000, 64.0f).x, R4.x
+   20  z: MULADD R6.z, R5.w, (0x41800000, 16.0f).x, R5.y
+   21  y: MULADD R6.y, R4.w, (0x40800000, 4.0f).x, R5.z
+   22  x: MOV R6.x, (0x40800000, 4.0f).x
+   23  x: MUL R6.x, R6.x, (0x3B808081, 0.003921569f).x
+   24  y: MUL R6.y, R6.y, (0x3B808081, 0.003921569f).x
+   25  z: MUL R6.z, R6.z, (0x3B808081, 0.003921569f).x
+   26  w: MUL R6.w, R6.w, (0x3B808081, 0.003921569f).x
+02 EXP_DONE: PIX0, R6
+END_OF_PROGRAM

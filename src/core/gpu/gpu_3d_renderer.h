@@ -81,6 +81,7 @@ public:
     uint64_t hashTexture(_Polygon *polygon);
     void decodeTexture(_Polygon *polygon, uint32_t *out);
     uint32_t *hardwareLine(int line) { return &framebuffer[0][line * 256 * 2]; }
+    void setHardwareBuffer(uint32_t *buffer) { hardwareBuffer = buffer; }
     void hardwareDone(int line) { ready[line].store(3); }
 #ifdef GPU_DUMP
     void softwareFrame(uint32_t *out);
@@ -104,6 +105,12 @@ private:
     bool resShift = false;
     bool hardwareFrame = false; // Whether the current frame is being rendered by the hardware renderer
     int hardwareLines = 192; // How many scanlines the hardware frame has, which doubles in high-res
+    uint32_t *hardwareBuffer = nullptr; // Where a hardware renderer leaves its frames instead, with lines 512 apart
+
+    // Get where a finished scanline is, which can be in the hardware renderer's own buffer
+    uint32_t *lineData(int line) {
+        return (hardwareFrame && hardwareBuffer) ? &hardwareBuffer[line * 256 * 2] : &framebuffer[0][line * 256 * 2];
+    }
     // Each layer is padded by 512 bytes, since the layers' sizes are a multiple of the cache's way size, which would
     // make the same pixel in all of them compete for the same cache set
     static const int LAYER_SIZE = 256 * 192 * 4 + 128;

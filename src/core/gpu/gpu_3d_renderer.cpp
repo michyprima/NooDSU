@@ -137,7 +137,7 @@ uint32_t *Gpu3DRenderer::getLine1(int line) {
     // Save the finished 3D layer of frames whose polygons were dumped, as the 2D engine gets it
     if (!dumpLayerPath.empty()) {
         static uint32_t layer[256 * 192];
-        memcpy(&layer[line * 256], &framebuffer[0][line * 256 * 2], 256 * sizeof(uint32_t));
+        memcpy(&layer[line * 256], lineData(line), 256 * sizeof(uint32_t));
         if (line == 191) {
             if (FILE *file = fopen(dumpLayerPath.c_str(), "wb")) {
                 for (int i = 0; i < 256 * 192; i++) {
@@ -150,7 +150,7 @@ uint32_t *Gpu3DRenderer::getLine1(int line) {
         }
     }
 #endif
-    return &framebuffer[0][line * 256 * 2];
+    return lineData(line);
 }
 
 void Gpu3DRenderer::drawScanline(int line) {

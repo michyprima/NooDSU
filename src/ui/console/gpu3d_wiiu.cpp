@@ -53,7 +53,7 @@
 #include "../../core/worker_thread.h"
 
 extern const uint8_t gpu3d_color_gsh[], gpu3d_modulate_gsh[], gpu3d_decal_gsh[], gpu3d_modtrans_gsh[], gpu3d_edge_gsh[],
-    gpu3d_fog_gsh[], gpu3d_aa_gsh[], gpu3d_toon_gsh[];
+    gpu3d_fog_gsh[], gpu3d_aa_gsh[], gpu3d_toon_gsh[], gpu3d_pack_gsh[];
 
 std::mutex gx2Mutex;
 
@@ -100,7 +100,7 @@ private:
     static const int MAX_VERTICES = 2048 * 8 * 3;
     static constexpr float EDGE_BIAS = 1.0f / 64; // How far short of half a pixel vertices are moved
 
-    WHBGfxShaderGroup groups[8];
+    WHBGfxShaderGroup groups[9];
     GX2Sampler samplers[9];
     GX2ContextState *state = nullptr;
     GX2ColorBuffer colorBuffer;
@@ -108,6 +108,8 @@ private:
     GX2Texture attribTexture; // The attributes again, for the edge marking pass to read
     GX2Texture colorTexture; // The colors again, for the anti-aliasing pass to read
     GX2ColorBuffer aaBuffer; // The colors after anti-aliasing, which reads neighbors so can't draw over them in place
+    GX2Texture aaTexture; // The colors after anti-aliasing again, for the packing pass to read
+    GX2ColorBuffer packedBuffer; // The finished frame as the 2D engine's 3D pixels, so the CPU only copies it
     GX2Texture edgeTexture; // The 8 edge colors, with how much they're blended in as alpha
     GX2Texture toonTexture; // The 32 toon colors, for toon and highlight shading
     GX2Texture whiteTexture; // A white texel, for toon and highlight polygons without a texture
@@ -148,8 +150,8 @@ private:
 bool Gpu3DWiiU::init() {
     // Load the shaders, which share one vertex shader and its layout
     const uint8_t *shaders[] = { gpu3d_color_gsh, gpu3d_modulate_gsh, gpu3d_decal_gsh, gpu3d_modtrans_gsh, gpu3d_edge_gsh,
-        gpu3d_fog_gsh, gpu3d_aa_gsh, gpu3d_toon_gsh };
-    for (int i = 0; i < 8; i++) {
+        gpu3d_fog_gsh, gpu3d_aa_gsh, gpu3d_toon_gsh, gpu3d_pack_gsh };
+    for (int i = 0; i < 9; i++) {
         if (!WHBGfxLoadGFDShaderGroup(&groups[i], 0, shaders[i])) return false;
         WHBGfxInitShaderAttribute(&groups[i], "position", 0, offsetof(GpuVertex, pos), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
         WHBGfxInitShaderAttribute(&groups[i], "tex_coords", 0, offsetof(GpuVertex, tex), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
@@ -212,12 +214,26 @@ bool Gpu3DWiiU::init() {
     GX2InitTextureRegs(&colorTexture);
     memset(&aaBuffer, 0, sizeof(aaBuffer));
     aaBuffer.surface = colorBuffer.surface;
-    aaBuffer.surface.use = GX2_SURFACE_USE_COLOR_BUFFER;
+    aaBuffer.surface.use = (GX2SurfaceUse)(GX2_SURFACE_USE_COLOR_BUFFER | GX2_SURFACE_USE_TEXTURE);
     aaBuffer.surface.image = nullptr;
     aaBuffer.viewNumSlices = 1;
     GX2CalcSurfaceSizeAndAlignment(&aaBuffer.surface);
     GX2InitColorBufferRegs(&aaBuffer);
     aaBuffer.surface.image = MEMAllocFromDefaultHeapEx(aaBuffer.surface.imageSize, aaBuffer.surface.alignment);
+    memset(&aaTexture, 0, sizeof(aaTexture));
+    aaTexture.surface = aaBuffer.surface;
+    aaTexture.surface.use = GX2_SURFACE_USE_TEXTURE;
+    aaTexture.viewNumSlices = 1;
+    aaTexture.compMap = 0x00010203;
+    GX2InitTextureRegs(&aaTexture);
+    memset(&packedBuffer, 0, sizeof(packedBuffer));
+    packedBuffer.surface = colorBuffer.surface;
+    packedBuffer.surface.use = GX2_SURFACE_USE_COLOR_BUFFER;
+    packedBuffer.surface.image = nullptr;
+    packedBuffer.viewNumSlices = 1;
+    GX2CalcSurfaceSizeAndAlignment(&packedBuffer.surface);
+    GX2InitColorBufferRegs(&packedBuffer);
+    packedBuffer.surface.image = MEMAllocFromDefaultHeapEx(packedBuffer.surface.imageSize, packedBuffer.surface.alignment);
 
     // Create the toon color texture and a white one, which are small textures like the edge colors
     auto smallTexture = [](GX2Texture &texture, uint32_t width) {
@@ -301,7 +317,7 @@ bool Gpu3DWiiU::init() {
     vertices = (GpuVertex*)MEMAllocFromDefaultHeapEx((MAX_VERTICES + 6) * sizeof(GpuVertex), GX2_VERTEX_BUFFER_ALIGNMENT);
     state = (GX2ContextState*)MEMAllocFromDefaultHeapEx(sizeof(GX2ContextState), GX2_CONTEXT_STATE_ALIGNMENT);
     if (!colorBuffer.surface.image || !attribBuffer.surface.image || !edgeTexture.surface.image || !fogTexture.surface.image ||
-            !aaBuffer.surface.image ||
+            !aaBuffer.surface.image || !packedBuffer.surface.image ||
             !depthBuffer.surface.image || !vertices || !state)
         return false;
     GX2SetupContextStateEx(state, TRUE);
@@ -1017,9 +1033,30 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 6, count, 1);
         }
 
-        // Write out the color buffer, then let the UI submit while the GPU finishes this frame
+        // Pack the finished colors as the 2D engine's 3D pixels, so the CPU only has to copy them
+        GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE),
+            output->surface.image, output->surface.imageSize);
+        GX2SetColorBuffer(&packedBuffer, GX2_RENDER_TARGET_0);
+        {
+            WHBGfxShaderGroup &group = groups[8];
+            GX2SetFetchShader(&group.fetchShader);
+            GX2SetVertexShader(group.vertexShader);
+            GX2SetPixelShader(group.pixelShader);
+            GX2SetPixelTexture((output == &aaBuffer) ? &aaTexture : &colorTexture, 0);
+            GX2SetPixelSampler(&samplers[0], 0);
+            GX2SetDepthStencilControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS, FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS,
+                GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS,
+                GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+            GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
+            GX2SetColorControl(GX2_LOGIC_OP_COPY, 0x00, FALSE, TRUE);
+            GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
+                NO_CHANNELS, NO_CHANNELS);
+            GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 6, count, 1);
+        }
+
+        // Write out the packed frame, then let the UI submit while the GPU finishes this frame
         HB_SET(HB_GPU_STAGE, 6);
-        GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, output->surface.image, output->surface.imageSize);
+        GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, packedBuffer.surface.image, packedBuffer.surface.imageSize);
         GX2Flush();
         OSTime submitted = GX2GetLastSubmittedTimeStamp();
         guard.unlock();
@@ -1068,17 +1105,18 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     }
 #endif
 
-    // Convert each scanline to the renderer's format, with 6-bit channels and the 3D pixel bit, and mark it done
+    // The scanlines are already packed in the renderer's format, so let the 2D engine read them where they are,
+    // since copying them was slow with every read missing the cache; they're only drawn over by the next frame,
+    // which starts after the 2D engine is done with this one
     HB_SET(HB_GPU_STAGE, 5);
     HB_TIMER(hbConvert);
-    DCInvalidateRange(output->surface.image, output->surface.imageSize);
+    DCInvalidateRange(packedBuffer.surface.image, packedBuffer.surface.imageSize);
+    bool direct = (packedBuffer.surface.pitch == 512);
+    renderer->setHardwareBuffer(direct ? (uint32_t*)packedBuffer.surface.image : nullptr);
     for (int y = 0; y < height; y++) {
-        const uint32_t *src = (uint32_t*)output->surface.image + y * output->surface.pitch;
-        uint32_t *dst = renderer->hardwareLine(y);
-        for (int x = 0; x < width; x++) {
-            uint32_t p = src[x];
-            dst[x] = BIT(26) | (((p >> 2) & 0x3F) << 18) | (((p >> 10) & 0x3F) << 12) | (((p >> 18) & 0x3F) << 6) | ((p >> 26) & 0x3F);
-        }
+        if (!direct)
+            memcpy(renderer->hardwareLine(y), (uint32_t*)packedBuffer.surface.image + y * packedBuffer.surface.pitch,
+                width * sizeof(uint32_t));
         renderer->hardwareDone(y);
     }
     HB_ADD_US(HB_GPU_CONVERT_US, hbConvert);
