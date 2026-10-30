@@ -24,6 +24,11 @@
 #endif
 
 #include "../core.h"
+
+#ifdef FAST2D_CHECK
+#include <coreinit/debug.h>
+#include <coreinit/internal.h>
+#endif
 #include "../emu_profile.h"
 
 // Allocate framebuffers for the frontend, aligned to cache blocks on Wii U so lines can be claimed without reading them
@@ -251,8 +256,9 @@ void Gpu::gbaScanline240() {
     if (vCount < 160) {
         if (thread) {
             // Wait for the thread to finish the scanline
+            SpinWait spin;
             while (drawing.load() != 0)
-                std::this_thread::yield();
+                spin.pause();
         }
         else if (frames == 0) {
             // Draw the current scanline
@@ -370,7 +376,7 @@ void Gpu::scanline256() {
             // Finish each engine's scanline, drawing it here if its thread hasn't started it, or waiting for it
             // Engine B comes first, since its thread shares a core and is more likely to be behind
             for (int engine = 1; engine >= 0; engine--) {
-                std::atomic<int> &state = engine ? drawingB : drawing;
+                Atomic32<int> &state = engine ? drawingB : drawing;
                 int expected = 1;
                 if (state.compare_exchange_strong(expected, 3)) {
                     EP_START(draw);
@@ -383,8 +389,9 @@ void Gpu::scanline256() {
                 else {
                     EP_START(wait);
                     HB_SET(HB_EMU_WAIT, 2);
+                    SpinWait spin;
                     while (state.load() != 0)
-                        std::this_thread::yield();
+                        spin.pause();
                     HB_SET(HB_EMU_WAIT, 0);
                     EP_ADD(EP_WAIT2D, wait);
                 }
@@ -453,8 +460,9 @@ void Gpu::scanline355() {
             HB_TIMER(hbJoin);
             for (int i = 0; i < 2; i++) {
                 core->gpu2D[i].setQueue(nullptr);
+                SpinWait spin;
                 while (linesDone[i].load() < 192 || !queues[i].empty())
-                    std::this_thread::yield();
+                    spin.pause();
             }
             HB_ADD_US(HB_2D_JOIN_US, hbJoin);
         }
@@ -580,6 +588,9 @@ void Gpu::scanline355() {
                     if (!drawers[i]) drawers[i] = new Gpu2D(core, i);
                     drawers[i]->copyRegisters(core->gpu2D[i]);
                     drawers[i]->setFramebuffer(core->gpu2D[i].getFramebuffer());
+#ifdef FAST2D_CHECK
+                    fastTargets[i] = drawers[i]->getFramebuffer();
+#endif
                     linesDone[i].store(0);
                     core->gpu2D[i].setQueue(&queues[i]);
                 }
@@ -642,9 +653,10 @@ void Gpu::scanline355() {
 void Gpu::drawGbaThreaded() {
     while (running.load()) {
         // Wait until the next scanline should start
+        SpinWait spin;
         while (drawing.load() != 1) {
             if (!running.load()) return;
-            std::this_thread::yield();
+            spin.pause();
         }
 
         // Draw the current scanline
@@ -657,27 +669,30 @@ void Gpu::drawGbaThreaded() {
 
 void Gpu::drawThreaded(int engine) {
     if (engine == 0) HB_SET_CORE(HB_2D_CORE);
-    std::atomic<int> &state = engine ? drawingB : drawing;
+    Atomic32<int> &state = engine ? drawingB : drawing;
+    SpinWait spin;
     while (running.load()) {
         // Between frames, sleep until the next one starts instead of spinning
         if (!frameActive.load()) {
             std::unique_lock<std::mutex> lock(frameMutex);
             frameCond.wait(lock, [&] { return frameActive.load() || !running.load(); });
+            spin.reset();
             continue;
         }
 
         // In fast 2D mode, replay what the emulator sent, drawing scanlines as they come up
         if (fastFrame) {
-            if (!fastStep(engine)) std::this_thread::yield();
+            if (fastStep(engine)) spin.reset(); else spin.pause();
             continue;
         }
 
         // Otherwise, wait until the next scanline should start, and claim it unless the emulator thread already did
         int expected = 1;
         if (!state.compare_exchange_weak(expected, 2)) {
-            std::this_thread::yield();
+            spin.pause();
             continue;
         }
+        spin.reset();
 
         // Draw the engine's scanline, and for engine A, the display capture that uses it, then signal that it's finished
         HB_INC(HB_2D_LINES);
@@ -716,6 +731,26 @@ bool Gpu::fastEntry(int engine) {
     Gpu2DEntry entry;
     if (!queues[engine].pop(entry)) return false;
     Gpu2D *drawer = drawers[engine];
+#ifdef FAST2D_CHECK
+    // Debug builds stop with the details as soon as a drawing copy's framebuffer changes or a bad scanline comes in
+    recentEntries[engine][recentPos[engine]++ & 7] = entry;
+    auto check = [&](const char *when) {
+        if (drawer->getFramebuffer() == fastTargets[engine] && (entry.type != Gpu2DEntry::LINE || entry.value < 192))
+            return;
+        char message[768];
+        int length = __os_snprintf(message, sizeof(message), "Fast 2D check failed %s, engine %d\n"
+            "framebuffer %08X, expected %08X, drawer %08X, entry type %u index %u value %u\nRecent entries:",
+            when, engine, (uint32_t)drawer->getFramebuffer(), (uint32_t)fastTargets[engine], (uint32_t)drawer,
+            entry.type, entry.index, entry.value);
+        for (int i = 0; i < 8; i++) {
+            Gpu2DEntry &e = recentEntries[engine][(recentPos[engine] + i) & 7];
+            length += __os_snprintf(message + length, sizeof(message) - length, "%s %u/%u/%08X/%u", (i % 4) ? "" : "\n",
+                e.type, e.index, e.mask, e.value);
+        }
+        OSFatal(message);
+    };
+    check("before");
+#endif
     if (entry.type != Gpu2DEntry::LINE) {
         drawer->replay(entry);
         return true;
@@ -727,6 +762,9 @@ bool Gpu::fastEntry(int engine) {
     drawer->updateWindows(entry.value);
     drawer->drawScanline(entry.value, entry.mask);
     if (entry.index) captureLine(entry.mask, entry.value, drawer->getRawLine(), true);
+#ifdef FAST2D_CHECK
+    check("after");
+#endif
     linesDone[engine].store(entry.value + 1);
     return true;
 }

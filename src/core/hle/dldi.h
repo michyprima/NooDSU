@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 
@@ -50,6 +51,6 @@ public:
 
 private:
     Core *core;
-    bool patched = false;
+    std::atomic<bool> patched{false};
     FILE *sdImage = nullptr;
 };

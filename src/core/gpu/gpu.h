@@ -30,6 +30,13 @@
 #include <queue>
 
 #include "../defines.h"
+#include "../atomic.h"
+
+// On Wii U, check that fast 2D drawing copies keep the framebuffer they were given, and stop with the details if not,
+// to catch a rare crash where one was overwritten; it costs a pointer check per scanline
+#if defined(__WIIU__) && !defined(NO_FAST2D_CHECK)
+#define FAST2D_CHECK
+#endif
 
 class Core;
 
@@ -75,12 +82,12 @@ private:
     std::mutex mutex;
 
     std::atomic<bool> running;
-    std::atomic<int> drawing;
+    Atomic32<int> drawing;
     WorkerThread *thread = nullptr;
 
     // On NDS, engine B has a thread of its own, so the engines are drawn in parallel
     // The threads are kept between frames, sleeping while no frame is being drawn
-    std::atomic<int> drawingB;
+    Atomic32<int> drawingB;
     WorkerThread *threadB = nullptr;
     std::atomic<bool> frameActive;
 
@@ -92,6 +99,11 @@ private:
     // instead of keeping in step with it, so video memory can be read later than it should be
     bool fastFrame = false;
     Gpu2D *drawers[2] = {};
+#ifdef FAST2D_CHECK
+    uint32_t *fastTargets[2] = {}; // What each drawing copy's framebuffer should be this frame
+    Gpu2DEntry recentEntries[2][8] = {};
+    int recentPos[2] = {};
+#endif
     Gpu2DQueue queues[2];
     std::mutex drawerLocks[2];
     std::atomic<int> linesDone[2];

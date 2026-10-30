@@ -36,7 +36,7 @@ enum HeartbeatSlot {
     HB_UI_FRAMES, // Frames drawn by the UI
     HB_UI_STAGE, // Step of the UI loop: 1 = get frame, 2 = start frame, 3 = draw, 4 = end frame, 5 = input
     HB_AUDIO, // Audio callbacks
-    HB_GPU_STAGE, // Step of the GPU 3D renderer: 1 = waiting, 2 = building, 3 = locking GX2, 4 = drawing, 5 = converting
+    HB_GPU_STAGE, // 1 = waiting, 2 = building, 3 = locking GX2, 4 = drawing, 5 = converting, 6 = submitting, 7 = GPU wait, 8 = timeout
     HB_GPU_FRAMES, // Frames finished by the GPU 3D renderer
     HB_GPU_DISP3DCNT, // 3D display control of the frame the GPU 3D renderer is drawing
     HB_GPU_BUILD_US, // Total microseconds the GPU 3D renderer spent building vertices
@@ -53,6 +53,9 @@ enum HeartbeatSlot {
     HB_ROM_WAIT_US, // Total microseconds the emulator waited on ROM reads that missed the cache
     HB_2D_CORE, // Core the 2D thread last ran on, plus 1
     HB_GEOM_CORE, // Core the geometry worker last ran on, plus 1
+    HB_ROM_WAIT_BLOCK, // ROM block the emulator is waiting for while loading the ROM into RAM, plus 1, or 0
+    HB_ROM_LOAD_BLOCK, // Next ROM block the loading thread will claim
+    HB_ROM_LOAD_STAGE, // Step of the ROM loading thread: 1 = picking blocks, 2 = loading, 5 = closing the file, 6 = done
     HB_3D_FRAMES, // 3D frames started, for the feature counts below
     HB_3D_FLAGS, // 3D display control bits seen since the last log line, which the logger clears
     HB_3D_POLYS, // Polygons drawn

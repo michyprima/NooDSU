@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "../worker_thread.h"
+#include "../atomic.h"
 
 class Core;
 class Gpu3DRenderer;
@@ -60,6 +61,7 @@ public:
     void loadState(FILE *file);
 
     void drawScanline(int line);
+    void finishHardwareFrame();
     uint32_t *getLine(int line);
 
     uint16_t readDisp3DCnt() { return disp3DCnt; }
@@ -116,7 +118,7 @@ private:
 
     uint8_t activeThreads = 0;
     std::vector<WorkerThread*> threads;
-    std::atomic<int> ready[192 * 2];
+    Atomic32<int> ready[192 * 2];
 
     uint16_t disp3DCnt = 0;
     uint16_t edgeColor[8] = {};

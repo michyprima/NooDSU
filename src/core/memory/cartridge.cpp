@@ -287,7 +287,7 @@ bool Cartridge::startRomLoad() {
     // the header and secure area, and start loading the rest on another thread
     loadFile = romFile;
     romFile = nullptr;
-    ensureLoaded(0, 0x8200);
+    loadRomBlocks(0, std::min<size_t>(blocks, (0x8200 + BLOCK_SIZE - 1) / BLOCK_SIZE));
     loadThread = new WorkerThread(&Cartridge::runRomLoad, this);
     return true;
 }
@@ -299,68 +299,76 @@ void Cartridge::ensureLoaded(size_t offset, size_t size) {
     for (size_t block = offset / BLOCK_SIZE; block * BLOCK_SIZE < end; block++) {
         if (romBlocks[block].load(std::memory_order_acquire) == 2) continue;
         HB_TIMER(hbMiss);
-        while (romBlocks[block].load(std::memory_order_acquire) != 2) {
-            // Load the block now, or wait if the other thread is already loading it
-            uint8_t expected = 0;
-            if (romBlocks[block].compare_exchange_strong(expected, 1)) {
-                fileWaiters++;
-                loadRomBlocks(block, 1);
-                fileWaiters--;
-            }
-            else {
-                std::this_thread::yield();
-            }
-        }
+        HB_SET(HB_ROM_WAIT_BLOCK, block + 1);
+        // Let the file's worker handle the miss too, sleeping until it publishes the completed block
+        std::unique_lock<std::mutex> lock(loadMutex);
+        loadWant = block;
+        loadCond.wait(lock, [&] { return romBlocks[block].load(std::memory_order_acquire) == 2; });
+        loadWant = size_t(-1);
+        HB_SET(HB_ROM_WAIT_BLOCK, 0);
         HB_INC(HB_ROM_MISSES);
         HB_ADD_US(HB_ROM_WAIT_US, hbMiss);
     }
 }
 
 void Cartridge::loadRomBlocks(size_t first, size_t count) {
-    // Read blocks of a ROM into RAM, which have been claimed for loading
+    // Read and patch privately: file I/O and DLDI patches must not touch blocks already published to the emulator
+    // Include the preceding driver's tail and enough lookahead to patch drivers crossing the end of this read
+    alignas(64) uint8_t data[BLOCK_SIZE * PREFETCH_BLOCKS * 2 + 0x200];
     size_t start = first * BLOCK_SIZE;
     size_t size = std::min(count * BLOCK_SIZE, (size_t)romSize - start);
-    readRomFile(loadFile, &rom[start], start, size);
+    size_t back = first ? 0x100 : 0;
+    readRomFile(loadFile, data, start - back, size + back + 0x100);
 
-    // Patch DLDI drivers, including any in the end of the block before that run into these
-    if (!core->dsiMode) {
-        size_t back = (first > 0 && romBlocks[first - 1].load(std::memory_order_acquire) == 2) ? 0x100 : 0;
-        core->dldi.patchRom(&rom[start - back], start - back, size + back);
-    }
+    if (!core->dsiMode)
+        core->dldi.patchRom(data, start - back, size + back);
+    memcpy(&rom[start], &data[back], size);
     for (size_t i = first; i < first + count; i++)
         romBlocks[i].store(2, std::memory_order_release);
 }
 
 void Cartridge::runRomLoad() {
-    // Load a ROM into RAM from start to end, a few blocks at a time, letting reads the emulator needs go first
+    // Own all file reads after startup, loading urgent blocks before continuing the full-ROM scan
     size_t blocks = (romSize + BLOCK_SIZE - 1) / BLOCK_SIZE;
     for (size_t block = 0; block < blocks && !stopLoad.load();) {
-        if (fileWaiters.load()) {
-            std::this_thread::yield();
-            continue;
+        HB_SET(HB_ROM_LOAD_STAGE, 1);
+        size_t first, count = 1;
+        {
+            std::lock_guard<std::mutex> guard(loadMutex);
+            if (loadWant < blocks && romBlocks[loadWant].load(std::memory_order_acquire) != 2) {
+                first = loadWant;
+            }
+            else {
+                while (block < blocks && romBlocks[block].load(std::memory_order_acquire) == 2) block++;
+                if (block == blocks) break;
+                first = block;
+                while (count < PREFETCH_BLOCKS * 2 && first + count < blocks &&
+                        romBlocks[first + count].load(std::memory_order_acquire) == 0)
+                    count++;
+                block += count;
+            }
+            for (size_t i = first; i < first + count; i++)
+                romBlocks[i].store(1, std::memory_order_relaxed);
         }
 
-        // Claim a run of blocks that aren't loaded or being loaded, skipping any that are
-        size_t count = 0;
-        while (count < PREFETCH_BLOCKS * 2 && block + count < blocks) {
-            uint8_t expected = 0;
-            if (!romBlocks[block + count].compare_exchange_strong(expected, 1)) break;
-            count++;
+        HB_SET(HB_ROM_LOAD_STAGE, 2);
+        loadRomBlocks(first, count);
+        // Pair notification with the waiter's mutex so a completed read can't lose its wakeup
+        {
+            std::lock_guard<std::mutex> guard(loadMutex);
+            loadCond.notify_all();
         }
-        if (count) loadRomBlocks(block, count);
-        block += std::max<size_t>(count, 1);
+        HB_SET(HB_ROM_LOAD_BLOCK, block);
     }
 
-    // Close the file once the emulator has also finished any blocks it was loading
-    for (size_t block = 0; block < blocks && !stopLoad.load(); block++) {
-        while (romBlocks[block].load(std::memory_order_acquire) != 2 && !stopLoad.load())
-            std::this_thread::yield();
-    }
+    // Every claimed read has completed on this worker, so no other thread can still be using the file
     if (stopLoad.load()) return;
+    HB_SET(HB_ROM_LOAD_STAGE, 5);
     std::lock_guard<std::mutex> guard(fileMutex);
     fclose(loadFile);
     loadFile = nullptr;
     romLoaded.store(true, std::memory_order_release);
+    HB_SET(HB_ROM_LOAD_STAGE, 6);
 }
 
 void Cartridge::writeSave() {
@@ -385,8 +393,9 @@ void Cartridge::writeSave() {
 
 void Cartridge::trimRom() {
     // Wait for a ROM that's being loaded into RAM to be fully loaded
+    SpinWait spin;
     while (romBlocks && !romLoaded.load())
-        std::this_thread::yield();
+        spin.pause();
 
     // Starting from the end, reduce the ROM size until a non-filler word is found
     int newSize;

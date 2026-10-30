@@ -101,11 +101,13 @@ private:
     std::condition_variable chunkCond;
     WorkerThread *prefetchThread = nullptr;
 
-    // A ROM kept in RAM is loaded on another thread, so a game can start right away; reads of data that isn't loaded
-    // yet load it from file first, and the file is closed once everything is loaded
+    // One worker owns ROM file reads, prioritizing missing blocks requested by the emulator before preloading ahead
+    // Reads of loaded blocks need no lock, and the file is closed once the entire ROM is loaded
     std::atomic<uint8_t> *romBlocks = nullptr; // For each block: 0 = not loaded, 1 = loading, 2 = loaded
     std::atomic<bool> romLoaded{false}, stopLoad{false};
-    std::atomic<int> fileWaiters{0};
+    size_t loadWant = size_t(-1);
+    std::mutex loadMutex;
+    std::condition_variable loadCond;
     FILE *loadFile = nullptr;
     WorkerThread *loadThread = nullptr;
 

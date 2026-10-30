@@ -19,7 +19,11 @@
 
 #ifdef __WIIU__
 
+#include <coreinit/core.h>
+#include <coreinit/debug.h>
+#include <coreinit/exception.h>
 #include <coreinit/foreground.h>
+#include <coreinit/internal.h>
 #include <coreinit/memdefaultheap.h>
 #include <gx2/display.h>
 #include <gx2/draw.h>
@@ -532,6 +536,8 @@ int logHeartbeat(int argc, const char **argv) {
             "ROM misses %u, waited %u us\n", per(HB_2D_EMU_LINES_A, frames), per(HB_2D_EMU_LINES_B, frames),
             v[HB_2D_CORE], v[HB_GEOM_CORE], v[HB_ROM_MISSES] - last[HB_ROM_MISSES],
             v[HB_ROM_WAIT_US] - last[HB_ROM_WAIT_US]);
+        fprintf(file, "   ROM: emulator waits for block %d, loader at block %u stage %u\n", int(v[HB_ROM_WAIT_BLOCK]) - 1,
+            v[HB_ROM_LOAD_BLOCK], v[HB_ROM_LOAD_STAGE]);
 
         // Show which 3D features were used, with polygon counts per 3D frame
         uint32_t frames3D = v[HB_3D_FRAMES] - last[HB_3D_FRAMES];
@@ -553,8 +559,31 @@ int logHeartbeat(int argc, const char **argv) {
 }
 #endif
 
+// Show where a crash happened on an error screen instead of freezing, with this function's own address so the others
+// can be matched to the build's symbols; it formats with the OS, since C runtime locks might be held, and doesn't walk
+// the stack, which might be damaged
+static BOOL showCrash(OSContext *context, const char *type) {
+    char message[512];
+    __os_snprintf(message, sizeof(message), "NooDS crashed (%s) on core %u\n"
+        "PC %08X LR %08X address %08X status %08X\nSP %08X handler %08X\n"
+        "r3 %08X r4 %08X r5 %08X r6 %08X\nr7 %08X r8 %08X r9 %08X r10 %08X\n",
+        type, OSGetCoreId(), context->srr0, context->lr, context->dar, context->srr1,
+        context->gpr[1], (uint32_t)&showCrash, context->gpr[3], context->gpr[4], context->gpr[5], context->gpr[6],
+        context->gpr[7], context->gpr[8], context->gpr[9], context->gpr[10]);
+    OSFatal(message);
+    return FALSE;
+}
+
 int main() {
     ProcUIInit(OSSavesDone_ReadyToRelease);
+    OSSetExceptionCallbackEx(OS_EXCEPTION_MODE_GLOBAL_ALL_CORES, OS_EXCEPTION_TYPE_DSI,
+        [](OSContext *context) { return showCrash(context, "DSI"); });
+    OSSetExceptionCallbackEx(OS_EXCEPTION_MODE_GLOBAL_ALL_CORES, OS_EXCEPTION_TYPE_ISI,
+        [](OSContext *context) { return showCrash(context, "ISI"); });
+    OSSetExceptionCallbackEx(OS_EXCEPTION_MODE_GLOBAL_ALL_CORES, OS_EXCEPTION_TYPE_PROGRAM,
+        [](OSContext *context) { return showCrash(context, "program"); });
+    OSSetExceptionCallbackEx(OS_EXCEPTION_MODE_GLOBAL_ALL_CORES, OS_EXCEPTION_TYPE_ALIGNMENT,
+        [](OSContext *context) { return showCrash(context, "alignment"); });
 
     // Run the UI on core 2 so it doesn't compete with the JIT's emulator thread, which has to use core 1
     // The main thread can't be moved there, since running threads can't change cores

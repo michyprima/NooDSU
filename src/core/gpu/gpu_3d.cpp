@@ -371,9 +371,10 @@ void Gpu3D::runWorker() {
 void Gpu3D::queueCommand(uint8_t command, uint32_t *params, int count) {
     // Wait for room in the queue, which only happens if the worker falls far behind
     // A block's worth of extra room is kept, since whole cache blocks are claimed when they start being written
+    SpinWait spin;
     while (queueEnd + count + 1 + 8 - queueStart > QUEUE_SIZE) {
         publishQueue(true);
-        std::this_thread::yield();
+        spin.pause();
         queueStart = queueHead.load();
     }
 
@@ -407,8 +408,9 @@ void Gpu3D::sync() {
     publishQueue(true);
     if ((queueStart = queueHead.load()) == queueEnd) return;
     EP_START(wait);
+    SpinWait spin;
     while ((queueStart = queueHead.load()) != queueEnd)
-        std::this_thread::yield();
+        spin.pause();
     EP_ADD(EP_GEOM_SYNC, wait);
 }
 
@@ -417,8 +419,9 @@ void Gpu3D::syncStat() {
     if (!worker || statDone.load() == statSent) return;
     publishQueue(true);
     EP_START(wait);
+    SpinWait spin;
     while (statDone.load() != statSent)
-        std::this_thread::yield();
+        spin.pause();
     EP_ADD(EP_GEOM_SYNC, wait);
 }
 
@@ -693,6 +696,9 @@ void Gpu3D::processVertices() {
 }
 
 void Gpu3D::swapBuffers() {
+    // The hardware renderer may still read the output geometry even if the 2D engine didn't use its scanlines
+    // Finish it before the swap makes those buffers available for new geometry and V-blank uploads
+    core->gpu3DRenderer.finishHardwareFrame();
     // Process final vertices and reset the count, after any queued commands have run
     sync();
     processVertices();

@@ -32,10 +32,15 @@ Gpu3DRenderer::Gpu3DRenderer(Core *core): core(core) {
 
 Gpu3DHardware *Gpu3DRenderer::hardware = nullptr;
 
+void Gpu3DRenderer::finishHardwareFrame() {
+    if (!hardwareFrame) return;
+    SpinWait spin;
+    while (ready[191].load() < 3) spin.pause();
+}
+
 Gpu3DRenderer::~Gpu3DRenderer() {
     // Let a hardware frame finish, since it writes to this renderer
-    if (hardwareFrame)
-        while (ready[191].load() < 3) std::this_thread::yield();
+    finishHardwareFrame();
 
     // Clean up the threads
     for (size_t i = 0; i < threads.size(); i++) {
@@ -123,7 +128,8 @@ uint32_t *Gpu3DRenderer::getLine1(int line) {
     HB_SET(HB_EMU_WAIT, 3);
     EP_START_EMU(wait);
     HB_TIMER(hbWait);
-    while (ready[line].load() < 3) std::this_thread::yield();
+    SpinWait spin;
+    while (ready[line].load() < 3) spin.pause();
     HB_ADD_US(HB_3D_WAIT_US, hbWait);
     EP_ADD_EMU(EP_3D_WAIT, wait);
     HB_SET(HB_EMU_WAIT, 0);
@@ -247,8 +253,7 @@ void Gpu3DRenderer::drawScanline(int line) {
         // It only renders at the native resolution so far
         // The last hardware frame has to finish first, since the 2D engine might not have waited for all of it
         HB_TIMER(hbWait);
-        if (hardwareFrame)
-            while (ready[191].load() < 3) std::this_thread::yield();
+        finishHardwareFrame();
         HB_ADD_US(HB_EMU_3D_WAIT_US, hbWait);
         hardwareFrame = hardware && Settings::hardware3D && !resShift;
         if (hardwareFrame) {
@@ -332,8 +337,9 @@ void Gpu3DRenderer::drawThreaded(int thread) {
 
         // Wait for this thread's previous scanline and its surrounding scanlines to be drawn
         EP_START(wait);
+        SpinWait spin;
         while ((prev > 0 && ready[prev - 1].load() < 2) || ready[prev].load() < 2 || ready[prev + 1].load() < 2)
-            std::this_thread::yield();
+            spin.pause();
         RP_ADD(thread, RP_WAIT, wait);
 
         // Finish this thread's previous scanline
@@ -346,8 +352,9 @@ void Gpu3DRenderer::drawThreaded(int thread) {
     int prev = i - activeThreads;
 
     // Wait for this thread's final scanline and its surrounding scanlines to be drawn
+    SpinWait spin;
     while (ready[prev - 1].load() < 2 || ready[prev].load() < 2 || (prev < 191 && ready[prev + 1].load() < 2))
-        std::this_thread::yield();
+        spin.pause();
 
     // Finish this thread's final scanline
     HB_INC(HB_3D_LINES);

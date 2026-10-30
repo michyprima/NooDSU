@@ -24,6 +24,8 @@
 #include <cstdio>
 #include <thread>
 
+#include "../worker_thread.h"
+
 class Core;
 
 // A register write or a scanline to draw, for a drawing copy of an engine to replay in fast 2D mode
@@ -45,8 +47,9 @@ public:
     void push(const Gpu2DEntry &entry) {
         // Wait for room if the drawing thread is far behind
         uint32_t end = tail.load(std::memory_order_relaxed);
+        SpinWait spin;
         while (end - head.load(std::memory_order_acquire) >= SIZE)
-            std::this_thread::yield();
+            spin.pause();
         entries[end % SIZE] = entry;
         tail.store(end + 1, std::memory_order_release);
     }

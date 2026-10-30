@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "defines.h"
+#include "atomic.h"
 #include "save_states.h"
 #include "settings.h"
 #include "arm/cp15.h"
@@ -202,7 +203,7 @@ public:
     Timers timers[2];
     Wifi wifi;
 
-    std::atomic<bool> running;
+    Atomic32<bool> running;
     EventQueue events;
     std::function<void()> tasks[MAX_TASKS];
     uint32_t globalCycles = 0;
