@@ -107,8 +107,6 @@ private:
     GX2ColorBuffer attribBuffer; // Per-pixel attributes of solid polygons, for edge marking and fog
     GX2Texture attribTexture; // The attributes again, for the edge marking pass to read
     GX2Texture colorTexture; // The colors again, for the anti-aliasing pass to read
-    GX2ColorBuffer aaBuffer; // The colors after anti-aliasing, which reads neighbors so can't draw over them in place
-    GX2Texture aaTexture; // The colors after anti-aliasing again, for the packing pass to read
     GX2ColorBuffer packedBuffer; // The finished frame as the 2D engine's 3D pixels, so the CPU only copies it
     GX2Texture edgeTexture; // The 8 edge colors, with how much they're blended in as alpha
     GX2Texture toonTexture; // The 32 toon colors, for toon and highlight shading
@@ -212,20 +210,6 @@ bool Gpu3DWiiU::init() {
     colorTexture.viewNumSlices = 1;
     colorTexture.compMap = 0x00010203;
     GX2InitTextureRegs(&colorTexture);
-    memset(&aaBuffer, 0, sizeof(aaBuffer));
-    aaBuffer.surface = colorBuffer.surface;
-    aaBuffer.surface.use = (GX2SurfaceUse)(GX2_SURFACE_USE_COLOR_BUFFER | GX2_SURFACE_USE_TEXTURE);
-    aaBuffer.surface.image = nullptr;
-    aaBuffer.viewNumSlices = 1;
-    GX2CalcSurfaceSizeAndAlignment(&aaBuffer.surface);
-    GX2InitColorBufferRegs(&aaBuffer);
-    aaBuffer.surface.image = MEMAllocFromDefaultHeapEx(aaBuffer.surface.imageSize, aaBuffer.surface.alignment);
-    memset(&aaTexture, 0, sizeof(aaTexture));
-    aaTexture.surface = aaBuffer.surface;
-    aaTexture.surface.use = GX2_SURFACE_USE_TEXTURE;
-    aaTexture.viewNumSlices = 1;
-    aaTexture.compMap = 0x00010203;
-    GX2InitTextureRegs(&aaTexture);
     memset(&packedBuffer, 0, sizeof(packedBuffer));
     packedBuffer.surface = colorBuffer.surface;
     packedBuffer.surface.use = GX2_SURFACE_USE_COLOR_BUFFER;
@@ -317,7 +301,7 @@ bool Gpu3DWiiU::init() {
     vertices = (GpuVertex*)MEMAllocFromDefaultHeapEx((MAX_VERTICES + 6) * sizeof(GpuVertex), GX2_VERTEX_BUFFER_ALIGNMENT);
     state = (GX2ContextState*)MEMAllocFromDefaultHeapEx(sizeof(GX2ContextState), GX2_CONTEXT_STATE_ALIGNMENT);
     if (!colorBuffer.surface.image || !attribBuffer.surface.image || !edgeTexture.surface.image || !fogTexture.surface.image ||
-            !aaBuffer.surface.image || !packedBuffer.surface.image ||
+            !packedBuffer.surface.image ||
             !depthBuffer.surface.image || !vertices || !state)
         return false;
     GX2SetupContextStateEx(state, TRUE);
@@ -403,16 +387,23 @@ void Gpu3DWiiU::run() {
 
 void Gpu3DWiiU::freeTextures() {
     // Free textures that haven't been used for a couple of seconds, which the GPU has finished with
+    uint32_t bytes = 0;
     for (auto it = textures.begin(); it != textures.end();) {
         if (frameCount - it->second.frame > 120) {
-            MEMFreeToDefaultHeap(it->second.texture->surface.image);
-            delete it->second.texture;
+            if (it->second.texture) {
+                MEMFreeToDefaultHeap(it->second.texture->surface.image);
+                delete it->second.texture;
+            }
             it = textures.erase(it);
         }
         else {
+            if (it->second.texture) bytes += it->second.texture->surface.imageSize;
             it++;
         }
     }
+    HB_SET(HB_GPU_TEXTURES, textures.size());
+    HB_SET(HB_GPU_TEXTURE_KB, bytes >> 10);
+    (void)bytes;
 }
 
 GX2Texture *Gpu3DWiiU::getTexture(Gpu3DRenderer *renderer, _Polygon *polygon) {
@@ -777,7 +768,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             { tu, tv + 1.0f / 384, tu, tv - 1.0f / 384 } };
     }
 
-    GX2ColorBuffer *output = &colorBuffer; // Where the finished frame ends up
+    bool packed = false; // Whether the finished frame has been packed as the 2D engine's 3D pixels yet
     {
         // Draw the frame while holding GX2, setting this context's state up again after clearing
         HB_ADD_US(HB_GPU_POSTLOOP_US, hbPostLoop);
@@ -1004,15 +995,15 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         }
 
         if (dsAntiAlias && !msaa) {
-            // Blend partly covered pixels with the color behind them, after edge marking and fog like the DS, into
-            // another buffer since neighbors are read
+            // Blend partly covered pixels with the color behind them, after edge marking and fog like the DS, and
+            // pack the results straight into the packed buffer, since neighbors are read
             GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE),
                 colorBuffer.surface.image, colorBuffer.surface.imageSize);
             if (!gpuEdges && !fog)
                 GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE),
                     attribBuffer.surface.image, attribBuffer.surface.imageSize);
-            output = &aaBuffer;
-            GX2SetColorBuffer(&aaBuffer, GX2_RENDER_TARGET_0);
+            packed = true;
+            GX2SetColorBuffer(&packedBuffer, GX2_RENDER_TARGET_0);
             WHBGfxShaderGroup &group = groups[6];
             GX2SetFetchShader(&group.fetchShader);
             GX2SetVertexShader(group.vertexShader);
@@ -1034,15 +1025,15 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         }
 
         // Pack the finished colors as the 2D engine's 3D pixels, so the CPU only has to copy them
-        GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE),
-            output->surface.image, output->surface.imageSize);
-        GX2SetColorBuffer(&packedBuffer, GX2_RENDER_TARGET_0);
-        {
+        if (!packed) {
+            GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE),
+                colorBuffer.surface.image, colorBuffer.surface.imageSize);
+            GX2SetColorBuffer(&packedBuffer, GX2_RENDER_TARGET_0);
             WHBGfxShaderGroup &group = groups[8];
             GX2SetFetchShader(&group.fetchShader);
             GX2SetVertexShader(group.vertexShader);
             GX2SetPixelShader(group.pixelShader);
-            GX2SetPixelTexture((output == &aaBuffer) ? &aaTexture : &colorTexture, 0);
+            GX2SetPixelTexture(&colorTexture, 0);
             GX2SetPixelSampler(&samplers[0], 0);
             GX2SetDepthStencilControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS, FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS,
                 GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS,
@@ -1114,9 +1105,8 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     bool direct = (packedBuffer.surface.pitch == 512);
     renderer->setHardwareBuffer(direct ? (uint32_t*)packedBuffer.surface.image : nullptr);
     for (int y = 0; y < height; y++) {
-        if (!direct)
-            memcpy(renderer->hardwareLine(y), (uint32_t*)packedBuffer.surface.image + y * packedBuffer.surface.pitch,
-                width * sizeof(uint32_t));
+        if (uint32_t *line = direct ? nullptr : renderer->hardwareLine(y))
+            memcpy(line, (uint32_t*)packedBuffer.surface.image + y * packedBuffer.surface.pitch, width * sizeof(uint32_t));
         renderer->hardwareDone(y);
     }
     HB_ADD_US(HB_GPU_CONVERT_US, hbConvert);
@@ -1186,7 +1176,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             fwrite(&disp3DCnt, 2, 1, file);
             fwrite(&disp3DCnt, 2, 1, file);
             for (int y = 0; y < 192; y++)
-                fwrite(renderer->hardwareLine(y), 4, 256, file);
+                fwrite((uint32_t*)packedBuffer.surface.image + y * packedBuffer.surface.pitch, 4, 256, file);
             fwrite(attribBuffer.surface.image, 8, attribBuffer.surface.pitch * 192, file);
             for (auto &entry : textures) {
                 GX2Texture *texture = entry.second.texture;
