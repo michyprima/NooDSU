@@ -22,6 +22,7 @@
 #include <new>
 
 #include "../core.h"
+#include "../file_lock.h"
 #include "../heartbeat.h"
 
 std::atomic<int> Cartridge::loadPercent{-1};
@@ -129,7 +130,7 @@ void Cartridge::loadRomSection(size_t offset, size_t size) {
 
     // Start loading chunks ahead the first time a section is loaded
     if (!prefetchThread)
-        prefetchThread = new WorkerThread(&Cartridge::runPrefetch, this);
+        prefetchThread = new WorkerThread(WorkerThread::CORE_2, &Cartridge::runPrefetch, this);
 
     // Copy the section from cached chunks, reading any missing blocks right away
     std::unique_lock<std::mutex> lock(chunkMutex);
@@ -186,7 +187,7 @@ void Cartridge::loadRomSection(size_t offset, size_t size) {
 
 void Cartridge::readRomFile(FILE *file, uint8_t *data, size_t offset, size_t size) {
     // Read data from the ROM file, with 0xFFs past the end
-    std::lock_guard<std::mutex> guard(fileMutex);
+    std::lock_guard<std::recursive_mutex> guard(fileLock());
     fseek(file, offset, SEEK_SET);
     size_t count = fread(data, sizeof(uint8_t), size, file);
     memset(&data[count], 0xFF, size - count);
@@ -294,7 +295,7 @@ bool Cartridge::startRomLoad() {
     blocksLoaded = 0;
     loadPercent.store(0);
     loadRomBlocks(0, std::min<size_t>(blocks, (0x8200 + BLOCK_SIZE - 1) / BLOCK_SIZE));
-    loadThread = new WorkerThread(&Cartridge::runRomLoad, this);
+    loadThread = new WorkerThread(WorkerThread::CORE_2, &Cartridge::runRomLoad, this);
     return true;
 }
 
@@ -382,7 +383,7 @@ void Cartridge::runRomLoad() {
     // Every claimed read has completed on this worker, so no other thread can still be using the file
     if (stopLoad.load()) return;
     HB_SET(HB_ROM_LOAD_STAGE, 5);
-    std::lock_guard<std::mutex> guard(fileMutex);
+    std::lock_guard<std::recursive_mutex> guard(fileLock());
     fclose(loadFile);
     loadFile = nullptr;
     romLoaded.store(true, std::memory_order_release);
@@ -393,6 +394,7 @@ void Cartridge::writeSave() {
     // Update the save file if the data changed
     mutex.lock();
     if (saveDirty) {
+        std::lock_guard<std::recursive_mutex> guard(fileLock());
         if (FILE *saveFile = (saveFd == -1) ? fopen(savePath.c_str(), "wb") : fdopen(dup(saveFd), "wb")) {
             // Overwrite and resize without closing the file descriptor
             if (saveFd != -1) {

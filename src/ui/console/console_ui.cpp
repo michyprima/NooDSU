@@ -72,7 +72,8 @@ ScreenLayout ConsoleUI::layout;
 bool ConsoleUI::gbaMode;
 bool ConsoleUI::changed;
 
-std::thread *ConsoleUI::coreThread, *ConsoleUI::saveThread;
+std::thread *ConsoleUI::coreThread;
+WorkerThread *ConsoleUI::saveThread;
 std::condition_variable ConsoleUI::cond;
 std::mutex ConsoleUI::mutex;
 
@@ -1601,14 +1602,14 @@ void ConsoleUI::startCore() {
     OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int { runCore(); return 0; };
 #endif
     if ((emuThread = WorkerThread::createThread(entry, nullptr, 0x100000, priority, OS_THREAD_ATTRIB_AFFINITY_CPU1))) {
-        saveThread = new std::thread(checkSave);
+        saveThread = new WorkerThread(WorkerThread::CORE_2, checkSave);
         return;
     }
 #endif
 
     // Start the threads
     coreThread = new std::thread(runCore);
-    saveThread = new std::thread(checkSave);
+    saveThread = new WorkerThread(WorkerThread::CORE_2, checkSave);
 }
 
 void ConsoleUI::stopCore() {

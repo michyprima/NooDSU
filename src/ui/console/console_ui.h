@@ -122,7 +122,8 @@ private:
     static std::string basePath, curPath;
     static bool changed;
 
-    static std::thread *coreThread, *saveThread;
+    static std::thread *coreThread;
+    static WorkerThread *saveThread;
     static std::condition_variable cond;
     static std::mutex mutex;
     static int fpsLimiterBackup;

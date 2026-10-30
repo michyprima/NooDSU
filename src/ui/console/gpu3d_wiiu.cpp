@@ -936,6 +936,11 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         while (GX2GetRetiredTimeStamp() < submitted) {
             if (OSTicksToMilliseconds(OSGetSystemTime() - start) > 2000) {
                 HB_SET(HB_GPU_STAGE, 8);
+#ifdef HEARTBEAT
+                // Heartbeat builds keep waiting instead of stopping the system, so the log shows the GPU stuck
+                OSSleepTicks(OSMillisecondsToTicks(10));
+                continue;
+#endif
                 // Display the timeout without depending on C runtime locks or working file access
                 char message[256];
                 __os_snprintf(message, sizeof(message), "The GPU stopped responding to the GPU 3D renderer\n"

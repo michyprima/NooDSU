@@ -25,6 +25,12 @@
 #include <coreinit/foreground.h>
 #include <coreinit/internal.h>
 #include <coreinit/memdefaultheap.h>
+#ifdef THREAD_PROBE
+#include <arpa/inet.h>
+#include <cstring>
+#include <nn/ac.h>
+#include <nsysnet/_socket.h>
+#endif
 #include <gx2/display.h>
 #include <gx2/draw.h>
 #include <gx2/event.h>
@@ -52,6 +58,7 @@
 #include "../core/settings.h"
 #include "../core/worker_thread.h"
 #include "../core/heartbeat.h"
+#include "../core/file_lock.h"
 
 #define MAX_DRAWS 1024
 #define NO_INVALIDATE GX2RResourceFlags(GX2R_RESOURCE_DISABLE_CPU_INVALIDATE | GX2R_RESOURCE_DISABLE_GPU_INVALIDATE)
@@ -509,6 +516,77 @@ int runUi(int argc, const char **argv) {
 }
 
 #ifdef HEARTBEAT
+#ifdef THREAD_PROBE
+int probeThreads(int argc, const char **argv) {
+    // Reply to any UDP packet on port 4406 plus this thread's core with every thread's state, the mutex it waits on,
+    // and where it is, using only the OS's sockets and formatting so locks held by stuck threads can't block it
+    // There's one on each core, to tell which cores still run after a freeze
+    static std::atomic<bool> started(false);
+    if (!started.exchange(true)) {
+        ACInitialize();
+        ACConnect();
+        socket_lib_init();
+    }
+    else {
+        OSSleepTicks(OSSecondsToTicks(5));
+    }
+    int udp = RPLWRAP(socket)(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    int enabled = 1;
+    if (udp < 0 || RPLWRAP(setsockopt)(udp, SOL_SOCKET, SO_BROADCAST, &enabled, sizeof(enabled)) < 0) return 0;
+    sockaddr_in local = {};
+    local.sin_family = AF_INET;
+    local.sin_port = htons(4406 + OSGetCoreId());
+    local.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (RPLWRAP(bind)(udp, (sockaddr*)&local, sizeof(local)) < 0) return 0;
+    sockaddr_in destination = {};
+    destination.sin_family = AF_INET;
+    destination.sin_port = htons(4405);
+    destination.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+
+    char message[512];
+    auto send = [&] {
+        RPLWRAP(sendto)(udp, message, std::strlen(message), MSG_DONTWAIT, (sockaddr*)&destination, sizeof(destination));
+    };
+    for (uint32_t tick = 0;; tick++) {
+        // Announce once at startup, then sleep in the receive until a snapshot is asked for
+        if (tick) {
+            char request;
+            sockaddr_in sender = {};
+            socklen_t length = sizeof(sender);
+            if (RPLWRAP(recvfrom)(udp, &request, sizeof(request), 0, (sockaddr*)&sender, &length) < 0) continue;
+            destination.sin_addr = sender.sin_addr;
+        }
+        __os_snprintf(message, sizeof(message), "NooDS thread probe %u on core %u, probe address %08X\n", tick, OSGetCoreId(),
+            (uint32_t)&probeThreads);
+        send();
+        if (!tick) continue;
+
+        // Walk the OS's list of active threads; other cores keep running, so check tags and bound the walk
+        OSThread *thread = OSGetCurrentThread();
+        for (int i = 0; thread->activeLink.prev && i < 128; i++) thread = thread->activeLink.prev;
+        for (int i = 0; thread && i < 128; i++, thread = thread->activeLink.next) {
+            if (thread->tag != OS_THREAD_TAG) break;
+            uint32_t sp = thread->context.gpr[1];
+            int length = __os_snprintf(message, sizeof(message), "thread %08X %s state %u priority %d/%d affinity %u "
+                "mutex %08X pc %08X lr %08X sp %08X\nstack:", (uint32_t)thread, thread->name ? thread->name : "?",
+                thread->state, thread->priority, thread->basePriority, thread->attr & 7, (uint32_t)thread->mutex,
+                thread->context.srr0, thread->context.lr, sp);
+            for (int frame = 0; frame < 10 && sp >= 0x10000000 && sp < 0x50000000 && !(sp & 3); frame++) {
+                uint32_t next = *(uint32_t*)sp;
+                if (next <= sp || next >= 0x50000000 || (next & 3)) break;
+                length += __os_snprintf(message + length, sizeof(message) - length, " %08X", *(uint32_t*)(next + 4));
+                sp = next;
+            }
+            __os_snprintf(message + length, sizeof(message) - length, "\n");
+            send();
+        }
+        __os_snprintf(message, sizeof(message), "End of thread probe %u on core %u\n", tick, OSGetCoreId());
+        send();
+    }
+    return 0;
+}
+#endif
+
 int logHeartbeat(int argc, const char **argv) {
     // Append the progress counters to a file a few times a second, closing it every time so it survives a freeze
     std::string path = std::string(WHBGetSdCardMountPath()) + "/wiiu/apps/noods/heartbeat.log";
@@ -518,6 +596,7 @@ int logHeartbeat(int argc, const char **argv) {
     for (uint32_t tick = 0;; tick++) {
         OSSleepTicks(OSMillisecondsToTicks(250));
         volatile uint32_t *v = Heartbeat::values;
+        std::lock_guard<std::recursive_mutex> guard(fileLock());
         if (!(file = fopen(path.c_str(), "a"))) continue;
         fprintf(file, "%u: frames %u task %u wait %u | jit %08X in %u entries %u | 2D %u 3D %u | ui %u stage %u | audio %u"
             " | gpu %u stage %u 3dcnt %04X\n", tick, v[HB_EMU_FRAMES], v[HB_EMU_TASK], v[HB_EMU_WAIT], v[HB_JIT_BLOCK],
@@ -589,7 +668,13 @@ int main() {
     // The main thread can't be moved there, since running threads can't change cores
 #ifdef HEARTBEAT
     WHBMountSdCard();
-    WorkerThread::createThread(logHeartbeat, nullptr, 0x10000, 20, OS_THREAD_ATTRIB_AFFINITY_CPU0);
+    WorkerThread::createThread(logHeartbeat, nullptr, 0x10000, 20, OS_THREAD_ATTRIB_AFFINITY_CPU2);
+#endif
+#ifdef THREAD_PROBE
+    // Above the other threads' priorities, so they can answer even if threads below them are busy
+    WorkerThread::createThread(probeThreads, nullptr, 0x10000, 14, OS_THREAD_ATTRIB_AFFINITY_CPU0);
+    WorkerThread::createThread(probeThreads, nullptr, 0x10000, 1, OS_THREAD_ATTRIB_AFFINITY_CPU1);
+    WorkerThread::createThread(probeThreads, nullptr, 0x10000, 1, OS_THREAD_ATTRIB_AFFINITY_CPU2);
 #endif
     OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int {
         runUi(argc, argv);

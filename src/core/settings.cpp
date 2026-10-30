@@ -19,6 +19,7 @@
 
 #include <sys/stat.h>
 #include "core.h"
+#include "file_lock.h"
 
 int Settings::directBoot = 1;
 int Settings::romInRam = 0;
@@ -137,6 +138,7 @@ bool Settings::load(std::string path) {
 }
 
 bool Settings::save() {
+    std::lock_guard<std::recursive_mutex> guard(fileLock());
     // Attempt to open the settings file
     FILE *file = fopen((basePath + "/noods.ini").c_str(), "w");
     if (!file) return false;

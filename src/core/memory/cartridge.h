@@ -28,6 +28,7 @@
 
 #include "../defines.h"
 #include "../worker_thread.h"
+#include "../file_lock.h"
 
 class Core;
 
@@ -102,7 +103,7 @@ private:
     int prefetchStart = 0; // The block after the last one read, where loading ahead in its chunk starts
     bool stopPrefetch = false;
     size_t romBufSize = 0;
-    std::mutex chunkMutex, fileMutex;
+    std::mutex chunkMutex;
     std::condition_variable chunkCond;
     WorkerThread *prefetchThread = nullptr;
 
