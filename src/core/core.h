@@ -64,7 +64,8 @@ enum CoreError {
     ERROR_DSI_BIOS,
     ERROR_DSI_FIRM,
     ERROR_DSI_NAND,
-    ERROR_ROM
+    ERROR_ROM,
+    ERROR_CANCELLED // Loading was cancelled by the user
 };
 
 enum SchedTask {

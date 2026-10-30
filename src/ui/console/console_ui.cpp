@@ -291,8 +291,14 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         }
 
         // Draw the FPS counter if enabled
-        if (showFpsCounter)
-            drawString(std::to_string(core->fps) + " FPS", SCALE(5), 0, SCALE(48));
+        if (showFpsCounter) {
+            // While a ROM is streamed into RAM, also show how much of it is loaded
+            std::string text = std::to_string(core->fps) + " FPS";
+            int percent = Cartridge::loadPercent.load();
+            if (Settings::romInRam == 2 && percent >= 0 && percent < 100)
+                text += "  ROM " + std::to_string(percent) + "%";
+            drawString(text, SCALE(5), 0, SCALE(48));
+        }
 
 #ifdef PROFILE_EMU
         // With PROFILE_EMU, show where the emulator thread spends its time, as a share of each second and per frame
@@ -908,6 +914,7 @@ void ConsoleUI::settingsMenu() {
     const std::vector<std::string> filter = { "Nearest", "Upscaled", "Linear" };
     const std::vector<std::string> aspect = { "Default", "16:10", "16:9", "18:9" };
     const std::vector<std::string> antiAlias = { "DS-Style", "Multisample", "Off" };
+    const std::vector<std::string> romInRam = { "Off", "On", "Streaming" };
     if (Settings::gpuAntiAlias >= (int)antiAlias.size()) Settings::gpuAntiAlias = 0;
 
     int index = 0;
@@ -916,7 +923,7 @@ void ConsoleUI::settingsMenu() {
         std::vector<MenuItem> settings = {
             MenuItem("General Settings", true),
             MenuItem("Direct Boot", toggle[Settings::directBoot]),
-            MenuItem("Keep ROM in RAM", toggle[Settings::romInRam]),
+            MenuItem("Keep ROM in RAM", romInRam[Settings::romInRam % 3]),
             MenuItem("FPS Limiter", toggle[Settings::fpsLimiter]),
             MenuItem("Show FPS Counter", toggle[showFpsCounter]),
             MenuItem("Menu Theme", theme[menuTheme]),
@@ -966,7 +973,7 @@ void ConsoleUI::settingsMenu() {
             // Change the chosen setting to its next value
             switch (index) {
                 case 1: Settings::directBoot = (Settings::directBoot + 1) % 2; break;
-                case 2: Settings::romInRam = (Settings::romInRam + 1) % 2; break;
+                case 2: Settings::romInRam = (Settings::romInRam + 1) % 3; break;
                 case 3: Settings::fpsLimiter = (Settings::fpsLimiter + 1) % 2; break;
                 case 4: showFpsCounter = (showFpsCounter + 1) % 2; break;
                 case 7: Settings::frameskip = (Settings::frameskip + 1) % 6; break;
@@ -1490,7 +1497,42 @@ bool ConsoleUI::createCore() {
     try {
         // Attempt to create the core
         if (core) delete core;
-        core = new Core(ndsPath, gbaPath);
+        core = nullptr;
+        if (Settings::romInRam == 1) {
+            // Create the core on another thread when the whole ROM is loaded first, showing how far along it is
+            std::atomic<bool> done(false);
+            Cartridge::cancelLoad.store(false);
+            Core *created = nullptr;
+            CoreError error;
+            bool failed = false;
+            WorkerThread loader([&] {
+                try {
+                    created = new Core(ndsPath, gbaPath);
+                }
+                catch (CoreError e) {
+                    error = e;
+                    failed = true;
+                }
+                done.store(true);
+            });
+            while (!done.load()) {
+                startFrame(palette[0]);
+                int percent = Cartridge::loadPercent.load();
+                if (percent >= 0) {
+                    drawString("Loading ROM... " + std::to_string(percent) + "%", SCALE(72), SCALE(330), SCALE(42), palette[1]);
+                    drawString("\x81 Cancel", SCALE(1218), SCALE(667), SCALE(34), palette[1], true);
+                }
+                endFrame();
+                if (getInputPress() & defaultKeys[INPUT_B])
+                    Cartridge::cancelLoad.store(true);
+            }
+            loader.join();
+            if (failed) throw error;
+            core = created;
+        }
+        else {
+            core = new Core(ndsPath, gbaPath);
+        }
         return true;
     }
     catch (CoreError e) {
@@ -1525,6 +1567,8 @@ bool ConsoleUI::createCore() {
         case ERROR_ROM: // Unreadable ROM file
             text = "Make sure the ROM file is accessible and try again.";
             message("Error Loading ROM", text);
+            break;
+        case ERROR_CANCELLED: // Loading cancelled, which needs no message
             break;
         }
 

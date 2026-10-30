@@ -41,6 +41,10 @@ enum NdsCmdMode {
 
 class Cartridge {
 public:
+    // How much of a ROM being loaded into RAM is loaded, from 0 to 100, or -1 if none is being loaded
+    static std::atomic<int> loadPercent;
+    static std::atomic<bool> cancelLoad; // Set to stop waiting for a ROM to fully load, which cancels creating the core
+
     Cartridge(Core *core): core(core) {}
     ~Cartridge();
 
@@ -68,6 +72,7 @@ protected:
     virtual bool loadRom();
     void loadRomSection(size_t offset, size_t size);
     bool startRomLoad();
+    void waitRomLoad();
     void ensureLoaded(size_t offset, size_t size);
 
 private:
@@ -105,6 +110,7 @@ private:
     // Reads of loaded blocks need no lock, and the file is closed once the entire ROM is loaded
     std::atomic<uint8_t> *romBlocks = nullptr; // For each block: 0 = not loaded, 1 = loading, 2 = loaded
     std::atomic<bool> romLoaded{false}, stopLoad{false};
+    size_t blocksLoaded = 0; // Only changed by the loading thread, once it's started
     size_t loadWant = size_t(-1);
     std::mutex loadMutex;
     std::condition_variable loadCond;

@@ -24,6 +24,9 @@
 #include "../core.h"
 #include "../heartbeat.h"
 
+std::atomic<int> Cartridge::loadPercent{-1};
+std::atomic<bool> Cartridge::cancelLoad{false};
+
 Cartridge::~Cartridge() {
     // Update the save file before exiting
     writeSave();
@@ -33,6 +36,7 @@ Cartridge::~Cartridge() {
         stopLoad.store(true);
         loadThread->join();
         delete loadThread;
+        if (!romLoaded.load()) loadPercent.store(-1);
     }
     if (loadFile) fclose(loadFile);
     delete[] romBlocks;
@@ -287,9 +291,21 @@ bool Cartridge::startRomLoad() {
     // the header and secure area, and start loading the rest on another thread
     loadFile = romFile;
     romFile = nullptr;
+    blocksLoaded = 0;
+    loadPercent.store(0);
     loadRomBlocks(0, std::min<size_t>(blocks, (0x8200 + BLOCK_SIZE - 1) / BLOCK_SIZE));
     loadThread = new WorkerThread(&Cartridge::runRomLoad, this);
     return true;
+}
+
+void Cartridge::waitRomLoad() {
+    // Wait for a ROM that's being loaded into RAM to be fully loaded, giving up if loading is cancelled
+    // The loading thread is stopped when the cartridge is destroyed, as the core is thrown out
+    SpinWait spin;
+    while (romBlocks && !romLoaded.load(std::memory_order_acquire)) {
+        if (cancelLoad.load()) throw ERROR_CANCELLED;
+        spin.pause();
+    }
 }
 
 void Cartridge::ensureLoaded(size_t offset, size_t size) {
@@ -325,6 +341,8 @@ void Cartridge::loadRomBlocks(size_t first, size_t count) {
     memcpy(&rom[start], &data[back], size);
     for (size_t i = first; i < first + count; i++)
         romBlocks[i].store(2, std::memory_order_release);
+    blocksLoaded += count;
+    loadPercent.store(blocksLoaded * 100 / ((romSize + BLOCK_SIZE - 1) / BLOCK_SIZE));
 }
 
 void Cartridge::runRomLoad() {
@@ -514,9 +532,14 @@ bool CartridgeNds::loadRom() {
         return false;
     }
     else if (Settings::romInRam) {
-        // Load the ROM into RAM in the background, or fall back to reading from file if there isn't room
-        if (!startRomLoad())
+        // Load the ROM into RAM on another thread, or fall back to reading from file if there isn't room
+        // With streaming, the game starts right away and reads load what they need first; otherwise, wait for it all
+        if (!startRomLoad()) {
             loadRomSection(0, 0x5000);
+        }
+        else if (Settings::romInRam != 2) {
+            waitRomLoad();
+        }
     }
     else {
         loadRomSection(0, 0x5000);
