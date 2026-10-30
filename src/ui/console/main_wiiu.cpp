@@ -27,7 +27,9 @@
 #include <coreinit/memdefaultheap.h>
 #ifdef THREAD_PROBE
 #include <arpa/inet.h>
+#include <algorithm>
 #include <cstring>
+#include <malloc.h>
 #include <nn/ac.h>
 #include <nsysnet/_socket.h>
 #endif
@@ -175,6 +177,46 @@ void ConsoleUI::endFrame() {
     scanned = false;
 }
 
+// Texture images freed by the UI, kept for reuse since the screens are recreated every frame; allocating and freeing
+// such large blocks all the time fragments the heap until they no longer fit
+static std::mutex imagePoolMutex;
+static GX2Surface imagePool[8];
+static int imagePoolCount = 0;
+
+static void *allocImage(GX2Surface &surface) {
+    // Reuse a freed image of the same size if there is one
+    {
+        std::lock_guard<std::mutex> guard(imagePoolMutex);
+        for (int i = 0; i < imagePoolCount; i++) {
+            if (imagePool[i].imageSize != surface.imageSize || imagePool[i].alignment != surface.alignment) continue;
+            void *image = imagePool[i].image;
+            imagePool[i] = imagePool[--imagePoolCount];
+            return image;
+        }
+    }
+
+    // Allocate a new one, giving back the unused images first if the heap is out of room
+    void *image = MEMAllocFromDefaultHeapEx(surface.imageSize, surface.alignment);
+    if (!image) {
+        std::lock_guard<std::mutex> guard(imagePoolMutex);
+        while (imagePoolCount > 0)
+            MEMFreeToDefaultHeap(imagePool[--imagePoolCount].image);
+        image = MEMAllocFromDefaultHeapEx(surface.imageSize, surface.alignment);
+    }
+    return image;
+}
+
+static void freeImage(GX2Surface &surface) {
+    // Keep the image for reuse, dropping the oldest one if the pool is full
+    std::lock_guard<std::mutex> guard(imagePoolMutex);
+    if (imagePoolCount == 8) {
+        MEMFreeToDefaultHeap(imagePool[0].image);
+        memmove(&imagePool[0], &imagePool[1], 7 * sizeof(GX2Surface));
+        imagePoolCount--;
+    }
+    imagePool[imagePoolCount++] = surface;
+}
+
 void *ConsoleUI::createTexture(uint32_t *data, int width, int height) {
     // Create a new texture with the given dimensions
     GX2Texture *texture = new GX2Texture;
@@ -189,7 +231,12 @@ void *ConsoleUI::createTexture(uint32_t *data, int width, int height) {
     texture->compMap = 0x03020100;
     GX2CalcSurfaceSizeAndAlignment(&texture->surface);
     GX2InitTextureRegs(texture);
-    texture->surface.image = MEMAllocFromDefaultHeapEx(texture->surface.imageSize, texture->surface.alignment);
+    texture->surface.image = allocImage(texture->surface);
+    if (!texture->surface.image) {
+        // Skip drawing it if there's no memory left, rather than crashing
+        delete texture;
+        return nullptr;
+    }
 
     // Copy data to the texture
     uint32_t *dst = (uint32_t*)texture->surface.image;
@@ -206,12 +253,16 @@ void *ConsoleUI::createTexture(uint32_t *data, int width, int height) {
 
 void ConsoleUI::destroyTexture(void *texture) {
     // Clean up a texture
-    MEMFreeToDefaultHeap(((GX2Texture*)texture)->surface.image);
+    if (!texture) return;
+    freeImage(((GX2Texture*)texture)->surface);
     delete (GX2Texture*)texture;
 }
 
 void ConsoleUI::drawTexture(void *texture, float tx, float ty, float tw, float th,
     float x, float y, float w, float h, bool filter, int rotation, uint32_t color) {
+    // Skip textures that couldn't be created
+    if (!texture) return;
+
     // Convert position values to floats for the TV
     float x1 = (x / (tvWidth / 2) - 1.0f);
     float y1 = -(y / (tvHeight / 2) - 1.0f);
@@ -295,6 +346,7 @@ void ConsoleUI::drawTexture(void *texture, float tx, float ty, float tw, float t
     if (running && tw >= 240 && !(ConsoleUI::gbaMode && ScreenLayout::gbaCrop) && ScreenLayout::screenArrangement == 3) {
         bool shift = (Settings::highRes3D || Settings::screenFilter == 1);
         uint32_t *data = &ConsoleUI::framebuffer[(256 * 192 * (ScreenLayout::screenSizing < 2)) << (shift * 2)];
+        if (gpTexture) destroyTexture(gpTexture);
         tempTexture = gpTexture = (GX2Texture*)createTexture(data, 256 << shift, 192 << shift);
     }
 
@@ -603,11 +655,20 @@ int logHeartbeat(int argc, const char **argv) {
             v[HB_JIT_INSIDE], v[HB_JIT_ENTRIES], v[HB_2D_LINES], v[HB_3D_LINES], v[HB_UI_FRAMES], v[HB_UI_STAGE],
             v[HB_AUDIO], v[HB_GPU_FRAMES], v[HB_GPU_STAGE], v[HB_GPU_DISP3DCNT]);
 
-        // Show the timings as microseconds per frame since the last line
+        // Show the timings as microseconds per frame since the last line, with rates over the real time between lines
+        static OSTime lastTime = OSGetTime();
+        OSTime now = OSGetTime();
+        float seconds = std::max<int64_t>(OSTicksToMicroseconds(now - lastTime), 1) / 1000000.0f;
+        lastTime = now;
         uint32_t frames = v[HB_EMU_FRAMES] - last[HB_EMU_FRAMES], gpuFrames = v[HB_GPU_FRAMES] - last[HB_GPU_FRAMES];
         auto per = [&](int slot, uint32_t count) { return count ? (v[slot] - last[slot]) / count : 0; };
+        uint32_t uiFrames = v[HB_UI_FRAMES] - last[HB_UI_FRAMES];
+        fprintf(file, "   %.0f ms | ui fps %.1f, new frames %.1f: get frame %u, textures %u, draw %u, finish %u us\n",
+            seconds * 1000, uiFrames / seconds, (v[HB_UI_NEW_FRAMES] - last[HB_UI_NEW_FRAMES]) / seconds,
+            per(HB_UI_GETFRAME_US, uiFrames), per(HB_UI_TEXTURE_US, uiFrames), per(HB_UI_DRAW_US, uiFrames),
+            per(HB_UI_END_US, uiFrames));
         fprintf(file, "   fps %.1f | gpu frames %u: build %u (textures %u) lock %u draw %u convert %u us | "
-            "emu waits gpu %u 2D %u | 2D waits 3D %u us\n", frames * 4.0f, gpuFrames, per(HB_GPU_BUILD_US, gpuFrames),
+            "emu waits gpu %u 2D %u | 2D waits 3D %u us\n", frames / seconds, gpuFrames, per(HB_GPU_BUILD_US, gpuFrames),
             per(HB_GPU_TEXTURE_US, gpuFrames) / 1000, per(HB_GPU_LOCK_US, gpuFrames), per(HB_GPU_DRAW_US, gpuFrames),
             per(HB_GPU_CONVERT_US, gpuFrames), per(HB_EMU_3D_WAIT_US, frames), per(HB_2D_JOIN_US, frames),
             per(HB_3D_WAIT_US, frames));
@@ -636,6 +697,27 @@ int logHeartbeat(int argc, const char **argv) {
                 per(HB_3D_POLYS, frames3D), per(HB_3D_TOON, frames3D), per(HB_3D_HIGHLIGHT, frames3D),
                 per(HB_3D_SHADOW_MASKS, frames3D), per(HB_3D_SHADOWS, frames3D), per(HB_3D_WIREFRAME, frames3D));
         }
+        // Show the heap use, to tell leaks (growing use) from fragmentation (free memory that large blocks don't fit in)
+        // Once a second, also find the largest block that can still be allocated, to 64 KB
+        static uint32_t largest = 0;
+        if (tick % 4 == 0) {
+            uint32_t low = 0, high = 1 << 30;
+            while (high - low > 0x10000) {
+                uint32_t middle = (low + high) / 2;
+                if (void *block = malloc(middle)) {
+                    free(block);
+                    low = middle;
+                }
+                else {
+                    high = middle;
+                }
+            }
+            largest = low;
+        }
+        struct mallinfo info = mallinfo();
+        fprintf(file, "   memory: heap %u KB, used %u KB, free %u KB, largest block %u KB | gpu textures %u, %u KB\n",
+            info.arena >> 10, info.uordblks >> 10, info.fordblks >> 10, largest >> 10, v[HB_GPU_TEXTURES],
+            v[HB_GPU_TEXTURE_KB]);
         for (int i = 0; i < HB_COUNT; i++)
             last[i] = v[i];
         fclose(file);

@@ -80,7 +80,7 @@ public:
     uint8_t getAlphaTestRef() { return alphaTestRef; }
     uint64_t hashTexture(_Polygon *polygon);
     void decodeTexture(_Polygon *polygon, uint32_t *out);
-    uint32_t *hardwareLine(int line) { return &framebuffer[0][line * 256 * 2]; }
+    uint32_t *hardwareLine(int line) { return allocBuffers() ? &framebuffer[0][line * 256 * 2] : nullptr; }
     void setHardwareBuffer(uint32_t *buffer) { hardwareBuffer = buffer; }
     void hardwareDone(int line) { ready[line].store(3); }
 #ifdef GPU_DUMP
@@ -109,15 +109,26 @@ private:
 
     // Get where a finished scanline is, which can be in the hardware renderer's own buffer
     uint32_t *lineData(int line) {
-        return (hardwareFrame && hardwareBuffer) ? &hardwareBuffer[line * 256 * 2] : &framebuffer[0][line * 256 * 2];
+        if (hardwareFrame && hardwareBuffer) return &hardwareBuffer[line * 256 * 2];
+        return framebuffer ? &framebuffer[0][line * 256 * 2] : blankLine;
     }
     // Each layer is padded by 512 bytes, since the layers' sizes are a multiple of the cache's way size, which would
     // make the same pixel in all of them compete for the same cache set
     static const int LAYER_SIZE = 256 * 192 * 4 + 128;
-    uint32_t framebuffer[2][LAYER_SIZE] = {};
-    int32_t depthBuffer[2][LAYER_SIZE] = {};
-    uint32_t attribBuffer[2][LAYER_SIZE] = {};
-    uint8_t stencilBuffer[256 * 192 * 4] = {};
+    // The software renderer's buffers are only allocated once it's used, since the hardware renderer doesn't need them
+    struct SoftwareBuffers {
+        uint32_t framebuffer[2][LAYER_SIZE];
+        int32_t depthBuffer[2][LAYER_SIZE];
+        uint32_t attribBuffer[2][LAYER_SIZE];
+        uint8_t stencilBuffer[256 * 192 * 4];
+    };
+    SoftwareBuffers *softwareBuffers = nullptr;
+    uint32_t (*framebuffer)[LAYER_SIZE] = nullptr;
+    int32_t (*depthBuffer)[LAYER_SIZE] = nullptr;
+    uint32_t (*attribBuffer)[LAYER_SIZE] = nullptr;
+    uint8_t *stencilBuffer = nullptr;
+    static uint32_t blankLine[256 * 2]; // Returned for scanlines before any buffers exist, as transparent pixels
+    bool allocBuffers();
     bool stencilClear[256 * 2] = {};
 
     int polygonTop[2048] = {};

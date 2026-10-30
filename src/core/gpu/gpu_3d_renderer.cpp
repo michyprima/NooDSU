@@ -20,6 +20,7 @@
 #include <cstring>
 #include <vector>
 
+#include <new>
 #include "../core.h"
 #include "../emu_profile.h"
 
@@ -31,6 +32,20 @@ Gpu3DRenderer::Gpu3DRenderer(Core *core): core(core) {
 }
 
 Gpu3DHardware *Gpu3DRenderer::hardware = nullptr;
+uint32_t Gpu3DRenderer::blankLine[256 * 2] = {};
+
+bool Gpu3DRenderer::allocBuffers() {
+    // Allocate the software renderer's buffers the first time they're needed, cleared
+    if (softwareBuffers) return true;
+    SoftwareBuffers *buffers = new (std::nothrow) SoftwareBuffers();
+    if (!buffers) return false;
+    framebuffer = buffers->framebuffer;
+    depthBuffer = buffers->depthBuffer;
+    attribBuffer = buffers->attribBuffer;
+    stencilBuffer = buffers->stencilBuffer;
+    softwareBuffers = buffers;
+    return true;
+}
 
 void Gpu3DRenderer::finishHardwareFrame() {
     if (!hardwareFrame) return;
@@ -47,6 +62,7 @@ Gpu3DRenderer::~Gpu3DRenderer() {
         threads[i]->join();
         delete threads[i];
     }
+    delete softwareBuffers;
 }
 
 void Gpu3DRenderer::saveState(FILE *file) {
@@ -265,6 +281,15 @@ void Gpu3DRenderer::drawScanline(int line) {
             return;
         }
 
+        // Make sure the software buffers exist, leaving the frame blank if there's no memory for them
+        if (!allocBuffers()) {
+            activeThreads = 0;
+            for (int i = 0; i < (192 << resShift); i++)
+                ready[i].store(3);
+            EP_ADD(EP_JOIN3D, join);
+            return;
+        }
+
         // Set up threaded 3D rendering if enabled
         if ((activeThreads = Settings::threaded3D & 0xF)) {
             // Mark the scanlines as not ready
@@ -279,7 +304,7 @@ void Gpu3DRenderer::drawScanline(int line) {
     }
 
     // Draw scanlines normally when threading is disabled
-    if (activeThreads == 0 && !hardwareFrame) {
+    if (activeThreads == 0 && !hardwareFrame && softwareBuffers) {
         if (resShift) {
             // Draw two scanlines at a time when high-res is enabled
             for (int i = line * 2; i < line * 2 + 2; i++) {
@@ -300,6 +325,7 @@ void Gpu3DRenderer::drawScanline(int line) {
 #ifdef GPU_DUMP
 void Gpu3DRenderer::softwareFrame(uint32_t *out) {
     // Draw the current frame in software for debug builds to compare with a hardware renderer
+    if (!allocBuffers()) return;
     for (int i = 0; i < 192; i++) {
         drawScanline1(i);
         if (i > 0) finishScanline(i - 1);

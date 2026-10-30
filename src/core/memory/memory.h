@@ -57,9 +57,11 @@ public:
     uint8_t *tex3D[4] = {};
     uint8_t *pal3D[6] = {};
 
-    Memory(Core *core): core(core) {};
+    Memory(Core *core);
+    ~Memory();
     void saveState(FILE *file);
     void loadState(FILE *file);
+    void allocRam(bool dsi);
 
     bool loadBios9();
     bool loadBios7();
@@ -117,7 +119,8 @@ private:
     uint8_t bios7[0x10000] = {}; // 64KB ARM7 BIOS
     uint8_t gbaBios[0x4000] = {}; // 16KB GBA BIOS
 
-    uint8_t ram[0x1000000] = {}; // 16MB main RAM
+    uint8_t *ram = nullptr; // 4MB main RAM, or 16MB in DSi mode
+    uint32_t ramSize = 0;
     uint8_t wram[0x8000] = {}; // 32KB shared WRAM
     uint8_t instrTcm[0x8000] = {}; // 32KB instruction TCM
     uint8_t dataTcm[0x4000] = {}; // 16KB data TCM

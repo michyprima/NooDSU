@@ -21,6 +21,7 @@
 #include <cstring>
 #ifdef __WIIU__
 #include <malloc.h>
+#include <mutex>
 #endif
 
 #include "../core.h"
@@ -31,9 +32,27 @@
 #endif
 #include "../emu_profile.h"
 
+#ifdef __WIIU__
+// Framebuffers freed by the frontend, kept for reuse since a few are made every frame; allocating and freeing such
+// large blocks all the time fragments the heap until they no longer fit
+static std::mutex poolMutex;
+static uint32_t *pool[8];
+static int poolCount = 0;
+#endif
+
 // Allocate framebuffers for the frontend, aligned to cache blocks on Wii U so lines can be claimed without reading them
 static uint32_t *newFramebuffer(size_t count) {
 #ifdef __WIIU__
+    {
+        std::lock_guard<std::mutex> guard(poolMutex);
+        for (int i = 0; i < poolCount; i++) {
+            size_t size = malloc_usable_size(pool[i]);
+            if (size < count * sizeof(uint32_t) || size > count * sizeof(uint32_t) + 64) continue;
+            uint32_t *buffer = pool[i];
+            pool[i] = pool[--poolCount];
+            return buffer;
+        }
+    }
     return (uint32_t*)memalign(32, count * sizeof(uint32_t));
 #else
     return new uint32_t[count];
@@ -42,6 +61,12 @@ static uint32_t *newFramebuffer(size_t count) {
 
 static void freeFramebuffer(uint32_t *buffer) {
 #ifdef __WIIU__
+    if (!buffer) return;
+    std::lock_guard<std::mutex> guard(poolMutex);
+    if (poolCount < 8) {
+        pool[poolCount++] = buffer;
+        return;
+    }
     free(buffer);
 #else
     delete[] buffer;
@@ -69,7 +94,7 @@ Gpu::~Gpu() {
     while (!framebuffers.empty()) {
         Buffers &buffers = framebuffers.front();
         freeFramebuffer(buffers.framebuffer);
-        delete[] buffers.hiRes3D;
+        freeFramebuffer(buffers.hiRes3D);
         framebuffers.pop();
     }
 }
@@ -225,7 +250,7 @@ bool Gpu::getFrame(uint32_t *out, bool gbaCrop) {
 
     // Free the used buffers
     freeFramebuffer(buffers.framebuffer);
-    delete[] buffers.hiRes3D;
+    freeFramebuffer(buffers.hiRes3D);
 
     if (Settings::screenGhost) {
         // Get the size of the output framebuffer
@@ -522,7 +547,7 @@ void Gpu::scanline355() {
 
             // Copy the upscaled 3D output to a new buffer if enabled
             if (Settings::highRes3D && (core->gpu2D[0].readDispCnt() & BIT(3))) {
-                buffers.hiRes3D = new uint32_t[256 * 192 * 4];
+                buffers.hiRes3D = newFramebuffer(256 * 192 * 4);
                 memcpy(buffers.hiRes3D, core->gpu3DRenderer.getLine(0), 256 * 192 * 4 * sizeof(uint32_t));
                 buffers.top3D = (powCnt1 & BIT(15));
             }

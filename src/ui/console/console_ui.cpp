@@ -253,7 +253,11 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         // Update the framebuffer and start rendering
         bool shift = (Settings::highRes3D || Settings::screenFilter == 1);
         HB_SET(HB_UI_STAGE, 1);
+        HB_TIMER(hbGetFrame);
         bool update = core->gpu.getFrame(framebuffer, gbaMode) || shift != texShift || gbaMode != texGba;
+        HB_ADD_US(HB_UI_GETFRAME_US, hbGetFrame);
+        if (update) HB_INC(HB_UI_NEW_FRAMES);
+        HB_TIMER(hbTexture);
         texShift = shift;
         texGba = gbaMode;
         // Update the screen textures before starting the frame, since copying them doesn't need to hold up the GPU
@@ -277,7 +281,9 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
             }
         }
 
+        HB_ADD_US(HB_UI_TEXTURE_US, hbTexture);
         HB_SET(HB_UI_STAGE, 2);
+        HB_TIMER(hbDraw);
         startFrame(0);
         HB_SET(HB_UI_STAGE, 3);
 
@@ -448,8 +454,11 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         }
 
         // Finish drawing
+        HB_ADD_US(HB_UI_DRAW_US, hbDraw);
         HB_SET(HB_UI_STAGE, 4);
+        HB_TIMER(hbEnd);
         endFrame();
+        HB_ADD_US(HB_UI_END_US, hbEnd);
 
         // Restore the FPS limiter when pausing or releasing fast-forward hold
         if ((fpsLimiterBackup && (pressed & keyBinds[INPUT_MENU])) ||

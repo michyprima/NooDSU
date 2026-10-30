@@ -107,8 +107,27 @@ void Memory::saveState(FILE *file) {
     }
 }
 
+Memory::Memory(Core *core): core(core) {
+    // Allocate main RAM for the mode the core will run in, since DS mode only uses 4MB of it
+    allocRam(Settings::dsiMode);
+}
+
+Memory::~Memory() {
+    delete[] ram;
+}
+
+void Memory::allocRam(bool dsi) {
+    // Make room for DSi RAM if needed, keeping the RAM cleared like the DS does at boot
+    uint32_t size = dsi ? 0x1000000 : 0x400000;
+    if (ramSize >= size) return;
+    delete[] ram;
+    ram = new uint8_t[size]();
+    ramSize = size;
+}
+
 void Memory::loadState(FILE *file) {
-    // Read DS state data from the file
+    // Read DS state data from the file, after making room in case it's from DSi mode
+    allocRam(core->dsiMode);
     fread(ram, 1, core->dsiMode ? 0x1000000 : 0x400000, file);
     fread(wram, 1, sizeof(wram), file);
     fread(instrTcm, 1, sizeof(instrTcm), file);
