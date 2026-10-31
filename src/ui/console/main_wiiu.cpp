@@ -94,6 +94,9 @@ bool uiParked, uiDone;
 // finishing it, so it's only locked once, since the mutex counts recursive locks
 bool uiHoldsGx2;
 
+// Frames the UI has finished, which the hang watchdog checks for progress
+volatile uint32_t uiFrames;
+
 uint32_t ConsoleUI::defaultKeys[] {
     VPAD_BUTTON_A, VPAD_BUTTON_B, VPAD_BUTTON_MINUS, VPAD_BUTTON_PLUS,
     VPAD_BUTTON_RIGHT | VPAD_STICK_R_EMULATION_RIGHT | VPAD_STICK_L_EMULATION_RIGHT,
@@ -151,6 +154,65 @@ void ConsoleUI::startFrame(uint32_t color) {
 
 }
 
+FILE *openHangReport(const char *reason) {
+    // Append a report of a hang to hang.txt on the SD card, with every thread's state and stack, and return the file
+    // so more can be added; it's formatted with the OS's functions, since stuck threads might hold C runtime locks,
+    // and it's meant to be written from core 2, since file access from core 0 can stall
+    static char path[256];
+    __os_snprintf(path, sizeof(path), "%s/hang.txt", Settings::basePath.c_str());
+    FILE *file = fopen(path, "a");
+    if (!file) return nullptr;
+    static char line[512];
+    __os_snprintf(line, sizeof(line), "=== %s\ntime %llu, UI frames %u, GPU 3D stage %u frame %u, GX2 submitted %llu retired %llu\n",
+        reason, (unsigned long long)OSGetTime(), uiFrames, gpu3dStage, gpu3dFrames,
+        (unsigned long long)GX2GetLastSubmittedTimeStamp(), (unsigned long long)GX2GetRetiredTimeStamp());
+    fputs(line, file);
+
+    // Walk the OS's list of active threads; other cores keep running, so check tags and bound the walk
+    OSThread *thread = OSGetCurrentThread();
+    for (int i = 0; thread->activeLink.prev && i < 128; i++) thread = thread->activeLink.prev;
+    for (int i = 0; thread && i < 128; i++, thread = thread->activeLink.next) {
+        if (thread->tag != OS_THREAD_TAG) break;
+        uint32_t sp = thread->context.gpr[1];
+        int length = __os_snprintf(line, sizeof(line), "thread %08X %s state %u priority %d/%d affinity %u mutex %08X "
+            "pc %08X lr %08X sp %08X stack:", (uint32_t)thread, thread->name ? thread->name : "?", thread->state,
+            thread->priority, thread->basePriority, thread->attr & 7, (uint32_t)thread->mutex, thread->context.srr0,
+            thread->context.lr, sp);
+        for (int frame = 0; frame < 12 && sp >= 0x10000000 && sp < 0x50000000 && !(sp & 3); frame++) {
+            uint32_t next = *(uint32_t*)sp;
+            if (next <= sp || next >= 0x50000000 || (next & 3)) break;
+            length += __os_snprintf(line + length, sizeof(line) - length, " %08X", *(uint32_t*)(next + 4));
+            sp = next;
+        }
+        __os_snprintf(line + length, sizeof(line) - length, "\n");
+        fputs(line, file);
+    }
+    return file;
+}
+
+int watchHangs(int argc, const char **argv) {
+    // Write a hang report if the UI stops finishing frames for a few seconds, unless the system has it stopped; this
+    // only wakes twice a second, and reports each hang once
+    uint32_t last = 0;
+    OSTime since = OSGetSystemTime();
+    bool reported = false;
+    while (true) {
+        OSSleepTicks(OSMillisecondsToTicks(500));
+        OSTime now = OSGetSystemTime();
+        if (uiFrames != last || uiParked || uiDone || releaseRequested.load()) {
+            last = uiFrames;
+            since = now;
+            reported = false;
+        }
+        else if (!reported && OSTicksToMilliseconds(now - since) > 6000) {
+            if (FILE *file = openHangReport("The UI stopped drawing for 6 seconds"))
+                fclose(file);
+            reported = true;
+        }
+    }
+    return 0;
+}
+
 void ConsoleUI::endFrame() {
     // Finish and display a frame, doing what WHBGfxFinishRender does but waiting for the GPU without holding GX2,
     // so the 3D renderer can submit its frame in the meantime
@@ -166,6 +228,7 @@ void ConsoleUI::endFrame() {
         gx2Mutex.unlock();
     }
     GX2WaitTimeStamp(submitted);
+    uiFrames++;
 
     // Free the gamepad screen texture if it was overridden
     if (gpTexture) {
@@ -828,6 +891,8 @@ int main() {
     WorkerThread::createThread(probeThreads, nullptr, 0x10000, 1, OS_THREAD_ATTRIB_AFFINITY_CPU1);
     WorkerThread::createThread(probeThreads, nullptr, 0x10000, 1, OS_THREAD_ATTRIB_AFFINITY_CPU2);
 #endif
+    // Watch for hangs on core 2, where writing the report is safe, above the other threads so it still runs
+    WorkerThread::createThread(watchHangs, nullptr, 0x10000, 10, OS_THREAD_ATTRIB_AFFINITY_CPU2);
     OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int {
         runUi(argc, argv);
         std::lock_guard<std::mutex> guard(procMutex);

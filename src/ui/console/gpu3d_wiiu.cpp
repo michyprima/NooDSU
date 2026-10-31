@@ -49,6 +49,11 @@
 #include "gpu3d_wiiu.h"
 #include "../../core/core.h"
 #include "../../core/heartbeat.h"
+
+// The GPU 3D renderer's step and frame, which hang reports include: 1 = waiting, 2 = building, 3 = locking GX2,
+// 4 = drawing, 5 = handing over scanlines, 6 = submitting, 7 = waiting for the GPU, 8 = timed out
+volatile uint32_t gpu3dStage, gpu3dFrames;
+#define GPU_STAGE(stage) do { gpu3dStage = (stage); HB_SET(HB_GPU_STAGE, stage); } while (0)
 #include "../../core/settings.h"
 #include "../../core/worker_thread.h"
 
@@ -396,13 +401,14 @@ void Gpu3DWiiU::render(Gpu3DRenderer *renderer) {
 void Gpu3DWiiU::run() {
     // Render frames as they're handed over
     while (true) {
-        HB_SET(HB_GPU_STAGE, 1);
+        GPU_STAGE(1);
         std::unique_lock<std::mutex> lock(mutex);
         cond.wait(lock, [&] { return job != nullptr; });
         Gpu3DRenderer *renderer = job;
         job = nullptr;
         lock.unlock();
         renderFrame(renderer);
+        gpu3dFrames++;
         HB_INC(HB_GPU_FRAMES);
         busy.store(false);
     }
@@ -490,7 +496,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     uint16_t disp3DCnt = renderer->readDisp3DCnt();
     bool texturing = disp3DCnt & BIT(0), blending = disp3DCnt & BIT(3);
     bool wBuffer = polygonCount && polygons[0].wBuffer;
-    HB_SET(HB_GPU_STAGE, 2);
+    GPU_STAGE(2);
     HB_SET(HB_GPU_DISP3DCNT, disp3DCnt);
     HB_TIMER(hbBuild);
     frameCount++;
@@ -1030,11 +1036,11 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         // Draw the frame while holding GX2, setting this context's state up again after clearing
         HB_ADD_US(HB_GPU_POSTLOOP_US, hbPostLoop);
         HB_ADD_US(HB_GPU_BUILD_US, hbBuild);
-        HB_SET(HB_GPU_STAGE, 3);
+        GPU_STAGE(3);
         HB_TIMER(hbLock);
         guard.lock();
         HB_ADD_US(HB_GPU_LOCK_US, hbLock);
-        HB_SET(HB_GPU_STAGE, 4);
+        GPU_STAGE(4);
 
         // Make what the CPU wrote visible to the GPU and draw the polygons, or the rest of them if some were sent
         if (!started) {
@@ -1187,7 +1193,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         }
 
         // Write out the packed frame, then let the UI submit while the GPU finishes this frame
-        HB_SET(HB_GPU_STAGE, 6);
+        GPU_STAGE(6);
         GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, packedBuffer.surface.image, packedBuffer.surface.imageSize);
 
         // Copy high-res frames for the UI too, which is much faster on the GPU than reading them with the CPU
@@ -1198,6 +1204,9 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             DCFlushRange(copy, surface.imageSize);
             GX2CopySurface(&packedBuffer.surface, 0, 0, &surface, 0, 0);
             GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, copy, surface.imageSize);
+
+            // Copying sets up GPU state of its own, so set this context's state again, like after resolving
+            GX2SetContextState(state);
         }
         else {
             copy = nullptr;
@@ -1209,11 +1218,11 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         Heartbeat::values[HB_GPU_SUBMIT_US] += hbUs();
 #endif
         // Wait for the GPU, but show an error screen if it stops responding, which would otherwise freeze silently
-        HB_SET(HB_GPU_STAGE, 7);
+        GPU_STAGE(7);
         OSTime start = OSGetSystemTime();
         while (GX2GetRetiredTimeStamp() < submitted) {
             if (OSTicksToMilliseconds(OSGetSystemTime() - start) > 2000) {
-                HB_SET(HB_GPU_STAGE, 8);
+                GPU_STAGE(8);
 #ifdef HEARTBEAT
                 // Heartbeat builds keep waiting instead of stopping the system, so the log shows the GPU stuck
                 OSSleepTicks(OSMillisecondsToTicks(10));
@@ -1224,10 +1233,12 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                 __os_snprintf(message, sizeof(message), "The GPU stopped responding to the GPU 3D renderer\n"
                     "Frame %u: %u draws, %u vertices, 3D display control %04X, anti-aliasing setting %d",
                     frameCount, (uint32_t)draws.size(), count, disp3DCnt, Settings::gpuAntiAlias);
-#ifdef GPU_DUMP
-                if (FILE *file = fopen((Settings::basePath + "/gpuhang.txt").c_str(), "w")) {
-                    fprintf(file, "%s\nmultisample %d, edges %d, fog %d, DS anti-aliasing %d, attributes %d, alpha cutoff %f\n",
-                        message, msaa, gpuEdges, fog, dsAntiAlias, writeAttribs, alphaMin);
+                // Write it to the hang report first, with the frame's draws, since the error screen might not show
+                // with the GPU stuck
+                if (FILE *file = openHangReport(message)) {
+                    fprintf(file, "multisample %d, edges %d, fog %d, DS anti-aliasing %d, attributes %d, compact %d, "
+                        "high-res %d, overlapped %d, alpha cutoff %f\n", msaa, gpuEdges, fog, dsAntiAlias, writeAttribs,
+                        compact, shift, chunked, alphaMin);
                     for (GpuDraw &draw : draws)
                         fprintf(file, "shader %d texture %ux%u sampler %d translucent %d depthEqual %d depthWrite %d solid %d "
                             "stencil %02X shadow %d clearMask %d split %d first %u count %u\n", draw.shader,
@@ -1236,7 +1247,6 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                             draw.shadow, draw.clearMask, draw.split, draw.first, draw.count);
                     fclose(file);
                 }
-#endif
                 OSFatal(message);
             }
             OSSleepTicks(OSMicrosecondsToTicks(100));
@@ -1256,7 +1266,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     // The scanlines are already packed in the renderer's format, so let the 2D engine read them where they are,
     // since copying them was slow with every read missing the cache; they're only drawn over by the next frame,
     // which starts after the 2D engine is done with this one
-    HB_SET(HB_GPU_STAGE, 5);
+    GPU_STAGE(5);
     HB_TIMER(hbConvert);
     DCInvalidateRange(packedBuffer.surface.image, packedBuffer.surface.imageSize);
     if (copy) {
