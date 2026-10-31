@@ -1090,7 +1090,8 @@ void ConsoleUI::settingsMenu() {
     const std::vector<std::string> threads = { "Disabled", "1 Thread", "2 Threads" };
     const std::vector<std::string> position = { "Center", "Top", "Bottom", "Left", "Right" };
     const std::vector<std::string> rotation = { "None", "Clockwise", "Counter-Clockwise" };
-    const std::vector<std::string> arrangement = { "Automatic", "Vertical", "Horizontal", "Single Screen", "TV + GamePad" };
+    const std::vector<std::string> arrangement = { "Automatic", "Vertical", "Horizontal", "Single Screen",
+        "TV + GamePad (Horizontal)", "TV + GamePad (Vertical)" };
     const std::vector<std::string> sizing = { "Even", "Enlarge Top", "Enlarge Bottom" };
     const std::vector<std::string> gap = { "None", "Quarter", "Half", "Full" };
     const std::vector<std::string> filter = { "Nearest", "Upscaled", "Linear" };

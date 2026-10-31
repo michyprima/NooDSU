@@ -30,10 +30,13 @@ public:
     static int integerScale;
     static int gbaCrop;
 
-    // Set by frontends while a second display is available; arrangement 4 then gives it the bottom screen, like single
-    // screen arrangement, and is horizontal otherwise
+    // Set by frontends while a second display is available; arrangements 4 and 5 then give it the bottom screen, like
+    // single screen arrangement, and are horizontal and vertical otherwise
     static bool splitDisplays;
-    static int arrangement() { return (screenArrangement == 4) ? (splitDisplays ? 3 : 2) : screenArrangement; }
+    static int arrangement() {
+        if (screenArrangement < 4) return screenArrangement;
+        return splitDisplays ? 3 : (screenArrangement == 4) ? 2 : 1;
+    }
 
     int winWidth = 0, winHeight = 0;
     int minWidth = 0, minHeight = 0;
