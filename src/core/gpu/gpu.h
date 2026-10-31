@@ -51,7 +51,10 @@ public:
     void loadState(FILE *file);
 
     bool getFrame(uint32_t *out, bool gbaCrop, uint32_t **hiRes3D = nullptr, bool *top3D = nullptr);
-    uint32_t lastFrameId = 0; // The number of the frame getFrame last gave, for frame capture
+    uint32_t frameNumber = 0; // Frames finished, counting ones that weren't queued, to number frames
+    uint32_t lastFrameId = 0; // The number of the frame getFrame last gave
+    bool frontendGhosting = false; // Whether the caller averages frames itself for ghosting, so getFrame doesn't
+    int frontendUpscale = -1; // Whether getFrame upscales frames, or -1 to do it with high-res 3D or upscaled filtering
     uint32_t *newHiRes3D();
     static void freeHiRes3D(uint32_t *buffer);
     void invalidate3D() { dirty3D |= BIT(0); }
@@ -77,7 +80,7 @@ private:
         uint32_t *framebuffer = nullptr;
         uint32_t *hiRes3D = nullptr;
         bool top3D = false;
-        uint32_t id = 0; // The frame's number, for frame capture
+        uint32_t id = 0; // The frame's number
     };
 
     std::queue<Buffers> framebuffers;

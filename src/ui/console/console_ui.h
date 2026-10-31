@@ -83,7 +83,19 @@ public:
     static void *hiResTexture; // A texture of that frame, or a blank one when there isn't one
     static void *blankHiRes; // A blank texture for screens without high-res 3D, which shows their native 3D
     static bool hiResTop; // Whether the 3D is on the top screen
-    static void *drawHiRes; // What to draw over the next screen, or null to draw it normally
+
+    // The GPU builds the screens at twice the size once for each new frame into textures of their own, keeping the last
+    // ones, and the UI draws those, averaged with the last ones for ghosting
+    static void *composed[2], *composedLast[2];
+    static bool screensComposed; // Whether the screens being drawn are those
+    static void composeScreens(void *top, void *bottom, void *hiRes, bool hiResTop);
+    static void composeGbaScreen(void *gba);
+
+    // With ghosting at native size, frames alternate between two halves of the framebuffer, so the last one is kept as
+    // it was, and the GPU averages the two
+    static uint32_t *screenFrame; // Where the current frame is
+    static uint32_t *lastFrame; // Where the last frame is, or null without ghosting
+    static void *drawLastScreen; // The last frame's screen to average with the next one, if any
 
     static int showFpsCounter;
     static int menuTheme;

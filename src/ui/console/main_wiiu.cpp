@@ -66,9 +66,10 @@
 #define NO_INVALIDATE GX2RResourceFlags(GX2R_RESOURCE_DISABLE_CPU_INVALIDATE | GX2R_RESOURCE_DISABLE_GPU_INVALIDATE)
 extern const uint8_t shader_wiiu_gsh[];
 extern const uint8_t screen_wiiu_gsh[];
+extern const uint8_t screen_blend_wiiu_gsh[];
 
 ScreenLayout gpLayout;
-GX2Texture *gpTexture;
+GX2Texture *gpTexture, *gpLastTexture;
 int tvWidth, tvHeight;
 int bufOffset;
 bool firstScreen;
@@ -79,7 +80,8 @@ uint32_t extHeld[4];
 bool scanned;
 
 WHBGfxShaderGroup group;
-WHBGfxShaderGroup screenGroup; // Draws native screens with high-res 3D over them
+WHBGfxShaderGroup screenGroup; // Builds high-res screens, from native ones with high-res 3D over them
+WHBGfxShaderGroup blendGroup; // Draws native screens averaged with the last frame's, for ghosting
 GX2RBuffer posBuffer, texBuffer, colBuffer;
 GX2Sampler samplers[2];
 
@@ -297,6 +299,10 @@ void ConsoleUI::endFrame() {
         destroyTexture(gpTexture);
         gpTexture = nullptr;
     }
+    if (gpLastTexture) {
+        destroyTexture(gpLastTexture);
+        gpLastTexture = nullptr;
+    }
 
     // Reset the frame status
     bufOffset = 0;
@@ -398,25 +404,138 @@ void ConsoleUI::destroyTexture(void *texture) {
     delete (GX2Texture*)texture;
 }
 
-static void drawQuad(GX2Texture *texture, GX2Texture *hiRes, bool filter) {
-    // Draw a texture with the regular shader, or with the screen shader to put high-res 3D over it
-    if (!hiRes) {
+static void drawQuad(GX2Texture *texture, bool filter, GX2Texture *last = nullptr) {
+    // Draw a texture with the regular shader, or averaged with the last frame's for ghosting if given
+    if (!last) {
         GX2SetPixelTexture(texture, group.pixelShader->samplerVars[0].location);
         GX2SetPixelSampler(&samplers[filter], group.pixelShader->samplerVars[0].location);
         GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, 4, 0, 1);
         return;
     }
-    GX2SetFetchShader(&screenGroup.fetchShader);
-    GX2SetVertexShader(screenGroup.vertexShader);
-    GX2SetPixelShader(screenGroup.pixelShader);
-    GX2SetPixelTexture(texture, screenGroup.pixelShader->samplerVars[0].location);
-    GX2SetPixelSampler(&samplers[filter], screenGroup.pixelShader->samplerVars[0].location);
-    GX2SetPixelTexture(hiRes, screenGroup.pixelShader->samplerVars[1].location);
-    GX2SetPixelSampler(&samplers[0], screenGroup.pixelShader->samplerVars[1].location);
+    GX2SetFetchShader(&blendGroup.fetchShader);
+    GX2SetVertexShader(blendGroup.vertexShader);
+    GX2SetPixelShader(blendGroup.pixelShader);
+    GX2SetPixelTexture(texture, blendGroup.pixelShader->samplerVars[0].location);
+    GX2SetPixelSampler(&samplers[filter], blendGroup.pixelShader->samplerVars[0].location);
+    GX2SetPixelTexture(last, blendGroup.pixelShader->samplerVars[1].location);
+    GX2SetPixelSampler(&samplers[filter], blendGroup.pixelShader->samplerVars[1].location);
     GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, 4, 0, 1);
     GX2SetFetchShader(&group.fetchShader);
     GX2SetVertexShader(group.vertexShader);
     GX2SetPixelShader(group.pixelShader);
+}
+
+// Targets for building the high-res screens, two for each screen to keep the last ones for ghosting, with their own
+// context state so the TV's isn't changed, and a quad covering them
+GX2ContextState *composeState;
+GX2ColorBuffer composeTargets[2][2];
+GX2Texture composeTextures[2][2];
+int composeCurrent = 0;
+alignas(GX2_VERTEX_BUFFER_ALIGNMENT) float composePositions[] = { -1, 1, 1, 1, 1, -1, -1, -1 };
+alignas(GX2_VERTEX_BUFFER_ALIGNMENT) float composeCoords[] = { 0, 0, 1, 0, 1, 1, 0, 1 };
+alignas(GX2_VERTEX_BUFFER_ALIGNMENT) float composeColors[] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+
+static bool initCompose() {
+    // Create the targets, tiled for the GPU, which the UI draws from as textures
+    composeState = (GX2ContextState*)MEMAllocFromDefaultHeapEx(sizeof(GX2ContextState), GX2_CONTEXT_STATE_ALIGNMENT);
+    if (!composeState) return false;
+    GX2SetupContextStateEx(composeState, TRUE);
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 2; j++) {
+            GX2ColorBuffer &target = composeTargets[i][j];
+            memset(&target, 0, sizeof(target));
+            target.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+            target.surface.width = 512;
+            target.surface.height = 384;
+            target.surface.depth = 1;
+            target.surface.mipLevels = 1;
+            target.surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+            target.surface.aa = GX2_AA_MODE1X;
+            target.surface.use = (GX2SurfaceUse)(GX2_SURFACE_USE_COLOR_BUFFER | GX2_SURFACE_USE_TEXTURE);
+            target.surface.tileMode = GX2_TILE_MODE_DEFAULT;
+            target.viewNumSlices = 1;
+            GX2CalcSurfaceSizeAndAlignment(&target.surface);
+            GX2InitColorBufferRegs(&target);
+            if (!(target.surface.image = MEMAllocFromDefaultHeapEx(target.surface.imageSize, target.surface.alignment)))
+                return false;
+            GX2Texture &texture = composeTextures[i][j];
+            memset(&texture, 0, sizeof(texture));
+            texture.surface = target.surface;
+            texture.surface.use = GX2_SURFACE_USE_TEXTURE;
+            texture.viewNumSlices = 1;
+            texture.compMap = 0x00010203;
+            GX2InitTextureRegs(&texture);
+        }
+    }
+    DCFlushRange(composePositions, sizeof(composePositions));
+    DCFlushRange(composeCoords, sizeof(composeCoords));
+    DCFlushRange(composeColors, sizeof(composeColors));
+    return true;
+}
+
+void ConsoleUI::composeScreens(void *top, void *bottom, void *hiRes, bool hiResTop) {
+    // Build both high-res screens into the next targets, putting the high-res 3D over the screen it's on, then set the
+    // TV's state up again for drawing
+    composeCurrent ^= 1;
+    GX2SetContextState(composeState);
+    GX2SetViewport(0, 0, 512, 384, 0, 1);
+    GX2SetScissor(0, 0, 512, 384);
+    GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_NEVER);
+    GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
+    GX2SetColorControl(GX2_LOGIC_OP_COPY, 0x00, FALSE, TRUE);
+    GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0,
+        (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0);
+    GX2SetFetchShader(&screenGroup.fetchShader);
+    GX2SetVertexShader(screenGroup.vertexShader);
+    GX2SetPixelShader(screenGroup.pixelShader);
+    GX2SetAttribBuffer(0, sizeof(composePositions), 2 * sizeof(float), composePositions);
+    GX2SetAttribBuffer(1, sizeof(composeCoords), 2 * sizeof(float), composeCoords);
+    GX2SetAttribBuffer(2, sizeof(composeColors), 4 * sizeof(float), composeColors);
+    for (int i = 0; i < 2; i++) {
+        GX2ColorBuffer &target = composeTargets[i][composeCurrent];
+        GX2SetColorBuffer(&target, GX2_RENDER_TARGET_0);
+        GX2SetPixelTexture((GX2Texture*)(i ? bottom : top), screenGroup.pixelShader->samplerVars[0].location);
+        GX2SetPixelSampler(&samplers[0], screenGroup.pixelShader->samplerVars[0].location);
+        GX2Texture *screenHiRes = (GX2Texture*)((hiResTop == !i && hiRes) ? hiRes : blankHiRes);
+        GX2SetPixelTexture(screenHiRes, screenGroup.pixelShader->samplerVars[1].location);
+        GX2SetPixelSampler(&samplers[0], screenGroup.pixelShader->samplerVars[1].location);
+        GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, 4, 0, 1);
+        GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE),
+            target.surface.image, target.surface.imageSize);
+        composedLast[i] = composed[i];
+        composed[i] = &composeTextures[i][composeCurrent];
+    }
+    WHBGfxBeginRenderTV();
+}
+
+void ConsoleUI::composeGbaScreen(void *gba) {
+    // Build the GBA screen at twice the size into the next target, filling 480x320 of it, then set the TV's state up
+    // again for drawing
+    composeCurrent ^= 1;
+    GX2SetContextState(composeState);
+    GX2SetViewport(0, 0, 480, 320, 0, 1);
+    GX2SetScissor(0, 0, 480, 320);
+    GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_NEVER);
+    GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
+    GX2SetColorControl(GX2_LOGIC_OP_COPY, 0x00, FALSE, TRUE);
+    GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0,
+        (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0, (GX2ChannelMask)0);
+    GX2SetFetchShader(&group.fetchShader);
+    GX2SetVertexShader(group.vertexShader);
+    GX2SetPixelShader(group.pixelShader);
+    GX2SetAttribBuffer(0, sizeof(composePositions), 2 * sizeof(float), composePositions);
+    GX2SetAttribBuffer(1, sizeof(composeCoords), 2 * sizeof(float), composeCoords);
+    GX2SetAttribBuffer(2, sizeof(composeColors), 4 * sizeof(float), composeColors);
+    GX2ColorBuffer &target = composeTargets[0][composeCurrent];
+    GX2SetColorBuffer(&target, GX2_RENDER_TARGET_0);
+    GX2SetPixelTexture((GX2Texture*)gba, group.pixelShader->samplerVars[0].location);
+    GX2SetPixelSampler(&samplers[0], group.pixelShader->samplerVars[0].location);
+    GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, 4, 0, 1);
+    GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE),
+        target.surface.image, target.surface.imageSize);
+    composedLast[0] = composed[0];
+    composed[0] = &composeTextures[0][composeCurrent];
+    WHBGfxBeginRenderTV();
 }
 
 void *ConsoleUI::createHiResTexture(uint32_t *data) {
@@ -533,16 +652,26 @@ void ConsoleUI::drawTexture(void *texture, float tx, float ty, float tw, float t
     GX2RSetAttributeBuffer(&posBuffer, 0, posBuffer.elemSize, bufOffset * 2);
     GX2RSetAttributeBuffer(&texBuffer, 1, texBuffer.elemSize, bufOffset);
     GX2RSetAttributeBuffer(&colBuffer, 2, colBuffer.elemSize, bufOffset * 2);
-    drawQuad((GX2Texture*)texture, (GX2Texture*)drawHiRes, filter);
+    drawQuad((GX2Texture*)texture, filter, (GX2Texture*)drawLastScreen);
 
     // Override the gamepad screen texture with the other screen in single screen mode
-    GX2Texture *tempTexture = nullptr, *tempHiRes = (GX2Texture*)drawHiRes;
+    GX2Texture *tempTexture = nullptr, *tempLast = (GX2Texture*)drawLastScreen;
     if (running && tw >= 240 && !(ConsoleUI::gbaMode && ScreenLayout::gbaCrop) && ScreenLayout::arrangement() == 3) {
-        bool shift = screenShift, bottom = (ScreenLayout::screenSizing < 2);
-        uint32_t *data = &ConsoleUI::framebuffer[(256 * 192 * bottom) << (shift * 2)];
-        if (gpTexture) destroyTexture(gpTexture);
-        tempTexture = gpTexture = (GX2Texture*)createTexture(data, 256 << shift, 192 << shift);
-        if (drawHiRes) tempHiRes = (GX2Texture*)((bottom != hiResTop) ? hiResTexture : blankHiRes);
+        bool bottom = (ScreenLayout::screenSizing < 2);
+        if (screensComposed) {
+            tempTexture = (GX2Texture*)composed[bottom];
+            if (drawLastScreen) tempLast = (GX2Texture*)composedLast[bottom];
+        }
+        else {
+            bool shift = screenShift;
+            uint32_t *data = &screenFrame[(256 * 192 * bottom) << (shift * 2)];
+            if (gpTexture) destroyTexture(gpTexture);
+            tempTexture = gpTexture = (GX2Texture*)createTexture(data, 256 << shift, 192 << shift);
+            if (drawLastScreen && lastFrame) {
+                if (gpLastTexture) destroyTexture(gpLastTexture);
+                tempLast = gpLastTexture = (GX2Texture*)createTexture(&lastFrame[256 * 192 * bottom], 256, 192);
+            }
+        }
     }
 
     // Draw a texture on the gamepad
@@ -553,7 +682,7 @@ void ConsoleUI::drawTexture(void *texture, float tx, float ty, float tw, float t
     GX2RSetAttributeBuffer(&posBuffer, 0, posBuffer.elemSize, bufOffset * 2 + 8 * sizeof(float));
     GX2RSetAttributeBuffer(&texBuffer, 1, texBuffer.elemSize, bufOffset);
     GX2RSetAttributeBuffer(&colBuffer, 2, colBuffer.elemSize, bufOffset * 2);
-    drawQuad(tempTexture ? tempTexture : (GX2Texture*)texture, tempHiRes, filter);
+    drawQuad(tempTexture ? tempTexture : (GX2Texture*)texture, filter, tempLast);
 
     // Adjust the buffer offset if there's still room
     if (bufOffset < 8 * sizeof(float) * MAX_DRAWS)
@@ -713,10 +842,16 @@ int runUi(int argc, const char **argv) {
     WHBGfxInitShaderAttribute(&screenGroup, "tex_coords", 1, 0, GX2_ATTRIB_FORMAT_FLOAT_32_32);
     WHBGfxInitShaderAttribute(&screenGroup, "vtx_color", 2, 0, GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
     WHBGfxInitFetchShader(&screenGroup);
+    WHBGfxLoadGFDShaderGroup(&blendGroup, 0, screen_blend_wiiu_gsh);
+    WHBGfxInitShaderAttribute(&blendGroup, "position", 0, 0, GX2_ATTRIB_FORMAT_FLOAT_32_32);
+    WHBGfxInitShaderAttribute(&blendGroup, "tex_coords", 1, 0, GX2_ATTRIB_FORMAT_FLOAT_32_32);
+    WHBGfxInitShaderAttribute(&blendGroup, "vtx_color", 2, 0, GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
+    WHBGfxInitFetchShader(&blendGroup);
 
     // Make a blank high-res 3D texture for screens without one, so their native 3D shows
     static uint32_t blank = 0;
     ConsoleUI::blankHiRes = ConsoleUI::createTexture(&blank, 1, 1);
+    initCompose();
 
     // Initialize the position buffer
     posBuffer.flags = GX2R_RESOURCE_BIND_VERTEX_BUFFER | GX2R_RESOURCE_USAGE_CPU_READ |
@@ -896,8 +1031,9 @@ int logHeartbeat(int argc, const char **argv) {
         uint32_t frames = v[HB_EMU_FRAMES] - last[HB_EMU_FRAMES], gpuFrames = v[HB_GPU_FRAMES] - last[HB_GPU_FRAMES];
         auto per = [&](int slot, uint32_t count) { return count ? (v[slot] - last[slot]) / count : 0; };
         uint32_t uiFrames = v[HB_UI_FRAMES] - last[HB_UI_FRAMES];
-        fprintf(file, "   %.0f ms | ui fps %.1f, new frames %.1f: get frame %u, textures %u, draw %u, finish %u us\n",
-            seconds * 1000, uiFrames / seconds, (v[HB_UI_NEW_FRAMES] - last[HB_UI_NEW_FRAMES]) / seconds,
+        fprintf(file, "   %.0f ms | ui fps %.1f, new frames %.1f, skipped %u, repeated %u: get frame %u, textures %u, draw %u, "
+            "finish %u us\n", seconds * 1000, uiFrames / seconds, (v[HB_UI_NEW_FRAMES] - last[HB_UI_NEW_FRAMES]) / seconds,
+            v[HB_UI_SKIPPED] - last[HB_UI_SKIPPED], v[HB_UI_REPEATS] - last[HB_UI_REPEATS],
             per(HB_UI_GETFRAME_US, uiFrames), per(HB_UI_TEXTURE_US, uiFrames), per(HB_UI_DRAW_US, uiFrames),
             per(HB_UI_END_US, uiFrames));
         fprintf(file, "   fps %.1f | gpu frames %u: build %u (textures %u) lock %u draw %u convert %u us | "
@@ -921,6 +1057,11 @@ int logHeartbeat(int argc, const char **argv) {
             v[HB_ROM_WAIT_US] - last[HB_ROM_WAIT_US]);
         fprintf(file, "   ROM: emulator waits for block %d, loader at block %u stage %u\n", int(v[HB_ROM_WAIT_BLOCK]) - 1,
             v[HB_ROM_LOAD_BLOCK], v[HB_ROM_LOAD_STAGE]);
+
+        // Show where the CPUs are, read without stopping them, to see where a game is stuck
+        if (Core *core = ConsoleUI::core)
+            fprintf(file, "   CPUs: ARM9 PC %08X halted %u, ARM7 PC %08X halted %u, GBA %d\n", core->interpreter[0].getPC(),
+                core->interpreter[0].halted, core->interpreter[1].getPC(), core->interpreter[1].halted, core->gbaMode);
 
         // Show which 3D features were used, with polygon counts per 3D frame
         uint32_t frames3D = v[HB_3D_FRAMES] - last[HB_3D_FRAMES];

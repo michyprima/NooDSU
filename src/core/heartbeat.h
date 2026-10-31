@@ -82,6 +82,8 @@ enum HeartbeatSlot {
     HB_UI_TEXTURE_US, // Total microseconds the UI spent copying frames into screen textures
     HB_UI_DRAW_US, // Total microseconds the UI spent drawing, input included
     HB_UI_END_US, // Total microseconds the UI spent finishing frames, waiting for the GPU and vsync
+    HB_UI_SKIPPED, // Frames the UI never got, between ones it did
+    HB_UI_REPEATS, // UI frames without a new frame
     HB_COUNT
 };
 

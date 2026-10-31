@@ -79,7 +79,12 @@ uint32_t *ConsoleUI::hiResData;
 void *ConsoleUI::hiResTexture;
 void *ConsoleUI::blankHiRes;
 bool ConsoleUI::hiResTop;
-void *ConsoleUI::drawHiRes;
+void *ConsoleUI::composed[2];
+void *ConsoleUI::composedLast[2];
+bool ConsoleUI::screensComposed;
+uint32_t *ConsoleUI::screenFrame = ConsoleUI::framebuffer;
+uint32_t *ConsoleUI::lastFrame;
+void *ConsoleUI::drawLastScreen;
 bool ConsoleUI::changed;
 
 std::thread *ConsoleUI::coreThread;
@@ -292,6 +297,7 @@ void ConsoleUI::initialize(int width, int height, std::string root, std::string 
 void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout) {
     // Keep frame textures between iterations, and only recreate them when the frame changes
     void *gbaTexture = nullptr, *topTexture = nullptr, *botTexture = nullptr;
+    void *lastTopTexture = nullptr, *lastBotTexture = nullptr, *lastGbaTexture = nullptr;
     bool texShift = false, texGba = false;
 
     while (running) {
@@ -310,20 +316,52 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         }
 
         // Update the framebuffer and start rendering
-        // With high-res 3D on Wii U, frames stay native and the GPU draws the high-res 3D over them
+        // On Wii U, frames always come at native size, and the GPU builds the screens at twice the size when needed:
+        // DS screens with high-res 3D, drawing it over them, or with the upscaled filter, and the GBA screen with the
+        // upscaled filter, which looks like the core's upscaling since it's drawn filtered from there; it also does
+        // ghosting, averaging frames with the last ones
 #ifdef __WIIU__
-        bool compose = Settings::highRes3D && !Settings::screenGhost && !gbaMode;
+        bool hiRes3D = Settings::highRes3D && !gbaMode;
+        bool compose = !gbaMode && (Settings::highRes3D || Settings::screenFilter == 1);
+        bool composeGba = gbaMode && Settings::screenFilter == 1;
+        bool shift = false;
+        bool ghost = Settings::screenGhost;
 #else
-        bool compose = false;
+        bool hiRes3D = false, compose = false, composeGba = false;
+        bool shift = (Settings::highRes3D || Settings::screenFilter == 1);
+        bool ghost = false;
 #endif
-        bool shift = (Settings::highRes3D || Settings::screenFilter == 1) && !compose;
         screenShift = shift;
+        core->gpu.frontendUpscale = shift;
+        core->gpu.frontendGhosting = ghost;
         HB_SET(HB_UI_STAGE, 1);
         HB_TIMER(hbGetFrame);
         uint32_t *hiRes = nullptr;
         bool top3D = false;
-        bool newFrame = core->gpu.getFrame(framebuffer, gbaMode, compose ? &hiRes : nullptr, &top3D);
+        bool alternate = ghost && !compose && !composeGba; // Screens built on the GPU keep their last ones themselves
+        uint32_t *out = (alternate && screenFrame == framebuffer) ? &framebuffer[256 * 192 * 4] : framebuffer;
+        bool newFrame = core->gpu.getFrame(out, gbaMode, hiRes3D ? &hiRes : nullptr, &top3D);
+        if (newFrame) {
+            lastFrame = alternate ? screenFrame : nullptr;
+            screenFrame = out;
+        }
+        if (!alternate) {
+            screenFrame = framebuffer;
+            lastFrame = nullptr;
+        }
         bool update = newFrame || shift != texShift || gbaMode != texGba;
+#ifdef HEARTBEAT
+        // Count frames the UI skipped over, and UI frames that had no new frame to show
+        static uint32_t lastId = 0;
+        if (newFrame) {
+            uint32_t id = core->gpu.lastFrameId;
+            if (id > lastId + 1 && id - lastId < 1000) HB_ADD(HB_UI_SKIPPED, id - lastId - 1);
+            lastId = id;
+        }
+        else {
+            HB_INC(HB_UI_REPEATS);
+        }
+#endif
 #ifdef STATE_DEBUG
         {
             // Write the snapshots the emulator thread made, and every thread's state when it froze
@@ -372,12 +410,12 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
 #endif
 #ifdef __WIIU__
         // Replace the high-res 3D frame with a new one, or drop it when it's not used
-        if (newFrame || !compose) {
+        if (newFrame || !hiRes3D) {
             if (hiResTexture) destroyHiResTexture(hiResTexture);
             Gpu::freeHiRes3D(hiResData);
             hiResData = hiRes;
             hiResTop = top3D;
-            hiResTexture = compose ? createHiResTexture(hiRes) : nullptr;
+            hiResTexture = hiRes3D ? createHiResTexture(hiRes) : nullptr;
         }
 #endif
         HB_ADD_US(HB_UI_GETFRAME_US, hbGetFrame);
@@ -386,23 +424,34 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         texShift = shift;
         texGba = gbaMode;
         // Update the screen textures before starting the frame, since copying them doesn't need to hold up the GPU
-        // renderer's access to the GPU
+        // renderer's access to the GPU; building high-res screens needs both, whichever are shown
         bool showTop = (ScreenLayout::arrangement() != 3 || ScreenLayout::screenSizing < 2);
         bool showBot = (ScreenLayout::arrangement() != 3 || ScreenLayout::screenSizing == 2);
+        screensComposed = compose;
         if (gbaMode) {
             if (update || !gbaTexture) {
                 if (gbaTexture) destroyTexture(gbaTexture);
-                gbaTexture = createTexture(&framebuffer[0], 240 << shift, 160 << shift);
+                gbaTexture = createTexture(&screenFrame[0], 240 << shift, 160 << shift);
+            }
+            if (update || !lastFrame) {
+                if (lastGbaTexture) destroyTexture(lastGbaTexture);
+                lastGbaTexture = lastFrame ? createTexture(&lastFrame[0], 240, 160) : nullptr;
             }
         }
         else {
-            if (showTop && (update || !topTexture)) {
+            if ((showTop || screensComposed) && (update || !topTexture)) {
                 if (topTexture) destroyTexture(topTexture);
-                topTexture = createTexture(&framebuffer[0], 256 << shift, 192 << shift);
+                topTexture = createTexture(&screenFrame[0], 256 << shift, 192 << shift);
             }
-            if (showBot && (update || !botTexture)) {
+            if ((showBot || screensComposed) && (update || !botTexture)) {
                 if (botTexture) destroyTexture(botTexture);
-                botTexture = createTexture(&framebuffer[(256 * 192) << (shift * 2)], 256 << shift, 192 << shift);
+                botTexture = createTexture(&screenFrame[(256 * 192) << (shift * 2)], 256 << shift, 192 << shift);
+            }
+            if (update || !lastFrame) {
+                if (lastTopTexture) destroyTexture(lastTopTexture);
+                if (lastBotTexture) destroyTexture(lastBotTexture);
+                lastTopTexture = (lastFrame && showTop) ? createTexture(&lastFrame[0], 256, 192) : nullptr;
+                lastBotTexture = (lastFrame && showBot) ? createTexture(&lastFrame[256 * 192], 256, 192) : nullptr;
             }
         }
 
@@ -411,27 +460,36 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         HB_TIMER(hbDraw);
         startFrame(0);
         HB_SET(HB_UI_STAGE, 3);
+#ifdef __WIIU__
+        // Build the screens at twice the size once for each new frame
+        if (compose && (update || !composed[0]))
+            composeScreens(topTexture, botTexture, hiResTexture, hiResTop);
+        if (composeGba && (update || !composed[0]))
+            composeGbaScreen(gbaTexture);
+#endif
 
         if (gbaMode) {
-            // Draw the GBA screen
-            drawTexture(gbaTexture, 0, 0, 240 << shift, 160 << shift, layout.topX, layout.topY,
-                layout.topWidth, layout.topHeight, Settings::screenFilter, ScreenLayout::screenRotation);
+            // Draw the GBA screen, or the one built from it at twice the size, with the last one for ghosting
+            drawLastScreen = composeGba ? (ghost ? composedLast[0] : nullptr) : lastGbaTexture;
+            drawTexture(composeGba ? composed[0] : gbaTexture, 0, 0, (composeGba ? 480 : 240) << shift,
+                (composeGba ? 320 : 160) << shift, layout.topX, layout.topY, layout.topWidth, layout.topHeight,
+                Settings::screenFilter, ScreenLayout::screenRotation);
+            drawLastScreen = nullptr;
         }
         else { // DS mode
-            // Draw the DS top screen
+            // Draw the DS screens, or the high-res ones built from them, with the last ones for ghosting
+            int width = screensComposed ? 512 : (256 << shift), height = screensComposed ? 384 : (192 << shift);
             if (showTop) {
-                drawHiRes = compose ? (hiResTop ? hiResTexture : blankHiRes) : nullptr;
-                drawTexture(topTexture, 0, 0, 256 << shift, 192 << shift, layout.topX, layout.topY,
+                drawLastScreen = screensComposed ? (ghost ? composedLast[0] : nullptr) : lastTopTexture;
+                drawTexture(screensComposed ? composed[0] : topTexture, 0, 0, width, height, layout.topX, layout.topY,
                     layout.topWidth, layout.topHeight, Settings::screenFilter, ScreenLayout::screenRotation);
             }
-
-            // Draw the DS bottom screen
             if (showBot) {
-                drawHiRes = compose ? (hiResTop ? blankHiRes : hiResTexture) : nullptr;
-                drawTexture(botTexture, 0, 0, 256 << shift, 192 << shift, layout.botX, layout.botY,
+                drawLastScreen = screensComposed ? (ghost ? composedLast[1] : nullptr) : lastBotTexture;
+                drawTexture(screensComposed ? composed[1] : botTexture, 0, 0, width, height, layout.botX, layout.botY,
                     layout.botWidth, layout.botHeight, Settings::screenFilter, ScreenLayout::screenRotation);
             }
-            drawHiRes = nullptr;
+            drawLastScreen = nullptr;
         }
 
 #ifdef DRC_DEBUG
@@ -658,11 +716,16 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
     if (gbaTexture) destroyTexture(gbaTexture);
     if (topTexture) destroyTexture(topTexture);
     if (botTexture) destroyTexture(botTexture);
+    if (lastTopTexture) destroyTexture(lastTopTexture);
+    if (lastBotTexture) destroyTexture(lastBotTexture);
+    if (lastGbaTexture) destroyTexture(lastGbaTexture);
 #ifdef __WIIU__
     if (hiResTexture) destroyHiResTexture(hiResTexture);
     Gpu::freeHiRes3D(hiResData);
     hiResTexture = nullptr;
     hiResData = nullptr;
+    screenFrame = framebuffer;
+    lastFrame = nullptr;
 #endif
 }
 

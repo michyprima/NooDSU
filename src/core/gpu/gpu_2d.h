@@ -145,10 +145,11 @@ private:
     uint16_t bgCnt[4] = {};
     uint16_t bgHOfs[4] = {};
     uint16_t bgVOfs[4] = {};
-    int16_t bgPA[2] = {};
+    // The rotation and scaling parameters start as the identity like on hardware, which homebrew can rely on
+    int16_t bgPA[2] = { 0x100, 0x100 };
     int16_t bgPB[2] = {};
     int16_t bgPC[2] = {};
-    int16_t bgPD[2] = {};
+    int16_t bgPD[2] = { 0x100, 0x100 };
     int32_t bgX[2] = {};
     int32_t bgY[2] = {};
     uint16_t winX1[2] = {};

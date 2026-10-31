@@ -177,7 +177,8 @@ bool Gpu::getFrame(uint32_t *out, bool gbaCrop, uint32_t **hiRes3D, bool *top3D)
     lastFrameId = buffers.id;
 
     // When the caller takes high-res 3D frames to draw them itself, output native frames with 3D pixels marked
-    bool upscale = (Settings::highRes3D || Settings::screenFilter == 1) && !hiRes3D;
+    bool upscale = (frontendUpscale >= 0) ? (frontendUpscale && !hiRes3D) :
+        ((Settings::highRes3D || Settings::screenFilter == 1) && !hiRes3D);
 
     if (gbaCrop) {
         // Output the frame in RGB8 format, cropped for GBA
@@ -293,7 +294,7 @@ bool Gpu::getFrame(uint32_t *out, bool gbaCrop, uint32_t **hiRes3D, bool *top3D)
         freeFramebuffer(buffers.hiRes3D);
     }
 
-    if (Settings::screenGhost) {
+    if (Settings::screenGhost && !frontendGhosting) {
         // Get the size of the output framebuffer
         static uint32_t prev[256 * 192 * 8];
         uint32_t width = (gbaCrop ? 240 : 256) << upscale;
@@ -375,6 +376,7 @@ void Gpu::gbaScanline308() {
         if (frames == 0 && framebuffers.size() < 2) {
             // Copy the completed sub-framebuffer to a new framebuffer
             Buffers buffers;
+            buffers.id = frameNumber;
             buffers.framebuffer = newFramebuffer(256 * 160);
             memcpy(buffers.framebuffer, core->gpu2D[0].getFramebuffer(), 256 * 160 * sizeof(uint32_t));
 
@@ -384,6 +386,7 @@ void Gpu::gbaScanline308() {
             ready.store(true);
             mutex.unlock();
         }
+        frameNumber++;
 
         // Update the frame count to skip frames when non-zero
         if (frames++ >= Settings::frameskip)
@@ -600,9 +603,9 @@ void Gpu::scanline355() {
                 buffers.top3D = (powCnt1 & BIT(15));
             }
 
+            buffers.id = frameNumber;
 #ifdef FRAME_CAPTURE
             // Record both screens as the 2D engine finished them
-            buffers.id = FrameCapture::emuFrame;
             if (FrameCapture::Frame *capture = FrameCapture::slot(FrameCapture::emuFrame)) {
                 capture->emuFrame = FrameCapture::emuFrame;
                 memcpy(capture->screens, buffers.framebuffer, sizeof(capture->screens));
@@ -617,6 +620,7 @@ void Gpu::scanline355() {
             EP_ADD(EP_FRAMECOPY, frameCopy);
         }
 
+        frameNumber++;
 #ifdef FRAME_CAPTURE
         FrameCapture::emuFrame++;
 #endif
