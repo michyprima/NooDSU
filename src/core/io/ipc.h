@@ -26,6 +26,7 @@
 class Core;
 
 class Ipc {
+    friend class Core;
 public:
     Ipc(Core *core): core(core) {}
     void saveState(FILE *file);

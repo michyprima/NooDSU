@@ -154,6 +154,7 @@ struct _Polygon {
 };
 
 class Gpu3D {
+    friend class Core;
 public:
     _Polygon *polygonsOut = polygons2;
     Vertex *verticesOut = vertices2;

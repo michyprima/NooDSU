@@ -17,6 +17,7 @@
     along with NooDS. If not, see <https://www.gnu.org/licenses/>.
 */
 
+#include <cstdio>
 #include <algorithm>
 #include <cstring>
 #include <thread>
@@ -423,6 +424,43 @@ void Core::enterGbaMode() {
     interpreter[1].directBoot();
     memory.write<uint16_t>(1, 0x4000088, 0x200); // SOUNDBIAS
 }
+
+#ifdef STATE_DEBUG
+std::string Core::debugSnapshot(const char *reason) {
+    // Describe the state that decides whether the CPUs run, for finding out why a game stops: each CPU's halt bits,
+    // interrupt enables, requests and master enable, status, PC and wakes, the run function, every scheduled event,
+    // and the display, 3D, IPC and JIT state that can wake them
+    char text[8192];
+    int length = 0;
+    auto add = [&](const char *format, auto... args) {
+        if (length < (int)sizeof(text)) length += snprintf(text + length, sizeof(text) - length, format, args...);
+    };
+    const char *run = (runFunc == &Interpreter::runCoreNone) ? "none" : (runFunc == &Interpreter::runCoreNds) ? "nds" :
+        (runFunc == &Interpreter::runCoreNdsFast) ? "nds-fast" : (runFunc == &Interpreter::runCoreDsi) ? "dsi" :
+        (runFunc == &Interpreter::runCoreSingle<true, 1>) ? "single-arm7" :
+        (runFunc == &Interpreter::runCoreSingle<false, 0>) ? "single-arm9" :
+        (runFunc == &Interpreter::runCoreSingle<true, 0>) ? "single-gba" : "?";
+    add("=== %s\nrun %s, running %d, arm7 HLE %d, DSi %d, GBA %d, global cycles %u, JIT %d/%d\n", reason, run,
+        (int)running.load(), arm7Hle, dsiMode, gbaMode, globalCycles, (int)jit.hasCode(), (int)jit7.hasCode());
+    for (int i = 0; i < 2; i++) {
+        Interpreter &cpu = interpreter[i];
+        add("ARM%d: halted %02X, IME %d, IE %08X%08X, IF %08X%08X, CPSR %08X (IRQ %s), PC %08X, wakes %u\n",
+            i ? 7 : 9, cpu.halted, cpu.ime, uint32_t(cpu.ie >> 32), uint32_t(cpu.ie), uint32_t(cpu.irf >> 32),
+            uint32_t(cpu.irf), cpu.cpsr, (cpu.cpsr & BIT(7)) ? "off" : "on", cpu.getPC(), cpu.wakes);
+    }
+    add("display: VCOUNT %u, DISPSTAT %04X %04X, 3D dirty %u, GXSTAT %08X, pipe %u, queue start %u end %u head %u "
+        "tail %u, worker sleeping %d\n", gpu.vCount, gpu.dispStat[0], gpu.dispStat[1], gpu.dirty3D, gpu3D.gxStat | gpu3D.gxStatExec,
+        gpu3D.pipeSize, gpu3D.queueStart, gpu3D.queueEnd, gpu3D.queueHead.load(), gpu3D.queueTail.load(),
+        (int)gpu3D.workerSleeping.load());
+    add("IPC: sync %04X %04X, FIFO control %04X %04X, FIFO sizes %u %u\n", ipc.ipcSync[0], ipc.ipcSync[1],
+        ipc.ipcFifoCnt[0], ipc.ipcFifoCnt[1], (uint32_t)ipc.fifos[0].size(), (uint32_t)ipc.fifos[1].size());
+    add("events (%u):", (uint32_t)events.size());
+    for (size_t i = 0; i < events.size() && i < 48; i++)
+        add(" %d@%u", (int)events[i].task, events[i].cycles);
+    add("\n");
+    return std::string(text);
+}
+#endif
 
 void Core::endFrame() {
     // Break execution at the end of a frame and count it

@@ -41,6 +41,7 @@
 class Core;
 
 class Gpu {
+    friend class Core;
 public:
     Gpu(Core *core);
     ~Gpu();

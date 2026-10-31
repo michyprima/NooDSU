@@ -40,6 +40,9 @@ static OSThread *emuThread = nullptr;
 #include "../../core/worker_thread.h"
 #include "../../core/emu_profile.h"
 #include "../../core/frame_capture.h"
+#if defined(STATE_DEBUG) && defined(__WIIU__)
+#include "gpu3d_wiiu.h"
+#endif
 
 #ifdef PROFILE_SAMPLER
 #include "sampler.h"
@@ -88,6 +91,52 @@ int ConsoleUI::fpsLimiterBackup = 0;
 std::mutex ConsoleUI::displayMutex;
 std::condition_variable ConsoleUI::displayCond;
 int ConsoleUI::displayTicks = 0;
+
+#ifdef STATE_DEBUG
+// State debugging: snapshots of the state that decides whether the CPUs run go to statelog.txt, before saving a state,
+// right after loading one, every 30 frames for 10 seconds after that, and when both CPUs stay halted without waking
+// for 2 seconds, which also writes every thread's state to hang.txt; the emulator thread makes them at the end of
+// frames, where the state is consistent, and the UI thread writes them
+static std::mutex debugMutex;
+static std::vector<std::string> debugPending;
+static bool debugThreads = false;
+static std::atomic<int> debugAfterLoad(0);
+static uint32_t debugWakes[2] = {}, debugStuckFrames = 0;
+
+static void debugWrite(const std::string &text) {
+    if (FILE *file = fopen((Settings::basePath + "/statelog.txt").c_str(), "a")) {
+        fputs(text.c_str(), file);
+        fclose(file);
+    }
+}
+
+static void debugFrameEnd(Core *core) {
+    std::vector<std::string> snapshots;
+    int left = debugAfterLoad.load();
+    if (left > 0) {
+        if (left % 30 == 0)
+            snapshots.push_back(core->debugSnapshot(("after load, " + std::to_string(600 - left) + " frames in").c_str()));
+        debugAfterLoad.store(left - 1);
+    }
+    uint32_t wakes[] = { core->interpreter[0].wakes, core->interpreter[1].wakes };
+    bool halted = core->interpreter[0].halted && core->interpreter[1].halted;
+    if (halted && wakes[0] == debugWakes[0] && wakes[1] == debugWakes[1]) {
+        if (++debugStuckFrames == 120)
+            snapshots.push_back(core->debugSnapshot("frozen: both CPUs halted without waking for 120 frames"));
+    }
+    else {
+        if (debugStuckFrames >= 120)
+            snapshots.push_back(core->debugSnapshot(("woke up after " + std::to_string(debugStuckFrames) + " frames").c_str()));
+        debugStuckFrames = 0;
+    }
+    debugWakes[0] = wakes[0];
+    debugWakes[1] = wakes[1];
+    if (snapshots.empty()) return;
+    std::lock_guard<std::mutex> guard(debugMutex);
+    for (std::string &snapshot : snapshots) debugPending.push_back(snapshot);
+    if (debugStuckFrames == 120) debugThreads = true;
+}
+#endif
 int ConsoleUI::showFpsCounter = 0;
 int ConsoleUI::menuTheme = 0;
 int ConsoleUI::keyBinds[] = {};
@@ -275,6 +324,25 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         bool top3D = false;
         bool newFrame = core->gpu.getFrame(framebuffer, gbaMode, compose ? &hiRes : nullptr, &top3D);
         bool update = newFrame || shift != texShift || gbaMode != texGba;
+#ifdef STATE_DEBUG
+        {
+            // Write the snapshots the emulator thread made, and every thread's state when it froze
+            std::vector<std::string> snapshots;
+            bool threads;
+            {
+                std::lock_guard<std::mutex> guard(debugMutex);
+                snapshots.swap(debugPending);
+                threads = debugThreads;
+                debugThreads = false;
+            }
+            for (std::string &snapshot : snapshots) debugWrite(snapshot);
+#ifdef __WIIU__
+            if (threads)
+                if (FILE *file = openHangReport("State debug: both CPUs halted without waking for 120 frames"))
+                    fclose(file);
+#endif
+        }
+#endif
 #ifdef FRAME_CAPTURE
         // Record the screens as the UI got them, and write the capture to capture.bin once it's done, with a header
         // of the format, frame count, first frame and sizes, then the frames and the 3D frames
@@ -1248,6 +1316,9 @@ void ConsoleUI::pauseMenu() {
                     break;
 
                 // Save the state and return to emulation if confirmed
+#ifdef STATE_DEBUG
+                debugWrite(core->debugSnapshot("before saving a state"));
+#endif
                 core->saveStates.saveState();
                 startCore();
                 return;
@@ -1283,6 +1354,10 @@ void ConsoleUI::pauseMenu() {
                 // Load the state and return to emulation if confirmed
                 if (!message(title, text, !error) || error) break;
                 core->saveStates.loadState();
+#ifdef STATE_DEBUG
+                debugWrite(core->debugSnapshot("right after loading a state"));
+                debugAfterLoad.store(600);
+#endif
                 startCore();
                 return;
             }
@@ -1742,12 +1817,17 @@ void ConsoleUI::stopCore() {
     delete saveThread;
 }
 
+
 void ConsoleUI::runCore() {
     // Run the emulator, waiting for the display after each frame when syncing to it
     while (running) {
         core->runCore();
-        if (core->frameEnded.exchange(false))
+        if (core->frameEnded.exchange(false)) {
+#ifdef STATE_DEBUG
+            debugFrameEnd(core);
+#endif
             waitForDisplay();
+        }
     }
 }
 

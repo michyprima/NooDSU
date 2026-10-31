@@ -224,6 +224,9 @@ public:
     void loadState(FILE *file);
 
     void runCore() { (*runFunc)(*this); }
+#ifdef STATE_DEBUG
+    std::string debugSnapshot(const char *reason);
+#endif
 
     // Pages with compiled code from either CPU are protected from writes the same way
     bool jitHasCode() { return jit.hasCode() || jit7.hasCode(); }
@@ -239,6 +242,7 @@ public:
     void endFrame();
 
 private:
+    friend class SaveStates; // Picks which CPUs run after loading their states
     bool realGbaBios;
     void (*runFunc)(Core&) = &Interpreter::runCoreNds;
     std::chrono::steady_clock::time_point lastFpsTime;

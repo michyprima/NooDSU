@@ -389,6 +389,9 @@ void Interpreter::unhalt(int bit) {
     bool before = halted;
     halted &= ~BIT(bit);
     if (!before) return;
+#ifdef STATE_DEBUG
+    if (!halted) wakes++;
+#endif
     core->schedule(UPDATE_RUN, 0);
     cycles = 0;
 }

@@ -27,11 +27,15 @@ class Core;
 class HleBios;
 
 class Interpreter {
+    friend class Core;
 public:
     friend class Jit;
     HleBios *bios = nullptr;
     uint32_t entryAddr = 0;
     uint8_t halted = 0;
+#ifdef STATE_DEBUG
+    uint32_t wakes = 0; // Times the CPU has been woken from halting
+#endif
 
     Interpreter(Core *core, bool arm7);
     void saveState(FILE *file);
