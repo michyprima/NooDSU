@@ -42,6 +42,7 @@ int Settings::fastTiming = 0;
 int Settings::hardware3D = 0;
 int Settings::fast2D = 0;
 int Settings::gpuAntiAlias = 0;
+int Settings::gpuOverlap = 1;
 
 std::string Settings::gbaBiosPath = "gba_bios.bin";
 std::string Settings::ndsBios9Path = "bios9.bin";
@@ -76,6 +77,7 @@ std::vector<Setting> Settings::settings = {
     Setting("hardware3D", &hardware3D, false),
     Setting("fast2D", &fast2D, false),
     Setting("gpuAntiAlias", &gpuAntiAlias, false),
+    Setting("gpuOverlap", &gpuOverlap, false),
     Setting("gbaBiosPath", &gbaBiosPath, true),
     Setting("ndsBios9Path", &ndsBios9Path, true),
     Setting("ndsBios7Path", &ndsBios7Path, true),

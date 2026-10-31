@@ -54,6 +54,7 @@ public:
     static int hardware3D;
     static int fast2D;
     static int gpuAntiAlias;
+    static int gpuOverlap;
 
     static std::string gbaBiosPath;
     static std::string ndsBios9Path;
