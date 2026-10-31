@@ -799,6 +799,10 @@ int logHeartbeat(int argc, const char **argv) {
     uint32_t last[HB_COUNT] = {};
     for (uint32_t tick = 0;; tick++) {
         OSSleepTicks(OSMillisecondsToTicks(250));
+
+        // Stop writing once the system wants the foreground or the UI is done, since file access then can keep the app
+        // from closing
+        if (releaseRequested.load() || uiParked || uiDone) continue;
         volatile uint32_t *v = Heartbeat::values;
         std::lock_guard<std::recursive_mutex> guard(fileLock());
         if (!(file = fopen(path.c_str(), "a"))) continue;
