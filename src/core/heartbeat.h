@@ -70,6 +70,12 @@ enum HeartbeatSlot {
     HB_3D_WIREFRAME, // Polygons with alpha 0, drawn as wireframe
     HB_GPU_TEXTURES, // Textures cached by the GPU 3D renderer
     HB_GPU_TEXTURE_KB, // Kilobytes of textures cached by the GPU 3D renderer
+    HB_GPU_PRIOR_US, // Within drawing with GPU_TIMELINE, in total: when the GPU finished work queued before this frame's
+    HB_GPU_MAIN_SUBMIT_US, // When the polygons were submitted
+    HB_GPU_MAIN_DONE_US, // When the GPU finished the polygons
+    HB_GPU_SUBMIT_US, // When everything was submitted
+    HB_GPU_DRAWS, // Draw calls for polygons
+    HB_GPU_VERTICES, // Vertices drawn for polygons
     HB_EMU_HIRES_US, // Total microseconds the emulator spent copying high-res 3D frames for the UI
     HB_UI_NEW_FRAMES, // UI frames that got a new emulated frame
     HB_UI_GETFRAME_US, // Total microseconds the UI spent getting frames from the emulator
@@ -85,6 +91,7 @@ namespace Heartbeat {
 }
 #define HB_SET(slot, value) (Heartbeat::values[slot] = (value))
 #define HB_INC(slot) (Heartbeat::values[slot]++)
+#define HB_ADD(slot, value) (Heartbeat::values[slot] += (value))
 #ifdef __WIIU__
 #include <coreinit/core.h>
 #define HB_SET_CORE(slot) HB_SET(slot, OSGetCoreId() + 1)
@@ -101,6 +108,7 @@ namespace Heartbeat {
 #define HB_SET(slot, value) do {} while (0)
 #define HB_INC(slot) do {} while (0)
 #define HB_SET_CORE(slot) do {} while (0)
+#define HB_ADD(slot, value) do {} while (0)
 #define HB_TIMER(name) do {} while (0)
 #define HB_ADD_US(slot, name) do {} while (0)
 #define HB_ADD_NS(slot, name) do {} while (0)

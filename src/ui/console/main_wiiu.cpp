@@ -751,6 +751,10 @@ int logHeartbeat(int argc, const char **argv) {
             per(HB_3D_WAIT_US, frames), per(HB_EMU_HIRES_US, frames));
         uint32_t textureUs = per(HB_GPU_TEXTURE_US, gpuFrames) / 1000, vertexUs = per(HB_GPU_VERTEX_US, gpuFrames) / 1000;
         uint32_t fanUs = per(HB_GPU_FAN_US, gpuFrames) / 1000;
+        fprintf(file, "   gpu draw timeline per frame (GPU_TIMELINE only): earlier work done %u, polygons submitted %u, "
+            "polygons done %u, all submitted %u, all done %u us | draws %u, vertices %u\n", per(HB_GPU_PRIOR_US, gpuFrames), per(HB_GPU_MAIN_SUBMIT_US, gpuFrames),
+            per(HB_GPU_MAIN_DONE_US, gpuFrames), per(HB_GPU_SUBMIT_US, gpuFrames), per(HB_GPU_DRAW_US, gpuFrames),
+            per(HB_GPU_DRAWS, gpuFrames), per(HB_GPU_VERTICES, gpuFrames));
         fprintf(file, "   gpu build parts per frame: before polygons %u, vertices %u, triangles %u, after polygons %u, "
             "textures %u, rest %d us\n", per(HB_GPU_PRELOOP_US, gpuFrames), vertexUs, fanUs, per(HB_GPU_POSTLOOP_US, gpuFrames),
             textureUs, int(per(HB_GPU_BUILD_US, gpuFrames)) - int(per(HB_GPU_PRELOOP_US, gpuFrames) + vertexUs + fanUs +
@@ -774,27 +778,10 @@ int logHeartbeat(int argc, const char **argv) {
                 per(HB_3D_POLYS, frames3D), per(HB_3D_TOON, frames3D), per(HB_3D_HIGHLIGHT, frames3D),
                 per(HB_3D_SHADOW_MASKS, frames3D), per(HB_3D_SHADOWS, frames3D), per(HB_3D_WIREFRAME, frames3D));
         }
-        // Show the heap use, to tell leaks (growing use) from fragmentation (free memory that large blocks don't fit in)
-        // Once a second, also find the largest block that can still be allocated, to 64 KB
-        static uint32_t largest = 0;
-        if (tick % 4 == 0) {
-            uint32_t low = 0, high = 1 << 30;
-            while (high - low > 0x10000) {
-                uint32_t middle = (low + high) / 2;
-                if (void *block = malloc(middle)) {
-                    free(block);
-                    low = middle;
-                }
-                else {
-                    high = middle;
-                }
-            }
-            largest = low;
-        }
+        // Show the heap use, to spot leaks
         struct mallinfo info = mallinfo();
-        fprintf(file, "   memory: heap %u KB, used %u KB, free %u KB, largest block %u KB | gpu textures %u, %u KB\n",
-            info.arena >> 10, info.uordblks >> 10, info.fordblks >> 10, largest >> 10, v[HB_GPU_TEXTURES],
-            v[HB_GPU_TEXTURE_KB]);
+        fprintf(file, "   memory: heap %u KB, used %u KB, free %u KB | gpu textures %u, %u KB\n", info.arena >> 10,
+            info.uordblks >> 10, info.fordblks >> 10, v[HB_GPU_TEXTURES], v[HB_GPU_TEXTURE_KB]);
         for (int i = 0; i < HB_COUNT; i++)
             last[i] = v[i];
         fclose(file);

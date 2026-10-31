@@ -780,6 +780,14 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         HB_ADD_US(HB_GPU_LOCK_US, hbLock);
         HB_SET(HB_GPU_STAGE, 4);
         HB_TIMER(hbDraw);
+#if defined(HEARTBEAT) && defined(GPU_TIMELINE)
+        // Time each part of the frame on the GPU by waiting for it to go idle between them, which serializes the frame
+        // with the UI's drawing, but shows exactly where the GPU's time goes
+        OSTime hbStart = OSGetSystemTime();
+        auto hbUs = [&]() { return (uint32_t)OSTicksToMicroseconds(OSGetSystemTime() - hbStart); };
+        GX2DrawDone();
+        Heartbeat::values[HB_GPU_PRIOR_US] += hbUs();
+#endif
 
         // Make what the CPU wrote visible to the GPU; this adds GPU commands, so it has to be done with GX2 held
         for (GX2Texture *texture : updated)
@@ -935,6 +943,13 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                 GX2SetContextState(state);
             }
         }
+        HB_ADD(HB_GPU_DRAWS, draws.size());
+        HB_ADD(HB_GPU_VERTICES, count);
+#if defined(HEARTBEAT) && defined(GPU_TIMELINE)
+        Heartbeat::values[HB_GPU_MAIN_SUBMIT_US] += hbUs();
+        GX2DrawDone();
+        Heartbeat::values[HB_GPU_MAIN_DONE_US] += hbUs();
+#endif
 
         if (gpuEdges) {
             // Mark edges with a pass over the screen, once the attributes are written out where it can read them
@@ -1065,6 +1080,9 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         GX2Flush();
         OSTime submitted = GX2GetLastSubmittedTimeStamp();
         guard.unlock();
+#if defined(HEARTBEAT) && defined(GPU_TIMELINE)
+        Heartbeat::values[HB_GPU_SUBMIT_US] += hbUs();
+#endif
         // Wait for the GPU, but show an error screen if it stops responding, which would otherwise freeze silently
         HB_SET(HB_GPU_STAGE, 7);
         OSTime start = OSGetSystemTime();
