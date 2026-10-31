@@ -10,12 +10,13 @@
 #   threadprobe  Every thread's state on request over UDP, answered from each core, for freezes
 #   profile      Where the emulator thread spends its time, shown on screen
 #   jittest      Runs the JIT against the interpreter before starting a game
+#   drcdebug     What's known about the GamePad's display on the TV, with combos to try getting it back
 set -e
 cd "$(dirname "$0")"
 export DEVKITPRO=${DEVKITPRO:-/opt/devkitpro} DEVKITPPC=${DEVKITPPC:-/opt/devkitpro/devkitPPC}
 BASE='-g -Ofast -fno-allow-store-data-races -flto -ffunction-sections -DESPRESSO -mcpu=750 -meabi -mhard-float $(INCLUDE) -D__WIIU__ -D__WUT__ -DENDIAN_BIG -DNO_FDOPEN -DLOG_LEVEL=0'
 
-[ $# -gt 0 ] || { sed -n '2,13p' "$0"; exit 1; }
+[ $# -gt 0 ] || { sed -n '2,14p' "$0"; exit 1; }
 for variant in "$@"; do
     case $variant in
         heartbeat) flags='-DHEARTBEAT'; name=noods-hb; title='NooDS Heartbeat' ;;
@@ -26,6 +27,7 @@ for variant in "$@"; do
         threadprobe) flags='-DTHREAD_PROBE'; name=noods-probe; title='NooDS Probe' ;;
         profile) flags='-DPROFILE_EMU'; name=noods-profile; title='NooDS Profile' ;;
         jittest) flags='-DJIT_SELFTEST'; name=noods-jittest; title='NooDS JIT Test' ;;
+        drcdebug) flags='-DDRC_DEBUG'; name=noods-drcdebug; title='NooDS GamePad Debug' ;;
         *) echo "Unknown variant: $variant"; exit 1 ;;
     esac
     rm -rf "build-wiiu-$name"

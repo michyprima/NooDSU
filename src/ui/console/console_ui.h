@@ -110,6 +110,10 @@ public:
         float size, uint32_t color = 0xFFFFFFFF, bool alignRight = false);
     static void fillAudioBuffer(uint32_t *buffer, int count, int rate);
     static void displayTick();
+    static void relayout() { changed = true; }
+#ifdef DRC_DEBUG
+    static std::string displayDebugText();
+#endif
     static uint32_t getInputPress();
 
     static void initialize(int width, int height, std::string root, std::string prefix);

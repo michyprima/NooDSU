@@ -97,6 +97,57 @@ bool uiHoldsGx2;
 // Frames the UI has finished, which the hang watchdog checks for progress
 volatile uint32_t uiFrames;
 
+// WHB sets up the GamePad's display buffer for the GamePad's display mode at startup, which is disabled if it's off
+// then, so it gets no buffer and stays black after connecting; this sets one up when the mode changes, and again after
+// getting the foreground back, since WHB sets its own up again then
+GX2DrcRenderMode drcStartMode, drcBufferMode;
+void *drcBuffer = nullptr;
+uint32_t drcBufferSize = 0;
+
+void updateDrcBuffer() {
+    GX2DrcRenderMode mode = GX2GetSystemDRCMode();
+    if (mode == GX2_DRC_RENDER_MODE_DISABLED || mode == drcBufferMode) return;
+    uint32_t size, unknown;
+    GX2CalcDRCSize(mode, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8, GX2_BUFFERING_MODE_DOUBLE, &size, &unknown);
+    if (size > drcBufferSize) {
+        MEMFreeToDefaultHeap(drcBuffer);
+        if (!(drcBuffer = MEMAllocFromDefaultHeapEx(size, 0x1000))) {
+            drcBufferSize = 0;
+            return;
+        }
+        drcBufferSize = size;
+    }
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU, drcBuffer, size);
+    GX2SetDRCBuffer(drcBuffer, size, mode, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8, GX2_BUFFERING_MODE_DOUBLE);
+    GX2SetDRCScale(854, 480);
+    drcBufferMode = mode;
+}
+
+#ifdef DRC_DEBUG
+// GamePad display debugging: what GX2 and VPAD report about the GamePad, shown on the TV
+std::atomic<uint32_t> drcAttaches(0), drcDetaches(0), drcDraws(0);
+std::atomic<bool> drcAttached(false);
+int lastVpadError = 0;
+
+static void drcConnected(uint32_t slot, BOOL attached) {
+    // Count GX2's reports of the GamePad connecting and disconnecting
+    (attached ? drcAttaches : drcDetaches)++;
+    drcAttached.store(attached);
+}
+
+std::string ConsoleUI::displayDebugText() {
+    char text[512];
+    snprintf(text, sizeof(text), "VPAD error %d, split %d, arrangement %d (setting %d) | DRC mode %d scan %d\n"
+        "GX2 connects %u disconnects %u, attached %d | GamePad draws %u\n"
+        "GamePad top %d,%d %dx%d bottom %d,%d %dx%d | display buffer mode %d", lastVpadError,
+        ScreenLayout::splitDisplays, ScreenLayout::arrangement(), ScreenLayout::screenArrangement,
+        (int)GX2GetSystemDRCMode(), (int)GX2GetSystemDRCScanMode(), drcAttaches.load(), drcDetaches.load(),
+        (int)drcAttached.load(), drcDraws.load(), gpLayout.topX, gpLayout.topY, gpLayout.topWidth, gpLayout.topHeight,
+        gpLayout.botX, gpLayout.botY, gpLayout.botWidth, gpLayout.botHeight, (int)drcBufferMode);
+    return text;
+}
+#endif
+
 uint32_t ConsoleUI::defaultKeys[] {
     VPAD_BUTTON_A, VPAD_BUTTON_B, VPAD_BUTTON_MINUS, VPAD_BUTTON_PLUS,
     VPAD_BUTTON_RIGHT | VPAD_STICK_R_EMULATION_RIGHT | VPAD_STICK_L_EMULATION_RIGHT,
@@ -126,6 +177,7 @@ void releaseForeground() {
     procCond.notify_all();
     procCond.wait(lock, [] { return !releaseRequested; });
     uiParked = false;
+    drcBufferMode = drcStartMode;
     lock.unlock();
     if (resume) ConsoleUI::startCore();
 }
@@ -146,6 +198,7 @@ void ConsoleUI::startFrame(uint32_t color) {
     if (!uiHoldsGx2) {
         gx2Mutex.lock();
         uiHoldsGx2 = true;
+        updateDrcBuffer();
     }
     WHBGfxBeginRenderTV();
     WHBGfxClearColor(r, g, b, a);
@@ -484,7 +537,7 @@ void ConsoleUI::drawTexture(void *texture, float tx, float ty, float tw, float t
 
     // Override the gamepad screen texture with the other screen in single screen mode
     GX2Texture *tempTexture = nullptr, *tempHiRes = (GX2Texture*)drawHiRes;
-    if (running && tw >= 240 && !(ConsoleUI::gbaMode && ScreenLayout::gbaCrop) && ScreenLayout::screenArrangement == 3) {
+    if (running && tw >= 240 && !(ConsoleUI::gbaMode && ScreenLayout::gbaCrop) && ScreenLayout::arrangement() == 3) {
         bool shift = screenShift, bottom = (ScreenLayout::screenSizing < 2);
         uint32_t *data = &ConsoleUI::framebuffer[(256 * 192 * bottom) << (shift * 2)];
         if (gpTexture) destroyTexture(gpTexture);
@@ -493,6 +546,9 @@ void ConsoleUI::drawTexture(void *texture, float tx, float ty, float tw, float t
     }
 
     // Draw a texture on the gamepad
+#ifdef DRC_DEBUG
+    drcDraws++;
+#endif
     WHBGfxBeginRenderDRC();
     GX2RSetAttributeBuffer(&posBuffer, 0, posBuffer.elemSize, bufOffset * 2 + 8 * sizeof(float));
     GX2RSetAttributeBuffer(&texBuffer, 1, texBuffer.elemSize, bufOffset);
@@ -557,7 +613,24 @@ void scanInput() {
     // Scan for input once per frame
     if (scanned) return;
     scanned = true;
-    VPADRead(VPAD_CHAN_0, &vpad, 1, nullptr);
+    VPADReadError vpadError;
+    VPADRead(VPAD_CHAN_0, &vpad, 1, &vpadError);
+#ifdef DRC_DEBUG
+    lastVpadError = vpadError;
+#endif
+
+    // Give the GamePad the bottom screen with the TV + GamePad arrangement while it's connected, once it's been
+    // connected or disconnected for half a second, so a brief signal loss doesn't move the screens around
+    static int gamepadFrames = 0;
+    bool gamepad = (vpadError != VPAD_READ_INVALID_CONTROLLER);
+    if (gamepad == ScreenLayout::splitDisplays) {
+        gamepadFrames = 0;
+    }
+    else if (++gamepadFrames >= 30) {
+        ScreenLayout::splitDisplays = gamepad;
+        ConsoleUI::relayout();
+        gamepadFrames = 0;
+    }
     VPADGetTPCalibratedPoint(VPAD_CHAN_0, &touch, &vpad.tpNormal);
 
     // Read Pro Controllers and Classic Controllers on every channel
@@ -602,6 +675,7 @@ void outputAudio(void *data, uint8_t *buffer, int length) {
 int runUi(int argc, const char **argv) {
     // Initialize various things
     WHBGfxInit();
+    drcStartMode = drcBufferMode = GX2GetSystemDRCMode();
     VPADInit();
     KPADInit();
     WPADEnableURCC(TRUE);
@@ -693,6 +767,9 @@ int runUi(int argc, const char **argv) {
 
     // Set up the GPU 3D renderer, which has its own GX2 state
     initGpu3D();
+#ifdef DRC_DEBUG
+    GX2SetDRCConnectCallback(0, drcConnected);
+#endif
 
     // Report display refreshes from core 2, above the other threads there so the emulator isn't held back
     WorkerThread::createThread(reportVsyncs, nullptr, 0x4000, 11, OS_THREAD_ATTRIB_AFFINITY_CPU2);

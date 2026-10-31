@@ -29,6 +29,7 @@ int ScreenLayout::screenGap = 0;
 int ScreenLayout::aspectRatio = 0;
 int ScreenLayout::integerScale = 0;
 int ScreenLayout::gbaCrop = 1;
+bool ScreenLayout::splitDisplays = false;
 
 void ScreenLayout::addSettings() {
     // Define the layout settings
@@ -66,7 +67,7 @@ void ScreenLayout::update(int winWidth, int winHeight, bool gbaMode, bool splitS
     if (screenRotation)
         SWAP(width, height);
 
-    if (screenArrangement == 3 || gba || splitScreens) { // Single screen
+    if (arrangement() == 3 || gba || splitScreens) { // Single screen
         // Set the minimum dimensions for the layout
         minWidth = width;
         minHeight = height;
@@ -102,7 +103,7 @@ void ScreenLayout::update(int winWidth, int winHeight, bool gbaMode, bool splitS
     else { // Dual screens
         // Determine the screen arrangement based on the current settings
         // In automatic mode, the arrangement is horizontal if rotated and vertical otherwise
-        bool vertical = (screenArrangement == 1 || (screenArrangement == 0 && screenRotation == 0));
+        bool vertical = (arrangement() == 1 || (arrangement() == 0 && screenRotation == 0));
 
         // Determine the screen gap based on the current setting
         int gap = (screenGap ? (12 * (1 << screenGap)) : 0);

@@ -387,8 +387,8 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         texGba = gbaMode;
         // Update the screen textures before starting the frame, since copying them doesn't need to hold up the GPU
         // renderer's access to the GPU
-        bool showTop = (ScreenLayout::screenArrangement != 3 || ScreenLayout::screenSizing < 2);
-        bool showBot = (ScreenLayout::screenArrangement != 3 || ScreenLayout::screenSizing == 2);
+        bool showTop = (ScreenLayout::arrangement() != 3 || ScreenLayout::screenSizing < 2);
+        bool showBot = (ScreenLayout::arrangement() != 3 || ScreenLayout::screenSizing == 2);
         if (gbaMode) {
             if (update || !gbaTexture) {
                 if (gbaTexture) destroyTexture(gbaTexture);
@@ -434,6 +434,18 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
             drawHiRes = nullptr;
         }
 
+#ifdef DRC_DEBUG
+        {
+            // Show what's known about the GamePad's display, a line at a time
+            std::string text = displayDebugText();
+            for (size_t start = 0, line = 0; start < text.size(); line++) {
+                size_t end = text.find('\n', start);
+                if (end == std::string::npos) end = text.size();
+                drawString(text.substr(start, end - start), SCALE(5), SCALE(48) + SCALE(26) * line, SCALE(24));
+                start = end + 1;
+            }
+        }
+#endif
 #ifdef FRAME_CAPTURE
         // Show how frame capture is going
         static const char *captureStates[] = { "Frame capture: hold ZL + ZR + Y", "Capturing frames...",
@@ -1078,7 +1090,7 @@ void ConsoleUI::settingsMenu() {
     const std::vector<std::string> threads = { "Disabled", "1 Thread", "2 Threads" };
     const std::vector<std::string> position = { "Center", "Top", "Bottom", "Left", "Right" };
     const std::vector<std::string> rotation = { "None", "Clockwise", "Counter-Clockwise" };
-    const std::vector<std::string> arrangement = { "Automatic", "Vertical", "Horizontal", "Single Screen" };
+    const std::vector<std::string> arrangement = { "Automatic", "Vertical", "Horizontal", "Single Screen", "TV + GamePad" };
     const std::vector<std::string> sizing = { "Even", "Enlarge Top", "Enlarge Bottom" };
     const std::vector<std::string> gap = { "None", "Quarter", "Half", "Full" };
     const std::vector<std::string> filter = { "Nearest", "Upscaled", "Linear" };
@@ -1162,7 +1174,7 @@ void ConsoleUI::settingsMenu() {
                 case 21: Settings::cheatsFolder = (Settings::cheatsFolder + 1) % 2; break;
                 case 23: ScreenLayout::screenPosition = (ScreenLayout::screenPosition + 1) % 5; break;
                 case 24: ScreenLayout::screenRotation = (ScreenLayout::screenRotation + 1) % 3; break;
-                case 25: ScreenLayout::screenArrangement = (ScreenLayout::screenArrangement + 1) % 4; break;
+                case 25: ScreenLayout::screenArrangement = (ScreenLayout::screenArrangement + 1) % arrangement.size(); break;
                 case 26: ScreenLayout::screenSizing = (ScreenLayout::screenSizing + 1) % 3; break;
                 case 27: ScreenLayout::screenGap = (ScreenLayout::screenGap + 1) % 4; break;
                 case 28: Settings::screenFilter = (Settings::screenFilter + 1) % 3; break;
