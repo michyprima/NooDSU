@@ -50,6 +50,7 @@ public:
     void loadState(FILE *file);
 
     bool getFrame(uint32_t *out, bool gbaCrop, uint32_t **hiRes3D = nullptr, bool *top3D = nullptr);
+    uint32_t lastFrameId = 0; // The number of the frame getFrame last gave, for frame capture
     uint32_t *newHiRes3D();
     static void freeHiRes3D(uint32_t *buffer);
     void invalidate3D() { dirty3D |= BIT(0); }
@@ -75,6 +76,7 @@ private:
         uint32_t *framebuffer = nullptr;
         uint32_t *hiRes3D = nullptr;
         bool top3D = false;
+        uint32_t id = 0; // The frame's number, for frame capture
     };
 
     std::queue<Buffers> framebuffers;

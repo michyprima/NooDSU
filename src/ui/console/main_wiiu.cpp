@@ -190,6 +190,15 @@ FILE *openHangReport(const char *reason) {
     return file;
 }
 
+int reportVsyncs(int argc, const char **argv) {
+    // Tell the UI each time the display refreshes, so the emulator can run one frame per refresh
+    while (true) {
+        GX2WaitForVsync();
+        ConsoleUI::displayTick();
+    }
+    return 0;
+}
+
 int watchHangs(int argc, const char **argv) {
     // Write a hang report if the UI stops finishing frames for a few seconds, unless the system has it stopped; this
     // only wakes twice a second, and reports each hang once
@@ -684,6 +693,9 @@ int runUi(int argc, const char **argv) {
 
     // Set up the GPU 3D renderer, which has its own GX2 state
     initGpu3D();
+
+    // Report display refreshes from core 2, above the other threads there so the emulator isn't held back
+    WorkerThread::createThread(reportVsyncs, nullptr, 0x4000, 11, OS_THREAD_ATTRIB_AFFINITY_CPU2);
 
     // Initialize audio output
     SDL_Init(SDL_INIT_AUDIO);

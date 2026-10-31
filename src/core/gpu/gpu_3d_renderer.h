@@ -72,6 +72,7 @@ public:
     bool getResShift() { return resShift; }
     uint32_t getClearColor() { return clearColor; }
     uint16_t getClearDepth() { return clearDepth; }
+    uint16_t getClearImageOffset() { return clearImageOffset; }
     uint16_t getToon(int index) { return toonTable[index]; }
     uint16_t getEdgeColor(int index) { return edgeColor[index]; }
     uint32_t getFogColor() { return fogColor; }
@@ -85,6 +86,10 @@ public:
     uint32_t *getHardwareCopy() { return hardwareCopy; }
     void hardwareCopyDone() { hardwareCopied = true; }
     uint32_t *takeHardwareCopy();
+    void forgetHardwareRows(int first, int count);
+#ifdef FRAME_CAPTURE
+    uint32_t captureId = 0; // The current 3D frame's ID for frame capture
+#endif
     void hardwareDone(int line) { ready[line].store(3); }
 #ifdef GPU_DUMP
     void softwareFrame(uint32_t *out);
@@ -95,6 +100,7 @@ public:
     void writeEdgeColor(int index, uint16_t mask, uint16_t value);
     void writeClearColor(uint32_t mask, uint32_t value);
     void writeClearDepth(uint16_t mask, uint16_t value);
+    void writeClearImageOffset(uint16_t mask, uint16_t value);
     void writeFogColor(uint32_t mask, uint32_t value);
     void writeFogOffset(uint16_t mask, uint16_t value);
     void writeFogTable(int index, uint8_t value);
@@ -149,6 +155,7 @@ private:
     uint16_t edgeColor[8] = {};
     uint32_t clearColor = 0;
     uint16_t clearDepth = 0;
+    uint16_t clearImageOffset = 0; // Where the clear images start, X in the low byte and Y in the high byte
     uint32_t fogColor = 0;
     uint16_t fogOffset = 0;
     uint8_t fogTable[32] = {};

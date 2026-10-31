@@ -31,6 +31,7 @@
 #include <coreinit/internal.h>
 #endif
 #include "../emu_profile.h"
+#include "../frame_capture.h"
 
 #ifdef __WIIU__
 // Framebuffers freed by the frontend, kept for reuse since a few are made every frame; allocating and freeing such
@@ -173,6 +174,7 @@ bool Gpu::getFrame(uint32_t *out, bool gbaCrop, uint32_t **hiRes3D, bool *top3D)
 
     // Get the next queued buffers
     Buffers &buffers = framebuffers.front();
+    lastFrameId = buffers.id;
 
     // When the caller takes high-res 3D frames to draw them itself, output native frames with 3D pixels marked
     bool upscale = (Settings::highRes3D || Settings::screenFilter == 1) && !hiRes3D;
@@ -590,11 +592,22 @@ void Gpu::scanline355() {
                 HB_TIMER(hbHiRes);
                 if (!(buffers.hiRes3D = core->gpu3DRenderer.takeHardwareCopy())) {
                     buffers.hiRes3D = newFramebuffer(256 * 192 * 4);
-                    memcpy(buffers.hiRes3D, core->gpu3DRenderer.getLine(0), 256 * 192 * 4 * sizeof(uint32_t));
+                    uint32_t *frame = core->gpu3DRenderer.getLine(0);
+                    core->gpu3DRenderer.forgetHardwareRows(0, 384);
+                    memcpy(buffers.hiRes3D, frame, 256 * 192 * 4 * sizeof(uint32_t));
                 }
                 HB_ADD_US(HB_EMU_HIRES_US, hbHiRes);
                 buffers.top3D = (powCnt1 & BIT(15));
             }
+
+#ifdef FRAME_CAPTURE
+            // Record both screens as the 2D engine finished them
+            buffers.id = FrameCapture::emuFrame;
+            if (FrameCapture::Frame *capture = FrameCapture::slot(FrameCapture::emuFrame)) {
+                capture->emuFrame = FrameCapture::emuFrame;
+                memcpy(capture->screens, buffers.framebuffer, sizeof(capture->screens));
+            }
+#endif
 
             // Add the frame to the queue
             mutex.lock();
@@ -603,6 +616,10 @@ void Gpu::scanline355() {
             mutex.unlock();
             EP_ADD(EP_FRAMECOPY, frameCopy);
         }
+
+#ifdef FRAME_CAPTURE
+        FrameCapture::emuFrame++;
+#endif
 
         // Drop the drawn buffer if the frame wasn't queued, and let the engines draw into their own buffers again
         freeFramebuffer(drawBuffer);

@@ -21,8 +21,13 @@
 #include <vector>
 
 #include <new>
+#ifdef __WIIU__
+#include <coreinit/cache.h>
+#include <coreinit/time.h>
+#endif
 #include "../core.h"
 #include "../emu_profile.h"
+#include "../frame_capture.h"
 
 Gpu3DRenderer::Gpu3DRenderer(Core *core): core(core) {
     // Mark the scanlines as ready to start
@@ -64,6 +69,16 @@ Gpu3DRenderer::~Gpu3DRenderer() {
     }
     delete softwareBuffers;
     core->gpu.freeHiRes3D(hardwareCopy);
+}
+
+void Gpu3DRenderer::forgetHardwareRows(int first, int count) {
+#ifdef __WIIU__
+    // The GPU writes the hardware renderer's frames to memory, and the renderer drops them from the CPU's caches on its
+    // own core; readers on other cores also drop the rows they're about to read from theirs, in case that doesn't
+    // reach them, which costs little
+    if (hardwareFrame && hardwareBuffer)
+        DCInvalidateRange(&hardwareBuffer[first * 256 * 2], count * 256 * 2 * sizeof(uint32_t));
+#endif
 }
 
 uint32_t *Gpu3DRenderer::takeHardwareCopy() {
@@ -159,6 +174,17 @@ uint32_t *Gpu3DRenderer::getLine1(int line) {
     HB_ADD_US(HB_3D_WAIT_US, hbWait);
     EP_ADD_EMU(EP_3D_WAIT, wait);
     HB_SET(HB_EMU_WAIT, 0);
+    forgetHardwareRows(line, 1);
+#ifdef FRAME_CAPTURE
+    // Record the row as the 2D engine gets it, with the 3D frame it's from and when it was read
+    if (!resShift && line < 192) {
+        if (FrameCapture::Frame *capture = FrameCapture::slot(FrameCapture::emuFrame)) {
+            memcpy(&capture->layer[line * 256], lineData(line), 256 * sizeof(uint32_t));
+            capture->rowRender[line] = FrameCapture::renderId;
+            capture->rowVCount[line] = core->gpu.readVCount();
+        }
+    }
+#endif
 #ifdef GPU_DUMP
     // Save the finished 3D layer of frames whose polygons were dumped, as the 2D engine gets it
     if (!dumpLayerPath.empty()) {
@@ -181,6 +207,19 @@ uint32_t *Gpu3DRenderer::getLine1(int line) {
 
 void Gpu3DRenderer::drawScanline(int line) {
     if (line == 0) {
+#ifdef FRAME_CAPTURE
+        // Record what the 3D frame starts with
+        captureId = ++FrameCapture::renderId;
+        FrameCapture::Render &render = FrameCapture::renders[captureId % FrameCapture::RENDERS];
+        render = {};
+        render.id = captureId;
+        render.emuFrame = FrameCapture::emuFrame;
+        render.vCount = core->gpu.readVCount();
+        render.disp3DCnt = disp3DCnt;
+        render.clearImageOffset = clearImageOffset;
+        render.polygons = core->gpu3D.polygonCountOut;
+        render.startTime = OSGetSystemTime();
+#endif
 #ifdef GPU_DUMP
         // Debug builds save a frame's polygons and vertices every 60 frames, cycling through 4 files for each
         // renderer, as plain big-endian words: polygon count, then for each the first vertex, size, crossed flag and
@@ -426,10 +465,28 @@ void Gpu3DRenderer::drawScanline1(int line) {
             asm volatile("dcbz 0, %0" :: "r"(block) : "memory");
     }
 #endif
-    for (int i = start; i < end; i++) {
-        framebuffer[0][i] = color;
-        depthBuffer[0][i] = depth;
-        attribBuffer[0][i] = attrib;
+    if (disp3DCnt & BIT(14)) {
+        // With the rear-plane bitmap, each pixel's color and depth come from 256x256 images in texture slots 2 and 3,
+        // which repeat from the clear image offset; colors are opaque or transparent by bit 15, and depths have the
+        // fog flag in bit 15, while the polygon ID is still the clear color's
+        uint8_t *colors = core->memory.tex3D[2], *depths = core->memory.tex3D[3];
+        int y = ((line >> resShift) + (clearImageOffset >> 8)) & 0xFF;
+        uint32_t idAttrib = attrib & ~(BIT(12) | BIT(13));
+        for (int i = start; i < end; i++) {
+            int x = (((i - start) >> resShift) + clearImageOffset) & 0xFF;
+            uint16_t c = colors ? U8TO16(colors, (y * 256 + x) * 2) : 0;
+            uint16_t d = depths ? U8TO16(depths, (y * 256 + x) * 2) : 0;
+            framebuffer[0][i] = BIT(26) | rgba5ToRgba6(((c & BIT(15)) ? (0x1F << 15) : 0) | (c & 0x7FFF));
+            depthBuffer[0][i] = ((d & 0x7FFF) == 0x7FFF) ? 0xFFFFFF : ((d & 0x7FFF) << 9);
+            attribBuffer[0][i] = idAttrib | ((d & BIT(15)) >> 2);
+        }
+    }
+    else {
+        for (int i = start; i < end; i++) {
+            framebuffer[0][i] = color;
+            depthBuffer[0][i] = depth;
+            attribBuffer[0][i] = attrib;
+        }
     }
 
     stencilClear[line] = false;
@@ -1574,6 +1631,13 @@ void Gpu3DRenderer::writeClearColor(uint32_t mask, uint32_t value) {
     mask &= 0x3F1FFFFF;
     if ((value & mask) == (clearColor & mask)) return;
     clearColor = (clearColor & ~mask) | (value & mask);
+    core->gpu.invalidate3D();
+}
+
+void Gpu3DRenderer::writeClearImageOffset(uint16_t mask, uint16_t value) {
+    // Write to the CLRIMAGE_OFFSET register and invalidate the 3D if it changed
+    if ((value & mask) == (clearImageOffset & mask)) return;
+    clearImageOffset = (clearImageOffset & ~mask) | (value & mask);
     core->gpu.invalidate3D();
 }
 

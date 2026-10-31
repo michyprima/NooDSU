@@ -53,6 +53,7 @@ public:
     static int fastTiming;
     static int hardware3D;
     static int fast2D;
+    static int syncToDisplay;
     static int gpuAntiAlias;
     static int gpuOverlap;
 

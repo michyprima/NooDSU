@@ -39,6 +39,7 @@ static OSThread *emuThread = nullptr;
 #include "../../core/heartbeat.h"
 #include "../../core/worker_thread.h"
 #include "../../core/emu_profile.h"
+#include "../../core/frame_capture.h"
 
 #ifdef PROFILE_SAMPLER
 #include "sampler.h"
@@ -84,6 +85,9 @@ std::condition_variable ConsoleUI::cond;
 std::mutex ConsoleUI::mutex;
 
 int ConsoleUI::fpsLimiterBackup = 0;
+std::mutex ConsoleUI::displayMutex;
+std::condition_variable ConsoleUI::displayCond;
+int ConsoleUI::displayTicks = 0;
 int ConsoleUI::showFpsCounter = 0;
 int ConsoleUI::menuTheme = 0;
 int ConsoleUI::keyBinds[] = {};
@@ -271,6 +275,33 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         bool top3D = false;
         bool newFrame = core->gpu.getFrame(framebuffer, gbaMode, compose ? &hiRes : nullptr, &top3D);
         bool update = newFrame || shift != texShift || gbaMode != texGba;
+#ifdef FRAME_CAPTURE
+        // Record the screens as the UI got them, and write the capture to capture.bin once it's done, with a header
+        // of the format, frame count, first frame and sizes, then the frames and the 3D frames
+        static uint32_t uiFrame = 0;
+        uiFrame++;
+        if (newFrame && !shift) {
+            if (FrameCapture::Frame *capture = FrameCapture::slot(core->gpu.lastFrameId)) {
+                memcpy(capture->ui, framebuffer, sizeof(capture->ui));
+                capture->uiFrame = uiFrame;
+            }
+        }
+        if (FrameCapture::state.load() == 1 && FrameCapture::emuFrame >= FrameCapture::firstFrame + FrameCapture::FRAMES + 6)
+            FrameCapture::state.store(2);
+        if (FrameCapture::state.load() == 2) {
+            if (FILE *file = fopen((Settings::basePath + "/capture.bin").c_str(), "wb")) {
+                uint32_t header[] = { 0x4E434150, (uint32_t)FrameCapture::FRAMES, FrameCapture::firstFrame,
+                    (uint32_t)sizeof(FrameCapture::Frame), (uint32_t)FrameCapture::RENDERS, (uint32_t)sizeof(FrameCapture::Render) };
+                fwrite(header, sizeof(header), 1, file);
+                fwrite(FrameCapture::frames, sizeof(FrameCapture::Frame), FrameCapture::FRAMES, file);
+                fwrite(FrameCapture::renders, sizeof(FrameCapture::Render), FrameCapture::RENDERS, file);
+                fclose(file);
+            }
+            delete[] FrameCapture::frames;
+            FrameCapture::frames = nullptr;
+            FrameCapture::state.store(3);
+        }
+#endif
 #ifdef __WIIU__
         // Replace the high-res 3D frame with a new one, or drop it when it's not used
         if (newFrame || !compose) {
@@ -334,6 +365,13 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
             }
             drawHiRes = nullptr;
         }
+
+#ifdef FRAME_CAPTURE
+        // Show how frame capture is going
+        static const char *captureStates[] = { "Frame capture: hold ZL + ZR + Y", "Capturing frames...",
+            "Writing capture...", "Capture written to capture.bin" };
+        drawString(captureStates[FrameCapture::state.load()], SCALE(5), SCALE(48), SCALE(36));
+#endif
 
         // Draw the FPS counter if enabled
         if (showFpsCounter) {
@@ -452,6 +490,16 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         // Scan for key input
         uint32_t pressed = getInputPress();
         uint32_t held = getInputHeld();
+#ifdef FRAME_CAPTURE
+        // Start capturing frames when L, R and Y are held, which are ZL, ZR and Y on the GamePad by default
+        uint32_t combo = keyBinds[INPUT_L] | keyBinds[INPUT_R] | keyBinds[INPUT_Y];
+        if ((held & combo) == combo && FrameCapture::state.load() != 1 && FrameCapture::state.load() != 2) {
+            delete[] FrameCapture::frames;
+            FrameCapture::frames = new FrameCapture::Frame[FrameCapture::FRAMES]();
+            FrameCapture::firstFrame = FrameCapture::emuFrame + 2;
+            FrameCapture::state.store(1);
+        }
+#endif
 
         // Send input to the core
         for (int i = INPUT_A; i < INPUT_MENU; i++) {
@@ -1018,6 +1066,7 @@ void ConsoleUI::settingsMenu() {
         settings.push_back(MenuItem("Fast 2D Threads (Experimental)", toggle[Settings::fast2D]));
         settings.push_back(MenuItem("GPU 3D Anti-Aliasing", antiAlias[Settings::gpuAntiAlias]));
         settings.push_back(MenuItem("GPU 3D Overlap Building", toggle[Settings::gpuOverlap]));
+        settings.push_back(MenuItem("Sync to Display", toggle[Settings::syncToDisplay]));
 #endif
 
         // Create the settings menu
@@ -1058,6 +1107,7 @@ void ConsoleUI::settingsMenu() {
                 case 36: Settings::fast2D = (Settings::fast2D + 1) % 2; break;
                 case 37: Settings::gpuAntiAlias = (Settings::gpuAntiAlias + 1) % antiAlias.size(); break;
                 case 38: Settings::gpuOverlap = (Settings::gpuOverlap + 1) % 2; break;
+                case 39: Settings::syncToDisplay = (Settings::syncToDisplay + 1) % 2; break;
 
             case 5:
                 // Update the palette when changing themes
@@ -1693,9 +1743,28 @@ void ConsoleUI::stopCore() {
 }
 
 void ConsoleUI::runCore() {
-    // Run the emulator
-    while (running)
+    // Run the emulator, waiting for the display after each frame when syncing to it
+    while (running) {
         core->runCore();
+        if (core->frameEnded.exchange(false))
+            waitForDisplay();
+    }
+}
+
+void ConsoleUI::displayTick() {
+    // Let the emulator run another frame, saving up at most 2, so it doesn't run ahead after falling behind
+    std::lock_guard<std::mutex> guard(displayMutex);
+    if (displayTicks < 2) displayTicks++;
+    displayCond.notify_one();
+}
+
+void ConsoleUI::waitForDisplay() {
+    // Wait for the next display refresh when syncing to it and not fast-forwarding, giving up after a while in case
+    // refreshes stop being reported
+    if (!Settings::syncToDisplay || !Settings::fpsLimiter) return;
+    std::unique_lock<std::mutex> lock(displayMutex);
+    displayCond.wait_for(lock, std::chrono::milliseconds(100), [] { return displayTicks > 0; });
+    if (displayTicks > 0) displayTicks--;
 }
 
 void ConsoleUI::checkSave() {

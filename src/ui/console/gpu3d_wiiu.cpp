@@ -49,6 +49,7 @@
 #include "gpu3d_wiiu.h"
 #include "../../core/core.h"
 #include "../../core/heartbeat.h"
+#include "../../core/frame_capture.h"
 
 // The GPU 3D renderer's step and frame, which hang reports include: 1 = waiting, 2 = building, 3 = locking GX2,
 // 4 = drawing, 5 = handing over scanlines, 6 = submitting, 7 = waiting for the GPU, 8 = timed out
@@ -58,7 +59,7 @@ volatile uint32_t gpu3dStage, gpu3dFrames;
 #include "../../core/worker_thread.h"
 
 extern const uint8_t gpu3d_color_gsh[], gpu3d_modulate_gsh[], gpu3d_decal_gsh[], gpu3d_modtrans_gsh[], gpu3d_edge_gsh[],
-    gpu3d_fog_gsh[], gpu3d_aa_gsh[], gpu3d_toon_gsh[], gpu3d_pack_gsh[];
+    gpu3d_fog_gsh[], gpu3d_aa_gsh[], gpu3d_toon_gsh[], gpu3d_pack_gsh[], gpu3d_clear_gsh[];
 
 std::mutex gx2Mutex;
 
@@ -108,7 +109,7 @@ private:
     static const uint32_t FIRST_CHUNK_VERTICES = 768, CHUNK_VERTICES = 1536; // How many vertices go in each piece
     static constexpr float EDGE_BIAS = 1.0f / 64; // How far short of half a pixel vertices are moved
 
-    WHBGfxShaderGroup groups[9];
+    WHBGfxShaderGroup groups[10];
     GX2Sampler samplers[9];
     GX2ContextState *state = nullptr;
     GX2ColorBuffer colorBuffer;
@@ -120,6 +121,9 @@ private:
     GX2ColorBuffer packedBuffer; // The finished frame as the 2D engine's 3D pixels, so the CPU only copies it
     GX2Texture edgeTexture; // The 8 edge colors, with how much they're blended in as alpha
     GX2Texture toonTexture; // The 32 toon colors, for toon and highlight shading
+    GX2Texture clearColorTexture, clearDepthTexture; // The rear-plane bitmap's colors, and its depths and fog flags
+    uint8_t clearImages[2][256 * 256 * 2] = {}; // The bitmap as last converted, to only convert rows that change
+    bool clearConverted = false;
     GX2Texture whiteTexture; // A white texel, for toon and highlight polygons without a texture
     GX2Texture fogTexture; // The fog density for each depth / 0x200, from 0 to 128
     uint8_t fogSettings[35] = {}; // The fog table, offset and shift the densities were made from
@@ -158,8 +162,8 @@ private:
 bool Gpu3DWiiU::init() {
     // Load the shaders, which share one vertex shader and its layout
     const uint8_t *shaders[] = { gpu3d_color_gsh, gpu3d_modulate_gsh, gpu3d_decal_gsh, gpu3d_modtrans_gsh, gpu3d_edge_gsh,
-        gpu3d_fog_gsh, gpu3d_aa_gsh, gpu3d_toon_gsh, gpu3d_pack_gsh };
-    for (int i = 0; i < 9; i++) {
+        gpu3d_fog_gsh, gpu3d_aa_gsh, gpu3d_toon_gsh, gpu3d_pack_gsh, gpu3d_clear_gsh };
+    for (int i = 0; i < 10; i++) {
         if (!WHBGfxLoadGFDShaderGroup(&groups[i], 0, shaders[i])) return false;
         WHBGfxInitShaderAttribute(&groups[i], "position", 0, offsetof(GpuVertex, pos), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
         WHBGfxInitShaderAttribute(&groups[i], "tex_coords", 0, offsetof(GpuVertex, tex), GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
@@ -168,7 +172,7 @@ bool Gpu3DWiiU::init() {
         if (!WHBGfxInitFetchShader(&groups[i])) return false;
 
         // The assembler can only enable the red channel of a second output, so enable all of them here
-        if (i < 4 || i == 7) groups[i].pixelShader->regs.cb_shader_mask = 0xFF;
+        if (i < 4 || i == 7 || i == 9) groups[i].pixelShader->regs.cb_shader_mask = 0xFF;
     }
 
     // Set up nearest-neighbor samplers for each combination of clamping, repeating and flipping
@@ -248,25 +252,31 @@ bool Gpu3DWiiU::init() {
     packedBuffer.surface.image = MEMAllocFromDefaultHeapEx(packedBuffer.surface.imageSize, packedBuffer.surface.alignment);
 
     // Create the toon color texture and a white one, which are small textures like the edge colors
-    auto smallTexture = [](GX2Texture &texture, uint32_t width) {
+    auto smallTexture = [](GX2Texture &texture, uint32_t width, uint32_t height = 1,
+            GX2SurfaceFormat format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8, uint32_t compMap = 0x00010203) {
         memset(&texture, 0, sizeof(texture));
         texture.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
         texture.surface.width = width;
-        texture.surface.height = 1;
+        texture.surface.height = height;
         texture.surface.depth = 1;
         texture.surface.mipLevels = 1;
-        texture.surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+        texture.surface.format = format;
         texture.surface.aa = GX2_AA_MODE1X;
         texture.surface.use = GX2_SURFACE_USE_TEXTURE;
         texture.surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
         texture.viewNumSlices = 1;
-        texture.compMap = 0x00010203;
+        texture.compMap = compMap;
         GX2CalcSurfaceSizeAndAlignment(&texture.surface);
         GX2InitTextureRegs(&texture);
         texture.surface.image = MEMAllocFromDefaultHeapEx(texture.surface.imageSize, texture.surface.alignment);
         return texture.surface.image != nullptr;
     };
     if (!smallTexture(toonTexture, 32) || !smallTexture(whiteTexture, 1)) return false;
+
+    // Create textures for the rear-plane bitmap, which has 256x256 colors, and depths with fog flags
+    if (!smallTexture(clearColorTexture, 256, 256) ||
+            !smallTexture(clearDepthTexture, 256, 256, GX2_SURFACE_FORMAT_FLOAT_R32_G32, 0x00010405))
+        return false;
     *(uint32_t*)whiteTexture.surface.image = 0xFFFFFFFF;
     DCFlushRange(whiteTexture.surface.image, whiteTexture.surface.imageSize);
 
@@ -584,6 +594,35 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     }
     float toonMode[] = { (disp3DCnt & BIT(1)) ? 1.0f : 0.0f, (disp3DCnt & BIT(1)) ? 0.0f : 1.0f, 0, 0 };
 
+    bool bitmap = disp3DCnt & BIT(14), clearChanged = false;
+    if (bitmap) {
+        // Convert the rear-plane bitmap from texture slots 2 and 3: colors are opaque or transparent by bit 15, and
+        // depths are expanded like the clear depth, with the fog flag in bit 15
+        // Only rows that changed since they were last converted are converted again, which usually is none
+        uint8_t *colors = renderer->getCore()->memory.tex3D[2], *depths = renderer->getCore()->memory.tex3D[3];
+        uint32_t *colorTexels = (uint32_t*)clearColorTexture.surface.image;
+        float *depthTexels = (float*)clearDepthTexture.surface.image;
+        static const uint8_t blank[512] = {};
+        for (int y = 0; y < 256; y++) {
+            const uint8_t *colorRow = colors ? &colors[y * 512] : blank, *depthRow = depths ? &depths[y * 512] : blank;
+            if (clearConverted && !memcmp(colorRow, &clearImages[0][y * 512], 512) &&
+                    !memcmp(depthRow, &clearImages[1][y * 512], 512))
+                continue;
+            memcpy(&clearImages[0][y * 512], colorRow, 512);
+            memcpy(&clearImages[1][y * 512], depthRow, 512);
+            clearChanged = true;
+            for (int x = 0; x < 256; x++) {
+                uint16_t c = U8TO16(colorRow, x * 2), d = U8TO16(depthRow, x * 2);
+                colorTexels[y * clearColorTexture.surface.pitch + x] = ((((c >> 0) & 0x1F) * 255 / 31) << 24) |
+                    ((((c >> 5) & 0x1F) * 255 / 31) << 16) | ((((c >> 10) & 0x1F) * 255 / 31) << 8) | ((c & BIT(15)) ? 0xFF : 0);
+                float *texel = &depthTexels[(y * clearDepthTexture.surface.pitch + x) * 2];
+                texel[0] = ((d & 0x7FFF) == 0x7FFF) ? 0xFFFFFF : ((d & 0x7FFF) << 9);
+                texel[1] = (d & BIT(15)) ? 1.0f : 0.0f;
+            }
+        }
+        clearConverted = true;
+    }
+
     if (gpuEdges) {
         // Set the edge colors, blended in halfway with anti-aliasing, which softens marked edges
         uint32_t *texels = (uint32_t*)edgeTexture.surface.image;
@@ -670,6 +709,39 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ONE, GX2_BLEND_COMBINE_MODE_MAX);
         GX2SetAttribBuffer(0, (QUAD + 6) * sizeof(GpuVertex), sizeof(GpuVertex), vertices);
         GX2SetPixelUniformReg(8, 8, attribEncode);
+
+        if (bitmap) {
+            // Draw the rear-plane bitmap over the cleared buffers, with its depths written by the shader; the stencil
+            // keeps the clear polygon ID it was cleared to
+            WHBGfxShaderGroup &group = groups[9];
+            GX2SetFetchShader(&group.fetchShader);
+            GX2SetVertexShader(group.vertexShader);
+            GX2SetPixelShader(group.pixelShader);
+            GX2SetPixelTexture(&clearColorTexture, 0);
+            GX2SetPixelSampler(&samplers[4], 0);
+            GX2SetPixelTexture(&clearDepthTexture, 1);
+            GX2SetPixelSampler(&samplers[4], 1);
+            uint16_t offset = renderer->getClearImageOffset();
+#ifdef FRAME_CAPTURE
+            FrameCapture::renders[renderer->captureId % FrameCapture::RENDERS].clearImageOffset = offset | 0x10000;
+#endif
+            float scale = 1 << shift;
+            // Pixel centers are half a pixel past whole numbers, so rounding them down is safe from small errors
+            float params[] = { 512 / scale, 384 / scale, 0, 0, float(offset & 0xFF) + 0.5f,
+                float(offset >> 8) + 0.5f, float(clearAttrib & 0x3F) * 4, wBuffer ? 1.0f : 0.0f };
+            GX2SetPixelUniformReg(0, 8, params);
+            float depthScale[] = { 1.0f / 0x1000000, minW, 0, 0 };
+            GX2SetPixelUniformReg(16, 4, depthScale);
+            GX2SetDepthStencilControl(TRUE, TRUE, GX2_COMPARE_FUNC_ALWAYS, FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS,
+                GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS,
+                GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+            GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
+            GX2SetColorControl(GX2_LOGIC_OP_COPY, 0x00, FALSE, TRUE);
+            GX2SetTargetChannelMasks(colorMask, attribs ? GX2_CHANNEL_MASK_RGBA : NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
+                NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
+            GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 6, QUAD, 1);
+            GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
+        }
     };
 
     // Draw a group of triangles
@@ -814,6 +886,10 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         if (gpuEdges)
             GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, edgeTexture.surface.image, edgeTexture.surface.imageSize);
         GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, toonTexture.surface.image, toonTexture.surface.imageSize);
+        if (clearChanged) {
+            GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, clearColorTexture.surface.image, clearColorTexture.surface.imageSize);
+            GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, clearDepthTexture.surface.image, clearDepthTexture.surface.imageSize);
+        }
         if (fogUpdated)
             GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, fogTexture.surface.image, fogTexture.surface.imageSize);
         GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, &vertices[QUAD], 6 * sizeof(GpuVertex));
@@ -1252,6 +1328,9 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             OSSleepTicks(OSMicrosecondsToTicks(100));
         }
         HB_ADD_US(HB_GPU_DRAW_US, hbDraw);
+#ifdef FRAME_CAPTURE
+        FrameCapture::renders[renderer->captureId % FrameCapture::RENDERS].endTime = OSGetSystemTime();
+#endif
     }
 
 #ifdef GPU_DUMP

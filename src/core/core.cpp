@@ -428,6 +428,7 @@ void Core::endFrame() {
     // Break execution at the end of a frame and count it
     HB_INC(HB_EMU_FRAMES);
     running.store(false);
+    frameEnded.store(true);
     fpsCount++;
 
     // Run HLE ARM7 per-frame tasks if enabled

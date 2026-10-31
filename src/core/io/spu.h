@@ -88,6 +88,15 @@ private:
     std::mutex mutex1, mutex2;
     std::atomic<bool> ready;
 
+    // When syncing to the display, samples go through a ring buffer instead, which output reads at a rate adjusted to
+    // keep it about 2 output buffers full, since the emulator then runs at the display's rate instead of the DS's
+    static const uint32_t RING_SIZE = 16384;
+    uint32_t ring[RING_SIZE] = {};
+    std::atomic<uint32_t> ringHead{0}, ringTail{0};
+    float ringPosition = 0;
+    uint32_t ringLast = 0;
+    void readRing(uint32_t *out, int count);
+
     int16_t gbaFrameSequencer = 0;
     int32_t gbaSoundTimers[4] = {};
     int8_t gbaEnvelopes[3] = {};

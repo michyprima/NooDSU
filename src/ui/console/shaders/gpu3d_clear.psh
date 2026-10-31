@@ -1,0 +1,75 @@
+; $MODE = "UniformRegister"
+; $SAMPLER_VARS[0].name = "clearColors"
+; $SAMPLER_VARS[0].type = "sampler2D"
+; $SAMPLER_VARS[0].location = 0
+; $SAMPLER_VARS[1].name = "clearDepths"
+; $SAMPLER_VARS[1].type = "sampler2D"
+; $SAMPLER_VARS[1].location = 1
+; $UNIFORM_VARS[0].name = "pixelScale"
+; $UNIFORM_VARS[0].type = "float4"
+; $UNIFORM_VARS[0].count = 1
+; $UNIFORM_VARS[0].offset = 0
+; $UNIFORM_VARS[0].block = -1
+; $UNIFORM_VARS[1].name = "clearParams"
+; $UNIFORM_VARS[1].type = "float4"
+; $UNIFORM_VARS[1].count = 1
+; $UNIFORM_VARS[1].offset = 4
+; $UNIFORM_VARS[1].block = -1
+; $UNIFORM_VARS[2].name = "attribEncode"
+; $UNIFORM_VARS[2].type = "float4"
+; $UNIFORM_VARS[2].count = 2
+; $UNIFORM_VARS[2].offset = 8
+; $UNIFORM_VARS[2].block = -1
+; $UNIFORM_VARS[3].name = "depthScale"
+; $UNIFORM_VARS[3].type = "float4"
+; $UNIFORM_VARS[3].count = 1
+; $UNIFORM_VARS[3].offset = 16
+; $UNIFORM_VARS[3].block = -1
+; $NUM_SPI_PS_INPUT_CNTL = 3
+; $SPI_PS_INPUT_CNTL[0].SEMANTIC = 0
+; $SPI_PS_INPUT_CNTL[0].DEFAULT_VAL = 1
+; $SPI_PS_INPUT_CNTL[1].SEMANTIC = 1
+; $SPI_PS_INPUT_CNTL[1].DEFAULT_VAL = 1
+; $SPI_PS_INPUT_CNTL[2].SEMANTIC = 2
+; $SPI_PS_INPUT_CNTL[2].DEFAULT_VAL = 1
+; $SQ_PGM_EXPORTS_PS.EXPORT_MODE = 5
+; $CB_SHADER_CONTROL.RT0_ENABLE = true
+; $CB_SHADER_CONTROL.RT1_ENABLE = true
+; $DB_SHADER_CONTROL.Z_EXPORT_ENABLE = true
+
+; Rear-plane bitmap: R0 has this pixel's coordinates in the buffers, which C0 turns into DS pixels: times C0.x and C0.y
+; plus C0.z and C0.w gives them before rounding down. C1.x and C1.y add the clear image offset, and the images repeat
+; every 256 pixels. The color image has each pixel's color and alpha, and the depth image has the DS depth and the fog
+; flag. The attributes are the clear polygon ID times 4 in C1.z plus the fog flag, encoded by C2 and C3 like the
+; polygons' are, with the depth limited to at least 1 for the log. The depth buffer gets the depth times C4.x, or with
+; C1.w set for W-buffering, C4.y over it. Each instruction group has a single instruction, since groups can't read the
+; same channel of different registers at once, which the assembler doesn't check.
+00 ALU: ADDR(32) CNT(10)
+    0  x: MULADD R4.x, R0.x, C0.x, C0.z
+    1  y: MULADD R4.y, R0.y, C0.y, C0.w
+    2  x: FLOOR R4.x, R4.x
+    3  y: FLOOR R4.y, R4.y
+    4  x: ADD R4.x, R4.x, C1.x
+    5  y: ADD R4.y, R4.y, C1.y
+    6  x: MUL R4.x, R4.x, (0x3B800000, 0.00390625f).x
+    7  y: MUL R4.y, R4.y, (0x3B800000, 0.00390625f).x
+01 TEX: ADDR(64) CNT(2) VALID_PIX
+    8  SAMPLE R5, R4.xy00, t0, s0
+    9  SAMPLE R6, R4.xy00, t1, s1
+02 ALU: ADDR(42) CNT(13)
+   10  x: MULADD R7.x, R6.y, 2.0f, C1.z
+   11  x: MULADD R7.x, R7.x, C2.x, C2.y
+   12  x: MAX R8.x, R6.x, 1.0f
+   13  t: LOG_IEEE R8.y, R8.x
+   14  y: MUL R8.y, R8.y, C2.w
+   15  z: MUL R8.z, R6.x, C2.z
+   16  y: CNDE R7.y, C3.x, R8.z, R8.y
+   17  t: RECIP_IEEE R9.x, R8.x
+   18  x: MUL R9.x, R9.x, C4.y
+   19  z: MUL R9.z, R6.x, C4.x
+   20  x: CNDE R10.x, C1.w, R9.z, R9.x
+   21  x: MIN R10.x, R10.x, 1.0f
+03 EXP: PIX0, R5
+04 EXP: PIX1, R7
+05 EXP_DONE: PIX61, R10
+END_OF_PROGRAM

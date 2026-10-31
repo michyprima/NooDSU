@@ -109,6 +109,7 @@ public:
     static void drawString(std::string string, float x, float y,
         float size, uint32_t color = 0xFFFFFFFF, bool alignRight = false);
     static void fillAudioBuffer(uint32_t *buffer, int count, int rate);
+    static void displayTick();
     static uint32_t getInputPress();
 
     static void initialize(int width, int height, std::string root, std::string prefix);
@@ -159,5 +160,11 @@ private:
 
     static bool createCore();
     static void runCore();
+
+    // When syncing to the display, the emulator runs one frame for each display refresh, which the platform reports
+    static std::mutex displayMutex;
+    static std::condition_variable displayCond;
+    static int displayTicks;
+    static void waitForDisplay();
     static void checkSave();
 };

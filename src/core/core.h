@@ -205,6 +205,7 @@ public:
     Wifi wifi;
 
     Atomic32<bool> running;
+    std::atomic<bool> frameEnded; // Set at the end of each frame, for frontends that pace frames themselves
     EventQueue events;
     std::function<void()> tasks[MAX_TASKS];
     uint32_t globalCycles = 0;

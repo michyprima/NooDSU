@@ -17,6 +17,7 @@
     along with NooDS. If not, see <https://www.gnu.org/licenses/>.
 */
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 
@@ -139,7 +140,45 @@ void Spu::loadState(FILE *file) {
     SaveStates::readFifo(gbaFifos[1], file);
 }
 
+void Spu::readRing(uint32_t *out, int count) {
+    // Read samples from the ring buffer, interpolating between them, a little faster when it has more than about 2
+    // output buffers and a little slower when it has less, by up to half a percent, which can't be heard
+    uint32_t tail = ringTail.load(std::memory_order_relaxed), head = ringHead.load(std::memory_order_acquire);
+    float target = count * 2, fill = float(head - tail) - ringPosition;
+    if (fill > target * 4) {
+        // Drop samples that piled up, like after fast-forwarding
+        tail = head - uint32_t(target);
+        ringPosition = 0;
+        fill = target;
+    }
+    float ratio = 1.0f + std::max(-1.0f, std::min(1.0f, (fill - target) / target)) * 0.005f;
+    for (int i = 0; i < count; i++) {
+        // Repeat the last sample if the ring runs dry, without moving on
+        uint32_t index = uint32_t(ringPosition);
+        if (head - tail < index + 2) {
+            out[i] = ringLast;
+            continue;
+        }
+        uint32_t a = ring[(tail + index) % RING_SIZE], b = ring[(tail + index + 1) % RING_SIZE];
+        float fraction = ringPosition - index;
+        int16_t low = int16_t(a) + int16_t((int16_t(b) - int16_t(a)) * fraction);
+        int16_t high = int16_t(a >> 16) + int16_t((int16_t(b >> 16) - int16_t(a >> 16)) * fraction);
+        out[i] = ringLast = (uint32_t(uint16_t(high)) << 16) | uint16_t(low);
+        ringPosition += ratio;
+    }
+    uint32_t advance = uint32_t(ringPosition);
+    ringPosition -= advance;
+    ringTail.store(tail + advance, std::memory_order_release);
+}
+
 uint32_t *Spu::getSamples(int count) {
+    // When syncing to the display, read from the ring buffer without waiting
+    if (Settings::syncToDisplay && Settings::fpsLimiter) {
+        uint32_t *out = new uint32_t[count];
+        readRing(out, count);
+        return out;
+    }
+
     // Initialize the buffers
     if (bufferSize != count) {
         delete[] bufferIn;
@@ -682,6 +721,16 @@ void Spu::runSample() {
 }
 
 void Spu::pushSample(int16_t sampleLeft, int16_t sampleRight) {
+    // When syncing to the display, add the samples to the ring buffer, dropping them if it's full
+    if (Settings::syncToDisplay && Settings::fpsLimiter) {
+        uint32_t head = ringHead.load(std::memory_order_relaxed), tail = ringTail.load(std::memory_order_acquire);
+        if (head - tail < RING_SIZE) {
+            ring[head % RING_SIZE] = (sampleRight << 16) | (sampleLeft & 0xFFFF);
+            ringHead.store(head + 1, std::memory_order_release);
+        }
+        return;
+    }
+
     // Write the samples to the buffer
     if (!bufferSize) return;
     bufferIn[bufferPointer++] = (sampleRight << 16) | (sampleLeft & 0xFFFF);

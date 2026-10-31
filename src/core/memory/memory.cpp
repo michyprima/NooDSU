@@ -1631,6 +1631,7 @@ template <typename T> void Memory::ioWrite9(uint32_t address, T value) {
             DEF_IO08(0x4000340, core->gpu3DRenderer.writeAlphaTestRef(IOWR_PARAMS8)) // ALPHA_TEST_REF
             DEF_IO32(0x4000350, core->gpu3DRenderer.writeClearColor(IOWR_PARAMS)) // CLEAR_COLOR
             DEF_IO16(0x4000354, core->gpu3DRenderer.writeClearDepth(IOWR_PARAMS)) // CLEAR_DEPTH
+            DEF_IO16(0x4000356, core->gpu3DRenderer.writeClearImageOffset(IOWR_PARAMS)) // CLRIMAGE_OFFSET
             DEF_IO32(0x4000358, core->gpu3DRenderer.writeFogColor(IOWR_PARAMS)) // FOG_COLOR
             DEF_IO16(0x400035C, core->gpu3DRenderer.writeFogOffset(IOWR_PARAMS)) // FOG_OFFSET
             DEF_IO08(0x4000360, core->gpu3DRenderer.writeFogTable(0, IOWR_PARAMS8)) // FOG_TABLE
