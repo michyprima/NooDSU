@@ -15,6 +15,11 @@
 ; $UNIFORM_VARS[1].count = 1
 ; $UNIFORM_VARS[1].offset = 4
 ; $UNIFORM_VARS[1].block = -1
+; $UNIFORM_VARS[2].name = "attribEncode"
+; $UNIFORM_VARS[2].type = "float4"
+; $UNIFORM_VARS[2].count = 2
+; $UNIFORM_VARS[2].offset = 8
+; $UNIFORM_VARS[2].block = -1
 ; $NUM_SPI_PS_INPUT_CNTL = 3
 ; $SPI_PS_INPUT_CNTL[0].SEMANTIC = 0
 ; $SPI_PS_INPUT_CNTL[0].DEFAULT_VAL = 1
@@ -34,6 +39,9 @@
 ; of the pixel the polygon covers, for anti-aliasing. How much isn't covered goes in the fraction of the ID and flags
 ; attribute, which is whole otherwise, scaled to stay below 1. Each instruction group has a single instruction, since
 ; groups can't read the same channel of different registers at once, which the assembler doesn't check.
+; The attributes are then encoded by C2 and C3, which leave them as they are for full-precision attributes, or fit
+; them in 16 bits each: the ID and flags times C2.x plus C2.y, and the depth times C2.z, or with C3.x set, its log
+; times C2.w.
 00 ALU: ADDR(32) CNT(25)
     0  x: MIN R5.x, R0.z, R0.w
     1  x: MIN R5.x, R5.x, R2.y
@@ -55,10 +63,10 @@
    17  x: ADD R6.x, R6.x, 0.5f
    18  x: MUL R6.x, R6.x, (0x3D000000, 0.03125f).x
    19  y: MOV R6.y, 0.5f
-01 TEX: ADDR(80) CNT(2) VALID_PIX
+01 TEX: ADDR(96) CNT(2) VALID_PIX
    20  SAMPLE R0, R0.xy00, t0, s0
    21  SAMPLE R7, R6.xy00, t1, s1
-02 ALU: ADDR(57) CNT(19)
+02 ALU: ADDR(57) CNT(24)
    22  x: MUL R8.x, R1.x, C1.x
    23  y: MUL R8.y, R1.y, C1.x
    24  z: MUL R8.z, R1.z, C1.x
@@ -77,6 +85,11 @@
    37  x: ADD R2.x, R2.x, 0.5f
    38  x: FLOOR R2.x, R2.x
    39  x: MULADD R2.x, R5.x, (0x3F7C0000, 0.984375f).x, R2.x
+   40  x: MULADD R2.x, R2.x, C2.x, C2.y
+   41  t: LOG_IEEE R4.y, R2.y
+   42  y: MUL R4.y, R4.y, C2.w
+   43  z: MUL R4.z, R2.y, C2.z
+   44  y: CNDE R2.y, C3.x, R4.z, R4.y
 03 EXP: PIX0, R0
 04 EXP_DONE: PIX1, R2
 END_OF_PROGRAM

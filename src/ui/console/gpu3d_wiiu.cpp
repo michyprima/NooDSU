@@ -109,6 +109,8 @@ private:
     GX2ColorBuffer colorBuffer;
     GX2ColorBuffer attribBuffer; // Per-pixel attributes of solid polygons, for edge marking and fog
     GX2Texture attribTexture; // The attributes again, for the edge marking pass to read
+    GX2ColorBuffer attribCompact; // The attributes in 16 bits each, which is faster when edge marking doesn't need more
+    GX2Texture attribCompactTexture;
     GX2Texture colorTexture; // The colors again, for the anti-aliasing pass to read
     GX2ColorBuffer packedBuffer; // The finished frame as the 2D engine's 3D pixels, so the CPU only copies it
     GX2Texture edgeTexture; // The 8 edge colors, with how much they're blended in as alpha
@@ -205,6 +207,24 @@ bool Gpu3DWiiU::init() {
     attribTexture.viewNumSlices = 1;
     attribTexture.compMap = 0x00010405;
     GX2InitTextureRegs(&attribTexture);
+
+    // Create another attributes buffer with half the bits, for frames without edge marking; drawing to it takes
+    // noticeably less time in high-res, and fog and anti-aliasing work with its precision
+    memset(&attribCompact, 0, sizeof(attribCompact));
+    attribCompact.surface = colorBuffer.surface;
+    attribCompact.surface.format = GX2_SURFACE_FORMAT_UNORM_R16_G16;
+    attribCompact.surface.use = (GX2SurfaceUse)(GX2_SURFACE_USE_COLOR_BUFFER | GX2_SURFACE_USE_TEXTURE);
+    attribCompact.surface.image = nullptr;
+    attribCompact.viewNumSlices = 1;
+    GX2CalcSurfaceSizeAndAlignment(&attribCompact.surface);
+    GX2InitColorBufferRegs(&attribCompact);
+    attribCompact.surface.image = MEMAllocFromDefaultHeapEx(attribCompact.surface.imageSize, attribCompact.surface.alignment);
+    memset(&attribCompactTexture, 0, sizeof(attribCompactTexture));
+    attribCompactTexture.surface = attribCompact.surface;
+    attribCompactTexture.surface.use = GX2_SURFACE_USE_TEXTURE;
+    attribCompactTexture.viewNumSlices = 1;
+    attribCompactTexture.compMap = 0x00010405;
+    GX2InitTextureRegs(&attribCompactTexture);
 
     // Let the colors be read as a texture too, and create another color buffer like it for anti-aliasing to write
     memset(&colorTexture, 0, sizeof(colorTexture));
@@ -303,7 +323,7 @@ bool Gpu3DWiiU::init() {
     // There's room for a screen-sized quad at the end, for edge marking, fog, and clearing shadow marks
     vertices = (GpuVertex*)MEMAllocFromDefaultHeapEx((MAX_VERTICES + 6) * sizeof(GpuVertex), GX2_VERTEX_BUFFER_ALIGNMENT);
     state = (GX2ContextState*)MEMAllocFromDefaultHeapEx(sizeof(GX2ContextState), GX2_CONTEXT_STATE_ALIGNMENT);
-    if (!colorBuffer.surface.image || !attribBuffer.surface.image || !edgeTexture.surface.image || !fogTexture.surface.image ||
+    if (!colorBuffer.surface.image || !attribBuffer.surface.image || !attribCompact.surface.image || !edgeTexture.surface.image || !fogTexture.surface.image ||
             !packedBuffer.surface.image ||
             !depthBuffer.surface.image || !vertices || !state)
         return false;
@@ -517,6 +537,21 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         msaaState = initMultisampling() ? 1 : -1;
     bool msaa = (msaaState == 1) && Settings::gpuAntiAlias == 1 && (disp3DCnt & BIT(4));
 
+    // Without edge marking, the attributes fit in 16 bits each: the ID and flags are scaled down, biased so they never
+    // round below a whole number, and the depth is scaled down, or for W, which varies a lot more, its log is; the
+    // shaders that write them get the encoding, and the ones that read them get how to undo it
+    bool compact = writeAttribs && !gpuEdges && !msaa;
+    GX2ColorBuffer &attribTarget1 = compact ? attribCompact : attribBuffer;
+    GX2Texture &attribRead = compact ? attribCompactTexture : attribTexture;
+    float attribEncode[8] = { 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    if (compact) {
+        attribEncode[0] = 1.0f / 256;
+        attribEncode[1] = 1.0f / 65535;
+        attribEncode[2] = 1.0f / 0x1000000;
+        attribEncode[3] = 1.0f / 32;
+        attribEncode[4] = wBuffer ? 1.0f : 0.0f;
+    }
+
     // Get the clear values; the clear color is 5-bit with a 5-bit alpha
     uint32_t clear = renderer->getClearColor();
     float clearR = ((clear >> 0) & 0x1F) / 31.0f, clearG = ((clear >> 5) & 0x1F) / 31.0f;
@@ -525,6 +560,12 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     float depthClear = wBuffer ? 0.0f : (clearDepth == 0x7FFF) ? 1.0f : float(clearDepth << 9) / 0x1000000;
     uint32_t clearAttrib = ((clear & BIT(15)) >> 2) | ((clear & 0x3F000000) >> 18) | ((clear & 0x3F000000) >> 24) | (0x3F << 15);
     int32_t clearDepthValue = (clearDepth == 0x7FFF) ? 0xFFFFFF : (clearDepth << 9);
+    float clearIdValue = float(clearAttrib & 0x3F) * 4 + ((clearAttrib & BIT(13)) ? 2 : 0);
+    float clearDepthAttrib = clearDepthValue;
+    if (compact) {
+        clearIdValue = clearIdValue * attribEncode[0] + attribEncode[1];
+        clearDepthAttrib = wBuffer ? (log2f(std::max(clearDepthAttrib, 1.0f)) / 32) : (clearDepthAttrib / 0x1000000);
+    }
 
     // Set the toon colors, which toon and highlight shading look up by red level
     {
@@ -600,14 +641,14 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     bool attribs = writeAttribs;
     auto setupPass = [&](int pass) {
         GX2ColorBuffer &target = pass ? colorBuffer : msaaColor;
-        GX2ColorBuffer &attribTarget = pass ? attribBuffer : msaaAttribs;
+        GX2ColorBuffer &attribTarget = pass ? attribTarget1 : msaaAttribs;
         GX2DepthBuffer &depthTarget = pass ? depthBuffer : msaaDepth;
         colorMask = (pass == 0 || !msaa) ? GX2_CHANNEL_MASK_RGBA : NO_CHANNELS;
         attribs = writeAttribs && pass == 1;
         GX2SetContextState(state);
         if (colorMask)
             GX2ClearColor(&target, clearR, clearG, clearB, clearA);
-        GX2ClearColor(&attribTarget, float(clearAttrib & 0x3F) * 4 + ((clearAttrib & BIT(13)) ? 2 : 0), clearDepthValue, 0, 0);
+        GX2ClearColor(&attribTarget, clearIdValue, clearDepthAttrib, 0, 0);
         GX2ClearDepthStencilEx(&depthTarget, depthClear, (clear >> 24) & 0x3F, GX2_CLEAR_FLAGS_BOTH); // Clear polygon ID
         GX2SetContextState(state);
         GX2SetColorBuffer(&target, GX2_RENDER_TARGET_0);
@@ -622,6 +663,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
             GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ONE, GX2_BLEND_COMBINE_MODE_MAX);
         GX2SetAttribBuffer(0, (QUAD + 6) * sizeof(GpuVertex), sizeof(GpuVertex), vertices);
+        GX2SetPixelUniformReg(8, 8, attribEncode);
     };
 
     // Draw a group of triangles
@@ -1058,15 +1100,20 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             // factor holds the fog color; it only changes the alpha if set to
             if (!gpuEdges)
                 GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE),
-                    attribBuffer.surface.image, attribBuffer.surface.imageSize);
+                    attribTarget1.surface.image, attribTarget1.surface.imageSize);
             WHBGfxShaderGroup &group = groups[5];
             GX2SetFetchShader(&group.fetchShader);
             GX2SetVertexShader(group.vertexShader);
             GX2SetPixelShader(group.pixelShader);
-            GX2SetPixelTexture(&attribTexture, 0);
+            GX2SetPixelTexture(&attribRead, 0);
             GX2SetPixelSampler(&samplers[0], 0);
             GX2SetPixelTexture(&fogTexture, 1);
             GX2SetPixelSampler(&samplers[0], 1);
+            // Undo the attributes' encoding: the scale of the ID and flags to give a quarter of them, and how to get the
+            // depth over 0x200
+            float decode[] = { compact ? (wBuffer ? 0.0f : 0x1000000 / 0x200) : 1.0f / 0x200, (compact && wBuffer) ? 1.0f : 0.0f,
+                32.0f, compact ? 64.0f : 0.25f };
+            GX2SetPixelUniformReg(0, 4, decode);
             uint32_t fogColor = renderer->getFogColor();
             GX2SetBlendConstantColor(((fogColor >> 0) & 0x1F) / 31.0f, ((fogColor >> 5) & 0x1F) / 31.0f,
                 ((fogColor >> 10) & 0x1F) / 31.0f, ((fogColor >> 16) & 0x1F) / 31.0f);
@@ -1090,19 +1137,24 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                 colorBuffer.surface.image, colorBuffer.surface.imageSize);
             if (!gpuEdges && !fog)
                 GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE),
-                    attribBuffer.surface.image, attribBuffer.surface.imageSize);
+                    attribTarget1.surface.image, attribTarget1.surface.imageSize);
             packed = true;
             GX2SetColorBuffer(&packedBuffer, GX2_RENDER_TARGET_0);
             WHBGfxShaderGroup &group = groups[6];
             GX2SetFetchShader(&group.fetchShader);
             GX2SetVertexShader(group.vertexShader);
             GX2SetPixelShader(group.pixelShader);
-            GX2SetPixelTexture(&attribTexture, 0);
+            GX2SetPixelTexture(&attribRead, 0);
             GX2SetPixelSampler(&samplers[0], 0);
             GX2SetPixelTexture(&colorTexture, 1);
             GX2SetPixelSampler(&samplers[0], 1);
-            float margin[] = { wBuffer ? (1.0f + 1.0f / 256) : 1.0f, wBuffer ? 0.0f : 0x200, 0, 0 };
-            GX2SetPixelUniformReg(0, 4, margin);
+            // Encoded depths compare the same way with the margin encoded too, which adds to the log of W
+            float margin[] = { wBuffer ? (1.0f + 1.0f / 256) : 1.0f, wBuffer ? 0.0f : 0x200, 0, 0, compact ? 256.0f : 1.0f, 0, 0, 0 };
+            if (compact) {
+                margin[0] = 1.0f;
+                margin[1] = wBuffer ? (log2f(1.0f + 1.0f / 256) / 32) : (float(0x200) / 0x1000000);
+            }
+            GX2SetPixelUniformReg(0, 8, margin);
             GX2SetDepthStencilControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS, FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS,
                 GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS,
                 GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);

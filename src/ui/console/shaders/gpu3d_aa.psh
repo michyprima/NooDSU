@@ -10,6 +10,11 @@
 ; $UNIFORM_VARS[0].count = 1
 ; $UNIFORM_VARS[0].offset = 0
 ; $UNIFORM_VARS[0].block = -1
+; $UNIFORM_VARS[1].name = "attribScale"
+; $UNIFORM_VARS[1].type = "float4"
+; $UNIFORM_VARS[1].count = 1
+; $UNIFORM_VARS[1].offset = 4
+; $UNIFORM_VARS[1].block = -1
 ; $NUM_SPI_PS_INPUT_CNTL = 3
 ; $SPI_PS_INPUT_CNTL[0].SEMANTIC = 0
 ; $SPI_PS_INPUT_CNTL[0].DEFAULT_VAL = 1
@@ -20,7 +25,7 @@
 
 ; Anti-aliasing: R0 has this pixel's coordinates, and R1 and R2 have those of the neighbors right and left, then down
 ; and up. The attributes texture has the depth, and how much of the pixel its solid polygon doesn't cover in the
-; fraction of the ID and flags. A partly covered
+; fraction of the ID and flags, which is scaled back by C1.x; depths are only compared, so they can stay encoded. A partly covered
 ; pixel is blended with the color behind it, which is taken from the farthest neighbor, if that's further than its
 ; own depth times C0.x plus C0.y, like edge marking; if that color is transparent, only the alpha is set to the
 ; coverage, like on the DS. Other pixels keep their color, since this writes every pixel to a new buffer. Like the
@@ -39,83 +44,84 @@
     7  SAMPLE R10, R2.xy00, t1, s1
     8  SAMPLE R11, R2.zw00, t1, s1
     9  SAMPLE R12, R0.xy00, t1, s1
-01 ALU: ADDR(32) CNT(102)
-   10  x: FRACT R18.x, R3.x
-   11  x: MULADD R18.x, R18.x, (0xBF820821, -1.015873f).x, 1.0f
-   12  y: ADD R14.y, R5.y, -R4.y
-   13  x: CNDGT R13.x, R14.y, R9.x, R8.x
-   14  y: CNDGT R13.y, R14.y, R9.y, R8.y
-   15  z: CNDGT R13.z, R14.y, R9.z, R8.z
-   16  w: CNDGT R13.w, R14.y, R9.w, R8.w
-   17  x: MAX R14.x, R4.y, R5.y
-   18  y: ADD R14.y, R7.y, -R6.y
-   19  x: CNDGT R15.x, R14.y, R11.x, R10.x
-   20  y: CNDGT R15.y, R14.y, R11.y, R10.y
-   21  z: CNDGT R15.z, R14.y, R11.z, R10.z
-   22  w: CNDGT R15.w, R14.y, R11.w, R10.w
-   23  z: MAX R14.z, R6.y, R7.y
-   24  y: ADD R14.y, R14.z, -R14.x
-   25  x: CNDGT R13.x, R14.y, R15.x, R13.x
-   26  y: CNDGT R13.y, R14.y, R15.y, R13.y
-   27  z: CNDGT R13.z, R14.y, R15.z, R13.z
-   28  w: CNDGT R13.w, R14.y, R15.w, R13.w
-   29  x: MAX R14.x, R14.x, R14.z
-   30  w: MULADD R14.w, R3.y, C0.x, C0.y
-   31  x: SETGT R17.x, R14.x, R14.w
-   32  y: SETGT R17.y, 1.0f, R18.x
-   33  x: MUL R17.x, R17.x, R17.y
-   34  x: ADD R16.x, R12.x, -R13.x
-   35  y: ADD R16.y, R12.y, -R13.y
-   36  z: ADD R16.z, R12.z, -R13.z
-   37  x: MULADD R16.x, R16.x, R18.x, R13.x
-   38  y: MULADD R16.y, R16.y, R18.x, R13.y
-   39  z: MULADD R16.z, R16.z, R18.x, R13.z
-   40  w: MAX R16.w, R12.w, R13.w
-   41  x: CNDE R16.x, R13.w, R12.x, R16.x
-   42  y: CNDE R16.y, R13.w, R12.y, R16.y
-   43  z: CNDE R16.z, R13.w, R12.z, R16.z
-   44  w: CNDE R16.w, R13.w, R18.x, R16.w
-   45  x: CNDE R16.x, R17.x, R12.x, R16.x
-   46  y: CNDE R16.y, R17.x, R12.y, R16.y
-   47  z: CNDE R16.z, R17.x, R12.z, R16.z
-   48  w: CNDE R16.w, R17.x, R12.w, R16.w
-   49  x: MUL R19.x, R16.x, (0x437F0000, 255.0f).x
-   50  x: ADD R19.x, R19.x, 0.5f
-   51  x: FLOOR R19.x, R19.x
-   52  x: MUL R19.x, R19.x, 0.25f
-   53  x: ADD R19.x, R19.x, (0x3A83126F, 0.001f).x
-   54  y: MUL R19.y, R16.y, (0x437F0000, 255.0f).x
-   55  y: ADD R19.y, R19.y, 0.5f
-   56  y: FLOOR R19.y, R19.y
-   57  y: MUL R19.y, R19.y, 0.25f
-   58  y: ADD R19.y, R19.y, (0x3A83126F, 0.001f).x
-   59  z: MUL R19.z, R16.z, (0x437F0000, 255.0f).x
-   60  z: ADD R19.z, R19.z, 0.5f
-   61  z: FLOOR R19.z, R19.z
-   62  z: MUL R19.z, R19.z, 0.25f
-   63  z: ADD R19.z, R19.z, (0x3A83126F, 0.001f).x
-   64  w: MUL R19.w, R16.w, (0x437F0000, 255.0f).x
-   65  w: ADD R19.w, R19.w, 0.5f
-   66  w: FLOOR R19.w, R19.w
-   67  w: MUL R19.w, R19.w, 0.25f
-   68  w: ADD R19.w, R19.w, (0x3A83126F, 0.001f).x
-   69  x: FLOOR R19.x, R19.x
-   70  y: FLOOR R19.y, R19.y
-   71  z: FLOOR R19.z, R19.z
-   72  w: FLOOR R19.w, R19.w
-   73  y: MUL R20.y, R19.y, 0.25f
-   74  y: FLOOR R20.y, R20.y
-   75  x: MULADD R20.x, R20.y, (0xC0800000, -4.0f).x, R19.y
-   76  z: MUL R20.z, R19.z, (0x3D800000, 0.0625f).x
-   77  z: FLOOR R20.z, R20.z
-   78  w: MULADD R20.w, R20.z, (0xC1800000, -16.0f).x, R19.z
-   79  w: MULADD R21.w, R20.x, (0x42800000, 64.0f).x, R19.x
-   80  z: MULADD R21.z, R20.w, (0x41800000, 16.0f).x, R20.y
-   81  y: MULADD R21.y, R19.w, (0x40800000, 4.0f).x, R20.z
-   82  x: MOV R21.x, (0x40800000, 4.0f).x
-   83  x: MUL R21.x, R21.x, (0x3B808081, 0.003921569f).x
-   84  y: MUL R21.y, R21.y, (0x3B808081, 0.003921569f).x
-   85  z: MUL R21.z, R21.z, (0x3B808081, 0.003921569f).x
-   86  w: MUL R21.w, R21.w, (0x3B808081, 0.003921569f).x
+01 ALU: ADDR(32) CNT(103)
+   10  x: MUL R18.x, R3.x, C1.x
+   11  x: FRACT R18.x, R18.x
+   12  x: MULADD R18.x, R18.x, (0xBF820821, -1.015873f).x, 1.0f
+   13  y: ADD R14.y, R5.y, -R4.y
+   14  x: CNDGT R13.x, R14.y, R9.x, R8.x
+   15  y: CNDGT R13.y, R14.y, R9.y, R8.y
+   16  z: CNDGT R13.z, R14.y, R9.z, R8.z
+   17  w: CNDGT R13.w, R14.y, R9.w, R8.w
+   18  x: MAX R14.x, R4.y, R5.y
+   19  y: ADD R14.y, R7.y, -R6.y
+   20  x: CNDGT R15.x, R14.y, R11.x, R10.x
+   21  y: CNDGT R15.y, R14.y, R11.y, R10.y
+   22  z: CNDGT R15.z, R14.y, R11.z, R10.z
+   23  w: CNDGT R15.w, R14.y, R11.w, R10.w
+   24  z: MAX R14.z, R6.y, R7.y
+   25  y: ADD R14.y, R14.z, -R14.x
+   26  x: CNDGT R13.x, R14.y, R15.x, R13.x
+   27  y: CNDGT R13.y, R14.y, R15.y, R13.y
+   28  z: CNDGT R13.z, R14.y, R15.z, R13.z
+   29  w: CNDGT R13.w, R14.y, R15.w, R13.w
+   30  x: MAX R14.x, R14.x, R14.z
+   31  w: MULADD R14.w, R3.y, C0.x, C0.y
+   32  x: SETGT R17.x, R14.x, R14.w
+   33  y: SETGT R17.y, 1.0f, R18.x
+   34  x: MUL R17.x, R17.x, R17.y
+   35  x: ADD R16.x, R12.x, -R13.x
+   36  y: ADD R16.y, R12.y, -R13.y
+   37  z: ADD R16.z, R12.z, -R13.z
+   38  x: MULADD R16.x, R16.x, R18.x, R13.x
+   39  y: MULADD R16.y, R16.y, R18.x, R13.y
+   40  z: MULADD R16.z, R16.z, R18.x, R13.z
+   41  w: MAX R16.w, R12.w, R13.w
+   42  x: CNDE R16.x, R13.w, R12.x, R16.x
+   43  y: CNDE R16.y, R13.w, R12.y, R16.y
+   44  z: CNDE R16.z, R13.w, R12.z, R16.z
+   45  w: CNDE R16.w, R13.w, R18.x, R16.w
+   46  x: CNDE R16.x, R17.x, R12.x, R16.x
+   47  y: CNDE R16.y, R17.x, R12.y, R16.y
+   48  z: CNDE R16.z, R17.x, R12.z, R16.z
+   49  w: CNDE R16.w, R17.x, R12.w, R16.w
+   50  x: MUL R19.x, R16.x, (0x437F0000, 255.0f).x
+   51  x: ADD R19.x, R19.x, 0.5f
+   52  x: FLOOR R19.x, R19.x
+   53  x: MUL R19.x, R19.x, 0.25f
+   54  x: ADD R19.x, R19.x, (0x3A83126F, 0.001f).x
+   55  y: MUL R19.y, R16.y, (0x437F0000, 255.0f).x
+   56  y: ADD R19.y, R19.y, 0.5f
+   57  y: FLOOR R19.y, R19.y
+   58  y: MUL R19.y, R19.y, 0.25f
+   59  y: ADD R19.y, R19.y, (0x3A83126F, 0.001f).x
+   60  z: MUL R19.z, R16.z, (0x437F0000, 255.0f).x
+   61  z: ADD R19.z, R19.z, 0.5f
+   62  z: FLOOR R19.z, R19.z
+   63  z: MUL R19.z, R19.z, 0.25f
+   64  z: ADD R19.z, R19.z, (0x3A83126F, 0.001f).x
+   65  w: MUL R19.w, R16.w, (0x437F0000, 255.0f).x
+   66  w: ADD R19.w, R19.w, 0.5f
+   67  w: FLOOR R19.w, R19.w
+   68  w: MUL R19.w, R19.w, 0.25f
+   69  w: ADD R19.w, R19.w, (0x3A83126F, 0.001f).x
+   70  x: FLOOR R19.x, R19.x
+   71  y: FLOOR R19.y, R19.y
+   72  z: FLOOR R19.z, R19.z
+   73  w: FLOOR R19.w, R19.w
+   74  y: MUL R20.y, R19.y, 0.25f
+   75  y: FLOOR R20.y, R20.y
+   76  x: MULADD R20.x, R20.y, (0xC0800000, -4.0f).x, R19.y
+   77  z: MUL R20.z, R19.z, (0x3D800000, 0.0625f).x
+   78  z: FLOOR R20.z, R20.z
+   79  w: MULADD R20.w, R20.z, (0xC1800000, -16.0f).x, R19.z
+   80  w: MULADD R21.w, R20.x, (0x42800000, 64.0f).x, R19.x
+   81  z: MULADD R21.z, R20.w, (0x41800000, 16.0f).x, R20.y
+   82  y: MULADD R21.y, R19.w, (0x40800000, 4.0f).x, R20.z
+   83  x: MOV R21.x, (0x40800000, 4.0f).x
+   84  x: MUL R21.x, R21.x, (0x3B808081, 0.003921569f).x
+   85  y: MUL R21.y, R21.y, (0x3B808081, 0.003921569f).x
+   86  z: MUL R21.z, R21.z, (0x3B808081, 0.003921569f).x
+   87  w: MUL R21.w, R21.w, (0x3B808081, 0.003921569f).x
 02 EXP_DONE: PIX0, R21
 END_OF_PROGRAM

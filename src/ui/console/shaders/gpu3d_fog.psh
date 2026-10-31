@@ -5,6 +5,11 @@
 ; $SAMPLER_VARS[1].name = "densities"
 ; $SAMPLER_VARS[1].type = "sampler2D"
 ; $SAMPLER_VARS[1].location = 1
+; $UNIFORM_VARS[0].name = "attribDecode"
+; $UNIFORM_VARS[0].type = "float4"
+; $UNIFORM_VARS[0].count = 1
+; $UNIFORM_VARS[0].offset = 0
+; $UNIFORM_VARS[0].block = -1
 ; $NUM_SPI_PS_INPUT_CNTL = 3
 ; $SPI_PS_INPUT_CNTL[0].SEMANTIC = 0
 ; $SPI_PS_INPUT_CNTL[0].DEFAULT_VAL = 1
@@ -15,33 +20,38 @@
 ; $DB_SHADER_CONTROL.KILL_ENABLE = true
 
 ; Fog: R0 has this pixel's coordinates in the attributes texture, which has the ID times 4 plus flags (2 = fog), and
-; the depth. Pixels with the fog flag look up their density by depth / 0x200 in the densities texture, which is 256
+; the depth, encoded: C0.w scales the ID and flags by a quarter, and the depth over 0x200 is the depth times C0.x, or
+; with C0.y set, 2 to the power of the depth times C0.z, over 0x200. Pixels with the fog flag look up their density by depth / 0x200 in the densities texture, which is 256
 ; wide with 8-bit values from 0 to 128, and output it in every channel; blending mixes in the fog color by it. Each
 ; instruction group has a single instruction, since groups can't read the same channel of different registers at
 ; once, which the assembler doesn't check.
 00 TEX: ADDR(64) CNT(1) VALID_PIX
     0  SAMPLE R3, R0.xy00, t0, s0
-01 ALU: ADDR(32) CNT(21)
-    1  x: MUL R4.x, R3.x, (0x3E800000, 0.25f).x
+01 ALU: ADDR(32) CNT(24)
+    1  x: MUL R4.x, R3.x, C0.w
     2  x: FRACT R4.x, R4.x
     3  x: SETGE R4.x, R4.x, (0x3F000000, 0.5f).x
-    4  y: MUL R4.y, R3.y, (0x3B000000, 0.001953125f).x
-    5  y: FLOOR R4.y, R4.y
-    6  y: MIN R4.y, R4.y, (0x46FFFE00, 32767.0f).x
-    7  z: MUL R4.z, R4.y, (0x3B800000, 0.00390625f).x
-    8  z: FLOOR R4.z, R4.z
-    9  w: MULADD R4.w, R4.z, (0xC3800000, -256.0f).x, R4.y
-   10  x: ADD R5.x, R4.w, (0x3F000000, 0.5f).x
-   11  x: MUL R5.x, R5.x, (0x3B800000, 0.00390625f).x
-   12  y: ADD R5.y, R4.z, (0x3F000000, 0.5f).x
-   13  y: MUL R5.y, R5.y, (0x3C000000, 0.0078125f).x
-   14  x: KILLE ____, R4.x, (0x00000000, 0.0f).x
+    4  y: MUL R20.y, R3.y, C0.z
+    5  t: EXP_IEEE R20.y, R20.y
+    6  y: MUL R20.y, R20.y, (0x3B000000, 0.001953125f).x
+    7  z: MUL R20.z, R3.y, C0.x
+    8  y: CNDE R4.y, C0.y, R20.z, R20.y
+    9  y: FLOOR R4.y, R4.y
+   10  y: MIN R4.y, R4.y, (0x46FFFE00, 32767.0f).x
+   11  z: MUL R4.z, R4.y, (0x3B800000, 0.00390625f).x
+   12  z: FLOOR R4.z, R4.z
+   13  w: MULADD R4.w, R4.z, (0xC3800000, -256.0f).x, R4.y
+   14  x: ADD R5.x, R4.w, (0x3F000000, 0.5f).x
+   15  x: MUL R5.x, R5.x, (0x3B800000, 0.00390625f).x
+   16  y: ADD R5.y, R4.z, (0x3F000000, 0.5f).x
+   17  y: MUL R5.y, R5.y, (0x3C000000, 0.0078125f).x
+   18  x: KILLE ____, R4.x, (0x00000000, 0.0f).x
 02 TEX: ADDR(66) CNT(1) VALID_PIX
-   15  SAMPLE R6, R5.xy00, t1, s1
-03 ALU: ADDR(53) CNT(5)
-   16  x: MUL R7.x, R6.x, (0x3FFF0000, 1.9921875f).x
-   17  y: MOV R7.y, R7.x
-   18  z: MOV R7.z, R7.x
-   19  w: MOV R7.w, R7.x
+   19  SAMPLE R6, R5.xy00, t1, s1
+03 ALU: ADDR(56) CNT(5)
+   20  x: MUL R7.x, R6.x, (0x3FFF0000, 1.9921875f).x
+   21  y: MOV R7.y, R7.x
+   22  z: MOV R7.z, R7.x
+   23  w: MOV R7.w, R7.x
 04 EXP_DONE: PIX0, R7
 END_OF_PROGRAM
