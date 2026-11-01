@@ -252,8 +252,9 @@ JitBlock *Jit::compile(uint32_t address, bool thumb, uint8_t *host, int index) {
             p.blocks.push_back(block);
         }
         for (uint8_t *i = block->start; i < block->end; i += 2) {
-            int bit = (uintptr_t(i) & 0xFFF) >> 1;
-            p.covered[bit >> 5] |= BIT(bit & 0x1F);
+            uint8_t &count = p.covered[(uintptr_t(i) & 0xFFF) >> 1];
+            if (count == 0xFF) p.saturated = true;
+            else count++;
         }
     }
 
@@ -275,14 +276,22 @@ void Jit::retire(JitBlock *block) {
             break;
         }
 
-        // Rebuild the coverage bitmap from the remaining blocks
+        // Take the block out of the coverage counts, or count the remaining blocks again if they were saturated
         JitPage &p = pages[page];
-        memset(p.covered, 0, sizeof(p.covered));
-        for (size_t i = 0; i < blocks.size(); i++) {
-            for (uint8_t *j = blocks[i]->start; j < blocks[i]->end; j += 2) {
-                int bit = (uintptr_t(j) & 0xFFF) >> 1;
-                p.covered[bit >> 5] |= BIT(bit & 0x1F);
+        if (p.saturated) {
+            memset(p.covered, 0, sizeof(p.covered));
+            p.saturated = false;
+            for (size_t i = 0; i < blocks.size(); i++) {
+                for (uint8_t *j = blocks[i]->start; j < blocks[i]->end; j += 2) {
+                    uint8_t &count = p.covered[(uintptr_t(j) & 0xFFF) >> 1];
+                    if (count == 0xFF) p.saturated = true;
+                    else count++;
+                }
             }
+        }
+        else {
+            for (uint8_t *j = block->start; j < block->end; j += 2)
+                p.covered[(uintptr_t(j) & 0xFFF) >> 1]--;
         }
         if (blocks.empty()) codePages--;
     }
@@ -399,19 +408,17 @@ bool Jit::writeCode(uint8_t *host, int size) {
     if (page < 0) return false;
     JitPage &p = pages[page];
     bool overlap = false;
-    for (int i = 0; i < size; i += 2) {
-        int bit = ((uintptr_t(host) + i) & 0xFFF) >> 1;
-        if (p.covered[bit >> 5] & BIT(bit & 0x1F)) overlap = true;
-    }
+    for (int i = 0; i < size; i += 2)
+        if (p.covered[((uintptr_t(host) + i) & 0xFFF) >> 1]) overlap = true;
 
     // Invalidate every block that overlaps the write
     if (overlap) {
-        std::vector<JitBlock*> hit;
+        hitBlocks.clear();
         for (size_t i = 0; i < p.blocks.size(); i++)
             if (host < p.blocks[i]->end && host + size > p.blocks[i]->start)
-                hit.push_back(p.blocks[i]);
-        for (size_t i = 0; i < hit.size(); i++)
-            retire(hit[i]);
+                hitBlocks.push_back(p.blocks[i]);
+        for (size_t i = 0; i < hitBlocks.size(); i++)
+            retire(hitBlocks[i]);
     }
     return !p.blocks.empty();
 }

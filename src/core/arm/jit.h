@@ -75,10 +75,12 @@ struct alignas(16) JitCacheEntry {
     JitBlock *block;
 };
 
-// Per-page list of compiled blocks, with a bitmap of the halfwords they cover
+// Per-page list of compiled blocks, with how many blocks cover each halfword, so retiring a block only has to
+// update its own range; counts stop at 255, and a page that reached that is recounted when blocks are retired
 struct JitPage {
     std::vector<JitBlock*> blocks;
-    uint32_t covered[0x1000 / 2 / 32] = {};
+    uint8_t covered[0x1000 / 2] = {};
+    bool saturated = false;
 };
 
 // Host memory that code is compiled from, and whether code there can be overwritten
@@ -136,6 +138,7 @@ private:
 
     // Blocks can be invalidated while running, so they're deleted later
     std::vector<JitBlock*> graveyard;
+    std::vector<JitBlock*> hitBlocks; // Blocks a write overlaps, kept to avoid allocating for every write
     bool running = false;
 
     // Generated code, starting with shared entry, exit, dispatch and per-instruction routines
