@@ -56,6 +56,10 @@ enum EmuProfileSlot {
     EP_2D_OUT, // Copying the final scanline and applying master brightness, on the emulator thread
     EP_SWAP3D, // Swapping 3D buffers at V-blank
     EP_FRAMECOPY, // Copying finished frames for the frontend
+    EP_HIRES, // Within copying frames: getting the high-res 3D frame
+    EP_JOIN2D_A, // Waiting for engine A's 2D thread to finish the frame at V-blank
+    EP_JOIN2D_B, // Waiting for engine B's 2D thread to finish the frame at V-blank
+    EP_DISPLAY, // Waiting for the display after a frame, when syncing to it
     EP_COUNT
 };
 
@@ -80,8 +84,40 @@ enum EmuCountSlot {
     EC_LINES_EMU, // Engine A scanlines drawn on the emulator thread
     EC_LINES_HALF, // Engine B scanlines drawn on the emulator thread
     EC_LINES_THREAD, // Engine B scanlines drawn by its thread
+    EC_JIT_COMPILED, // JIT blocks compiled
+    EC_JIT_RETIRED, // JIT blocks dropped because their code was overwritten
+    EC_JIT_RESETS, // Times the JIT dropped all its code
+    EC_JIT_WRITES, // Writes to pages with compiled code, which take a slow path
+    EC_INTERP9, // ARM9 instructions run by the interpreter in the run loops, without compiled code
     EC_COUNT
 };
+
+#if defined(PROFILE_EMU) && defined(HEARTBEAT)
+// With both, the emulator records every frame's breakdown for the heartbeat log to list the slow ones
+struct EmuFrameRecord {
+    uint32_t frame; // Emulated frame number
+    uint32_t wall; // Microseconds from the end of the last frame to the end of this one, including the display wait
+    uint32_t ticks[EP_COUNT]; // Time in each slot during the frame, in microseconds
+    uint32_t counts[EC_COUNT]; // Counts during the frame
+    uint32_t gpuFrames, gpuBuild, gpuDraw, wait3D; // Heartbeat values during the frame: 3D frames and their times
+};
+namespace EmuProfile {
+    static const int RECORDS = 256;
+    extern EmuFrameRecord records[RECORDS];
+    extern volatile uint32_t recordCount; // Records made so far; the latest is at (count - 1) % RECORDS
+    void recordFrame(uint32_t frame);
+
+    // A log of compiled JIT blocks and resets, so the frame tracer can match samples in generated code to guest code
+    // Each entry is a word with the type, CPU and opcode count, then the record count, guest address (bit 0 set for
+    // THUMB), host code start and end, and the opcodes; the heartbeat logger writes it out and drops what it missed
+    enum { TRACE_BLOCK = 1, TRACE_RESET = 2 };
+    static const uint32_t TRACE_WORDS = 1 << 20;
+    extern uint32_t traceWords[TRACE_WORDS];
+    extern volatile uint32_t traceHead; // Words written so far; the latest is at (head - 1) % TRACE_WORDS
+    void traceBlock(int type, bool arm7, uint32_t key, const void *start, const void *end, const uint32_t *opcodes,
+        uint32_t count);
+}
+#endif
 
 #ifdef PROFILE_EMU
 #include <coreinit/core.h>

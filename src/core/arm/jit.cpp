@@ -88,6 +88,10 @@ void Jit::enable(bool value) {
 }
 
 void Jit::reset() {
+    EP_INC(EC_JIT_RESETS);
+#if defined(PROFILE_EMU) && defined(HEARTBEAT)
+    EmuProfile::traceBlock(EmuProfile::TRACE_RESET, arm7, 0, codeStart, codeEnd, nullptr, 0);
+#endif
     // Free all blocks and forget which pages have code
     for (size_t i = 0; i < table.size(); i++) {
         if (table[i]) graveyard.push_back(table[i]);
@@ -288,6 +292,7 @@ void Jit::retire(JitBlock *block) {
     removeLinks(block);
     codeChanged = 1;
     graveyard.push_back(block);
+    EP_INC(EC_JIT_RETIRED);
 }
 
 void Jit::unlinkIncoming(JitBlock *block) {
@@ -461,8 +466,20 @@ bool Jit::run(const uint32_t *limit) {
             graveyard.clear();
         }
         EP_START(comp);
+#if defined(PROFILE_EMU) && defined(HEARTBEAT)
+        uint8_t *codeBefore = codePtr;
+#endif
         block = compile(address, thumb, host, index);
         EP_ADD(EP_COMPILE, comp);
+        EP_INC(EC_JIT_COMPILED);
+#if defined(PROFILE_EMU) && defined(HEARTBEAT)
+        // Log the block with the code it generated, for the frame tracer
+        uint32_t opcodes[MAX_INSTRS];
+        uint32_t count = std::min<size_t>(block->instrs.size(), MAX_INSTRS);
+        for (uint32_t i = 0; i < count; i++)
+            opcodes[i] = block->instrs[i].opcode;
+        EmuProfile::traceBlock(EmuProfile::TRACE_BLOCK, arm7, address | thumb, codeBefore, codePtr, opcodes, count);
+#endif
     }
 
     // Cache the block so running code can jump to it, and run it
@@ -537,6 +554,7 @@ void Jit::execute(JitBlock *block, const uint32_t *limit) {
         for (size_t i = 0; i < count; i++, pc += step) {
             JitInstr &instr = block->instrs[i];
             arm.registersUsr[15] = pc;
+            if (!arm7) EP_INC(EC_INTERP9);
             int cycles;
             if (block->thumb) {
                 cycles = (arm.*instr.thumb)(instr.opcode);

@@ -60,6 +60,8 @@
 #include "../core/settings.h"
 #include "../core/worker_thread.h"
 #include "../core/heartbeat.h"
+#include "../core/emu_profile.h"
+#include "frame_trace.h"
 #include "../core/file_lock.h"
 
 #define MAX_DRAWS 1024
@@ -1024,10 +1026,9 @@ int logHeartbeat(int argc, const char **argv) {
             v[HB_AUDIO], v[HB_GPU_FRAMES], v[HB_GPU_STAGE], v[HB_GPU_DISP3DCNT]);
 
         // Show the timings as microseconds per frame since the last line, with rates over the real time between lines
+        // The time is taken again when the counters are, after writing, so slow writes don't skew the rates
         static OSTime lastTime = OSGetTime();
-        OSTime now = OSGetTime();
-        float seconds = std::max<int64_t>(OSTicksToMicroseconds(now - lastTime), 1) / 1000000.0f;
-        lastTime = now;
+        float seconds = std::max<int64_t>(OSTicksToMicroseconds(OSGetTime() - lastTime), 1) / 1000000.0f;
         uint32_t frames = v[HB_EMU_FRAMES] - last[HB_EMU_FRAMES], gpuFrames = v[HB_GPU_FRAMES] - last[HB_GPU_FRAMES];
         auto per = [&](int slot, uint32_t count) { return count ? (v[slot] - last[slot]) / count : 0; };
         uint32_t uiFrames = v[HB_UI_FRAMES] - last[HB_UI_FRAMES];
@@ -1047,6 +1048,19 @@ int logHeartbeat(int argc, const char **argv) {
             "polygons done %u, all submitted %u, all done %u us | draws %u, vertices %u\n", per(HB_GPU_PRIOR_US, gpuFrames), per(HB_GPU_MAIN_SUBMIT_US, gpuFrames),
             per(HB_GPU_MAIN_DONE_US, gpuFrames), per(HB_GPU_SUBMIT_US, gpuFrames), per(HB_GPU_DRAW_US, gpuFrames),
             per(HB_GPU_DRAWS, gpuFrames), per(HB_GPU_VERTICES, gpuFrames));
+#ifdef GPU_TIMELINE
+        fprintf(file, "   gpu passes per frame: multisampled %u, polygons %u, edges %u, fog %u, anti-alias %u, pack and copy %u us"
+            " | frames multisampled %u, high-res %u\n", per(HB_GPU_PASS_MSAA_US, gpuFrames), per(HB_GPU_PASS_POLY_US, gpuFrames),
+            per(HB_GPU_PASS_EDGE_US, gpuFrames), per(HB_GPU_PASS_FOG_US, gpuFrames), per(HB_GPU_PASS_AA_US, gpuFrames),
+            per(HB_GPU_PASS_PACK_US, gpuFrames), v[HB_GPU_MSAA_FRAMES] - last[HB_GPU_MSAA_FRAMES],
+            v[HB_GPU_HIRES_FRAMES] - last[HB_GPU_HIRES_FRAMES]);
+        fprintf(file, "   gpu polygon pass per frame: clear %u | draws by shader, us and vertices: color %u %u, modulate %u %u, "
+            "decal %u %u, translucent modulate %u %u, toon %u %u, shadow %u %u\n", per(HB_GPU_PASS_CLEAR_US, gpuFrames),
+            per(HB_GPU_DRAW_COLOR_US, gpuFrames), per(HB_GPU_VTX_COLOR, gpuFrames), per(HB_GPU_DRAW_MODULATE_US, gpuFrames),
+            per(HB_GPU_VTX_MODULATE, gpuFrames), per(HB_GPU_DRAW_DECAL_US, gpuFrames), per(HB_GPU_VTX_DECAL, gpuFrames),
+            per(HB_GPU_DRAW_MODTRANS_US, gpuFrames), per(HB_GPU_VTX_MODTRANS, gpuFrames), per(HB_GPU_DRAW_TOON_US, gpuFrames),
+            per(HB_GPU_VTX_TOON, gpuFrames), per(HB_GPU_DRAW_SHADOW_US, gpuFrames), per(HB_GPU_VTX_SHADOW, gpuFrames));
+#endif
         fprintf(file, "   gpu build parts per frame: before polygons %u, vertices %u, triangles %u, after polygons %u, "
             "textures %u, rest %d us\n", per(HB_GPU_PRELOOP_US, gpuFrames), vertexUs, fanUs, per(HB_GPU_POSTLOOP_US, gpuFrames),
             textureUs, int(per(HB_GPU_BUILD_US, gpuFrames)) - int(per(HB_GPU_PRELOOP_US, gpuFrames) + vertexUs + fanUs +
@@ -1075,13 +1089,58 @@ int logHeartbeat(int argc, const char **argv) {
                 per(HB_3D_POLYS, frames3D), per(HB_3D_TOON, frames3D), per(HB_3D_HIGHLIGHT, frames3D),
                 per(HB_3D_SHADOW_MASKS, frames3D), per(HB_3D_SHADOWS, frames3D), per(HB_3D_WIREFRAME, frames3D));
         }
+#ifdef PROFILE_EMU
+        // Show where the emulator thread spent each frame on average, then list the frames that took too long without
+        // counting the display wait, which delay the next one; all times are in microseconds, and CPU time includes
+        // compiling, while tasks include the 2D waits, joins and frame copies
+        auto frameLine = [&](const char *label, const EmuFrameRecord &r, uint32_t n) {
+            const uint32_t *t = r.ticks, *c = r.counts;
+            fprintf(file, "   %s: wall %u display %u | arm9 %u arm7 %u tasks %u compile %u geometry %u audio %u | "
+                "2D line waits %u, join A %u B %u, 3D join %u, frame copy %u (hi-res %u) | jit compiled %u retired %u "
+                "resets %u code writes %u, interpreted %u | gpu frames %u build %u draw %u, 2D waits 3D %u\n", label,
+                r.wall / n, t[EP_DISPLAY] / n, (t[EP_ARM9] + t[EP_BOTH] - t[EP_BOTH_ARM7]) / n,
+                (t[EP_ARM7] + t[EP_BOTH_ARM7]) / n, t[EP_TASKS] / n, t[EP_COMPILE] / n, t[EP_GEOM] / n, t[EP_SPU] / n,
+                t[EP_WAIT2D] / n, t[EP_JOIN2D_A] / n, t[EP_JOIN2D_B] / n, t[EP_JOIN3D] / n, t[EP_FRAMECOPY] / n,
+                t[EP_HIRES] / n, c[EC_JIT_COMPILED] / n, c[EC_JIT_RETIRED] / n, c[EC_JIT_RESETS], c[EC_JIT_WRITES] / n,
+                c[EC_INTERP9] / n, r.gpuFrames, r.gpuBuild / n, r.gpuDraw / n, r.wait3D / n);
+        };
+        static uint32_t lastRecord = 0;
+        uint32_t count = EmuProfile::recordCount;
+        if (count - lastRecord > EmuProfile::RECORDS) lastRecord = count - EmuProfile::RECORDS;
+        EmuFrameRecord sum = {};
+        std::vector<uint32_t> slow;
+        for (uint32_t i = lastRecord; i != count; i++) {
+            const EmuFrameRecord &r = EmuProfile::records[i % EmuProfile::RECORDS];
+            sum.wall += r.wall;
+            for (int j = 0; j < EP_COUNT; j++) sum.ticks[j] += r.ticks[j];
+            for (int j = 0; j < EC_COUNT; j++) sum.counts[j] += r.counts[j];
+            sum.gpuFrames += r.gpuFrames;
+            sum.gpuBuild += r.gpuBuild;
+            sum.gpuDraw += r.gpuDraw;
+            sum.wait3D += r.wait3D;
+            if (r.wall - r.ticks[EP_DISPLAY] > 16000 || r.wall > 17500) slow.push_back(i);
+        }
+        if (count != lastRecord) {
+            fprintf(file, "   emulator frames %u, %zu slow\n", count - lastRecord, slow.size());
+            frameLine("average", sum, count - lastRecord);
+            for (size_t i = 0; i < slow.size() && i < 40; i++) {
+                const EmuFrameRecord &r = EmuProfile::records[slow[i] % EmuProfile::RECORDS];
+                char label[32];
+                snprintf(label, sizeof(label), "slow frame %u", r.frame);
+                frameLine(label, r, 1);
+            }
+        }
+        lastRecord = count;
+        FrameTrace::write((std::string(WHBGetSdCardMountPath()) + "/wiiu/apps/noods/trace.bin").c_str());
+#endif
         // Show the heap use, to spot leaks
         struct mallinfo info = mallinfo();
         fprintf(file, "   memory: heap %u KB, used %u KB, free %u KB | gpu textures %u, %u KB\n", info.arena >> 10,
             info.uordblks >> 10, info.fordblks >> 10, v[HB_GPU_TEXTURES], v[HB_GPU_TEXTURE_KB]);
+        fclose(file);
+        lastTime = OSGetTime();
         for (int i = 0; i < HB_COUNT; i++)
             last[i] = v[i];
-        fclose(file);
     }
     return 0;
 }

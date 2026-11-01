@@ -19,6 +19,7 @@
 
 #include <cstring>
 #include "../core.h"
+#include "../emu_profile.h"
 
 // Defines an 8-bit register in an I/O switch statement
 #define DEF_IO08(addr, func) \
@@ -838,6 +839,7 @@ template <typename T> bool Memory::writeJit(bool arm7, uint32_t address, T value
         return false;
 
     // Let the JITs drop overwritten code, and map the page back once it has none left
+    EP_INC(EC_JIT_WRITES);
     uint8_t *data = &base[address & (0x1000 - sizeof(T))];
     if (!core->jitWriteCode(data, sizeof(T))) {
         writeMap[address >> 12] = base;

@@ -37,6 +37,58 @@ uint64_t EmuProfile::renderTicks[4][RP_COUNT];
 uint64_t EmuProfile::pixelTicks[3][PX_COUNT];
 #endif
 
+#if defined(PROFILE_EMU) && defined(HEARTBEAT)
+EmuFrameRecord EmuProfile::records[RECORDS];
+volatile uint32_t EmuProfile::recordCount = 0;
+
+void EmuProfile::recordFrame(uint32_t frame) {
+    // Record what the emulator thread did since the last frame, from the differences in the totals
+    static uint64_t lastTicks[EP_COUNT];
+    static uint32_t lastCounts[EC_COUNT], lastHb[4];
+    static OSTick lastTime = OSGetSystemTick();
+    OSTick time = OSGetSystemTick();
+    EmuFrameRecord &record = records[recordCount % RECORDS];
+    record.frame = frame;
+    record.wall = OSTicksToMicroseconds(uint32_t(time - lastTime));
+    lastTime = time;
+    for (int i = 0; i < EP_COUNT; i++) {
+        uint64_t t = ticks[i];
+        record.ticks[i] = OSTicksToMicroseconds(t - lastTicks[i]);
+        lastTicks[i] = t;
+    }
+    for (int i = 0; i < EC_COUNT; i++) {
+        record.counts[i] = counts[i] - lastCounts[i];
+        lastCounts[i] = counts[i];
+    }
+    const HeartbeatSlot slots[4] = { HB_GPU_FRAMES, HB_GPU_BUILD_US, HB_GPU_DRAW_US, HB_3D_WAIT_US };
+    uint32_t *values[4] = { &record.gpuFrames, &record.gpuBuild, &record.gpuDraw, &record.wait3D };
+    for (int i = 0; i < 4; i++) {
+        uint32_t value = Heartbeat::values[slots[i]];
+        *values[i] = value - lastHb[i];
+        lastHb[i] = value;
+    }
+    __sync_synchronize();
+    recordCount = recordCount + 1;
+}
+
+uint32_t EmuProfile::traceWords[TRACE_WORDS];
+volatile uint32_t EmuProfile::traceHead = 0;
+
+void EmuProfile::traceBlock(int type, bool arm7, uint32_t key, const void *start, const void *end,
+    const uint32_t *opcodes, uint32_t count) {
+    // Append an entry, publishing it only once it's complete
+    uint32_t head = traceHead;
+    uint32_t header[5] = { (uint32_t(type) << 24) | (uint32_t(arm7) << 16) | count, recordCount, key,
+        uint32_t(uintptr_t(start)), uint32_t(uintptr_t(end)) };
+    for (int i = 0; i < 5; i++)
+        traceWords[head++ % TRACE_WORDS] = header[i];
+    for (uint32_t i = 0; i < count; i++)
+        traceWords[head++ % TRACE_WORDS] = opcodes[i];
+    __sync_synchronize();
+    traceHead = head;
+}
+#endif
+
 Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gbaRomFd,
     int ndsSaveFd, int gbaSaveFd, int ndsStateFd, int gbaStateFd, int ndsCheatFd):
         id(id), actionReplay(this), aes(this), cartridgeGba(this), cartridgeNds(this), cp15(this), divSqrt(this), dldi(

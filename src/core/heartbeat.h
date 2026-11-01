@@ -74,6 +74,27 @@ enum HeartbeatSlot {
     HB_GPU_MAIN_SUBMIT_US, // When the polygons were submitted
     HB_GPU_MAIN_DONE_US, // When the GPU finished the polygons
     HB_GPU_SUBMIT_US, // When everything was submitted
+    HB_GPU_PASS_MSAA_US, // With GPU_TIMELINE, GPU time for each pass: multisampled polygons and resolving them
+    HB_GPU_PASS_POLY_US, // Polygons, writing attributes too, or only them after a multisampled pass
+    HB_GPU_PASS_EDGE_US, // Edge marking
+    HB_GPU_PASS_FOG_US, // Fog
+    HB_GPU_PASS_AA_US, // The DS's anti-aliasing
+    HB_GPU_PASS_PACK_US, // Packing the colors for the 2D engine, and copying the high-res frame for the UI
+    HB_GPU_PASS_CLEAR_US, // Within the polygon passes: clearing the buffers and drawing the rear-plane bitmap
+    HB_GPU_DRAW_COLOR_US, // Polygon draws by shader: plain colors
+    HB_GPU_DRAW_MODULATE_US, // Modulated textures
+    HB_GPU_DRAW_DECAL_US, // Decal textures
+    HB_GPU_DRAW_MODTRANS_US, // Translucent modulated textures
+    HB_GPU_DRAW_TOON_US, // Toon and highlight shading
+    HB_GPU_DRAW_SHADOW_US, // Shadow masks and shadows
+    HB_GPU_VTX_COLOR, // Vertices drawn by shader, in the same order
+    HB_GPU_VTX_MODULATE,
+    HB_GPU_VTX_DECAL,
+    HB_GPU_VTX_MODTRANS,
+    HB_GPU_VTX_TOON,
+    HB_GPU_VTX_SHADOW,
+    HB_GPU_MSAA_FRAMES, // GPU frames drawn multisampled
+    HB_GPU_HIRES_FRAMES, // GPU frames drawn at high resolution
     HB_GPU_DRAWS, // Draw calls for polygons
     HB_GPU_VERTICES, // Vertices drawn for polygons
     HB_EMU_HIRES_US, // Total microseconds the emulator spent copying high-res 3D frames for the UI

@@ -868,6 +868,17 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
 #if defined(HEARTBEAT) && defined(GPU_TIMELINE)
     OSTime hbStart = 0;
     auto hbUs = [&]() { return (uint32_t)OSTicksToMicroseconds(OSGetSystemTime() - hbStart); };
+    // Wait for the GPU to finish a pass, adding the time since the last one to its slot
+    OSTime hbLapStart = 0;
+    auto hbLap = [&](HeartbeatSlot slot) {
+        GX2DrawDone();
+        OSTime now = OSGetSystemTime();
+        Heartbeat::values[slot] += (uint32_t)OSTicksToMicroseconds(now - hbLapStart);
+        hbLapStart = now;
+    };
+#define HB_LAP(slot) hbLap(slot)
+#else
+#define HB_LAP(slot) do {} while (0)
 #endif
 
     // Start the frame on the GPU once GX2 is held, making what the CPU wrote so far visible to it; this adds GPU
@@ -882,6 +893,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         hbStart = OSGetSystemTime();
         GX2DrawDone();
         Heartbeat::values[HB_GPU_PRIOR_US] += hbUs();
+        hbLapStart = OSGetSystemTime();
 #endif
         if (gpuEdges)
             GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, edgeTexture.surface.image, edgeTexture.surface.imageSize);
@@ -910,6 +922,10 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             submitDraw(draws[sentDraws]);
     };
     auto sendChunk = [&]() {
+#if defined(HEARTBEAT) && defined(GPU_TIMELINE)
+        // Draw all polygons at once after building, so their GPU time can be told apart from the rest
+        return;
+#endif
         if (!guard.try_lock()) return;
         if (!started) {
             startFrame();
@@ -1125,14 +1141,23 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             for (int pass = msaa ? 0 : 1; pass < 2; pass++) {
                 if (pass == 1 && msaa && !writeAttribs) break;
                 setupPass(pass);
-                for (GpuDraw &draw : draws)
+                HB_LAP(HB_GPU_PASS_CLEAR_US);
+                for (GpuDraw &draw : draws) {
                     submitDraw(draw);
+#if defined(HEARTBEAT) && defined(GPU_TIMELINE)
+                    // Time each draw by its shader, with shadows on their own
+                    int kind = draw.shadow ? 5 : (draw.shader == 7) ? 4 : std::min<int>(draw.shader, 3);
+                    hbLap(HeartbeatSlot(HB_GPU_DRAW_COLOR_US + kind));
+                    HB_ADD(HeartbeatSlot(HB_GPU_VTX_COLOR + kind), draw.count);
+#endif
+                }
 
                 // Average the multisampled colors into the color buffer, through a tiled surface the GPU can resolve to
                 if (pass == 0) {
                     GX2ResolveAAColorBuffer(&msaaColor, &resolved, 0, 0);
                     GX2CopySurface(&resolved, 0, 0, &colorBuffer.surface, 0, 0);
                     GX2SetContextState(state);
+                    HB_LAP(HB_GPU_PASS_MSAA_US);
                 }
             }
         }
@@ -1144,8 +1169,10 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         HB_ADD(HB_GPU_VERTICES, count);
 #if defined(HEARTBEAT) && defined(GPU_TIMELINE)
         Heartbeat::values[HB_GPU_MAIN_SUBMIT_US] += hbUs();
-        GX2DrawDone();
+        hbLap(HB_GPU_PASS_POLY_US);
         Heartbeat::values[HB_GPU_MAIN_DONE_US] += hbUs();
+        if (msaa) HB_INC(HB_GPU_MSAA_FRAMES);
+        if (height == 384) HB_INC(HB_GPU_HIRES_FRAMES);
 #endif
 
         if (gpuEdges) {
@@ -1175,6 +1202,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
                 NO_CHANNELS, NO_CHANNELS);
             GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 6, QUAD, 1);
+            HB_LAP(HB_GPU_PASS_EDGE_US);
         }
 
         if (fog) {
@@ -1210,6 +1238,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2SetTargetChannelMasks((disp3DCnt & BIT(6)) ? GX2_CHANNEL_MASK_A : GX2_CHANNEL_MASK_RGBA, NO_CHANNELS,
                 NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
             GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 6, QUAD, 1);
+            HB_LAP(HB_GPU_PASS_FOG_US);
         }
 
         if (dsAntiAlias && !msaa) {
@@ -1245,6 +1274,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
                 NO_CHANNELS, NO_CHANNELS);
             GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 6, QUAD, 1);
+            HB_LAP(HB_GPU_PASS_AA_US);
         }
 
         // Pack the finished colors as the 2D engine's 3D pixels, so the CPU only has to copy them
@@ -1289,10 +1319,11 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         }
         GX2Flush();
         OSTime submitted = GX2GetLastSubmittedTimeStamp();
-        guard.unlock();
 #if defined(HEARTBEAT) && defined(GPU_TIMELINE)
         Heartbeat::values[HB_GPU_SUBMIT_US] += hbUs();
+        hbLap(HB_GPU_PASS_PACK_US);
 #endif
+        guard.unlock();
         // Wait for the GPU, but show an error screen if it stops responding, which would otherwise freeze silently
         GPU_STAGE(7);
         OSTime start = OSGetSystemTime();

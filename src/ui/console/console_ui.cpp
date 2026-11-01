@@ -47,6 +47,9 @@ static OSThread *emuThread = nullptr;
 #ifdef PROFILE_SAMPLER
 #include "sampler.h"
 #endif
+#if defined(PROFILE_EMU) && defined(HEARTBEAT)
+#include "frame_trace.h"
+#endif
 
 #define SCALEH(x, h) (((x) * (h)) / 720)
 #define SCALE(x) SCALEH(x, uiHeight)
@@ -521,8 +524,9 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
             drawString(text, SCALE(5), 0, SCALE(48));
         }
 
-#ifdef PROFILE_EMU
+#if defined(PROFILE_EMU) && !defined(HEARTBEAT)
         // With PROFILE_EMU, show where the emulator thread spends its time, as a share of each second and per frame
+        // Heartbeat builds log it instead, since drawing this much text slows the GPU enough to change the results
         if (showFpsCounter) {
             static uint64_t last[EP_COUNT];
             static OSTime lastTime = OSGetSystemTime();
@@ -1854,6 +1858,13 @@ void ConsoleUI::startCore() {
         Sampler::stop();
         return 0;
     };
+#elif defined(PROFILE_EMU) && defined(HEARTBEAT)
+    OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int {
+        FrameTrace::start();
+        runCore();
+        FrameTrace::stop();
+        return 0;
+    };
 #else
     OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int { runCore(); return 0; };
 #endif
@@ -1902,7 +1913,12 @@ void ConsoleUI::runCore() {
 #ifdef STATE_DEBUG
             debugFrameEnd(core);
 #endif
+            EP_START(display);
             waitForDisplay();
+            EP_ADD(EP_DISPLAY, display);
+#if defined(PROFILE_EMU) && defined(HEARTBEAT)
+            EmuProfile::recordFrame(core->gpu.frameNumber);
+#endif
         }
     }
 }

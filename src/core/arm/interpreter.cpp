@@ -146,6 +146,7 @@ template <bool _arm7, int shift> void Interpreter::runCoreSingle(Core &core) {
                 if (arm.pipelineStale) arm.refillPipeline();
             }
             arm.cycles = (core.globalCycles += arm.runOpcode() << shift);
+            if (!_arm7) EP_INC(EC_INTERP9);
         }
         EP_ADD(_arm7 ? EP_ARM7 : EP_ARM9, cpu);
 
@@ -177,6 +178,7 @@ void Interpreter::runCoreNds(Core &core) {
                 if (core.jit.enabled && core.jit.run(&arm7.cycles)) continue;
                 if (arm9.pipelineStale) arm9.refillPipeline();
                 arm9.cycles = core.globalCycles + arm9.runOpcode();
+                EP_INC(EC_INTERP9);
             }
             if (core.globalCycles >= arm7.cycles) {
                 EP_START(a7);
@@ -221,6 +223,7 @@ void Interpreter::runCoreNdsFast(Core &core) {
                 if (core.jit.enabled && core.jit.run(&core.sliceLimit)) continue;
                 if (arm9.pipelineStale) arm9.refillPipeline();
                 uint32_t next = core.globalCycles + arm9.runOpcode();
+                EP_INC(EC_INTERP9);
                 arm9.cycles = next;
                 if (next <= core.sliceLimit && next < core.events[0].cycles) {
                     core.globalCycles = next;

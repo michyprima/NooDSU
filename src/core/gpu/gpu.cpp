@@ -528,10 +528,12 @@ void Gpu::scanline355() {
         if (thread && fastFrame) {
             HB_TIMER(hbJoin);
             for (int i = 0; i < 2; i++) {
+                EP_START(join);
                 core->gpu2D[i].setQueue(nullptr);
                 SpinWait spin;
                 while (linesDone[i].load() < 192 || !queues[i].empty())
                     spin.pause();
+                EP_ADD(i ? EP_JOIN2D_B : EP_JOIN2D_A, join);
             }
             HB_ADD_US(HB_2D_JOIN_US, hbJoin);
         }
@@ -593,6 +595,7 @@ void Gpu::scanline355() {
             if (Settings::highRes3D && (core->gpu2D[0].readDispCnt() & BIT(3))) {
                 // Use the copy a hardware renderer made if there is one, since reading its output is slow
                 HB_TIMER(hbHiRes);
+                EP_START(hiRes);
                 if (!(buffers.hiRes3D = core->gpu3DRenderer.takeHardwareCopy())) {
                     buffers.hiRes3D = newFramebuffer(256 * 192 * 4);
                     uint32_t *frame = core->gpu3DRenderer.getLine(0);
@@ -600,6 +603,7 @@ void Gpu::scanline355() {
                     memcpy(buffers.hiRes3D, frame, 256 * 192 * 4 * sizeof(uint32_t));
                 }
                 HB_ADD_US(HB_EMU_HIRES_US, hbHiRes);
+                EP_ADD(EP_HIRES, hiRes);
                 buffers.top3D = (powCnt1 & BIT(15));
             }
 
