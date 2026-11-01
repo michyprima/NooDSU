@@ -182,7 +182,13 @@ bool Gpu3DWiiU::init() {
         GX2InitSamplerClamping(&samplers[i], modes[i % 3], modes[i / 3], GX2_TEX_CLAMP_MODE_CLAMP);
     }
 
-    // Create a linear color buffer the CPU can read, and a float depth buffer for precision with W-buffering
+    // Create the color buffer, tiled since the GPU draws to tiled surfaces much faster, clears included; dump builds
+    // keep the render targets linear so the CPU can read them
+#ifdef GPU_DUMP
+    const GX2TileMode targetTiling = GX2_TILE_MODE_LINEAR_ALIGNED;
+#else
+    const GX2TileMode targetTiling = GX2_TILE_MODE_DEFAULT;
+#endif
     memset(&colorBuffer, 0, sizeof(colorBuffer));
     colorBuffer.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
     colorBuffer.surface.width = 512; // Big enough for high-res frames; native ones use the top-left quarter
@@ -192,13 +198,13 @@ bool Gpu3DWiiU::init() {
     colorBuffer.surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
     colorBuffer.surface.aa = GX2_AA_MODE1X;
     colorBuffer.surface.use = (GX2SurfaceUse)(GX2_SURFACE_USE_COLOR_BUFFER | GX2_SURFACE_USE_TEXTURE);
-    colorBuffer.surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+    colorBuffer.surface.tileMode = targetTiling;
     colorBuffer.viewNumSlices = 1;
     GX2CalcSurfaceSizeAndAlignment(&colorBuffer.surface);
     GX2InitColorBufferRegs(&colorBuffer);
     colorBuffer.surface.image = MEMAllocFromDefaultHeapEx(colorBuffer.surface.imageSize, colorBuffer.surface.alignment);
 
-    // Create a linear float buffer for the attributes, written as a second render target
+    // Create a float buffer for the attributes, written as a second render target
     // Each pixel has the ID and flags, and the depth the DS would compare, which the shaders get by dividing the last 2
     // attributes: W interpolates to itself across the screen, and Z times W over W interpolates to Z
     memset(&attribBuffer, 0, sizeof(attribBuffer));
@@ -206,6 +212,8 @@ bool Gpu3DWiiU::init() {
     attribBuffer.surface.format = GX2_SURFACE_FORMAT_FLOAT_R32_G32;
     attribBuffer.surface.use = (GX2SurfaceUse)(GX2_SURFACE_USE_COLOR_BUFFER | GX2_SURFACE_USE_TEXTURE);
     attribBuffer.surface.image = nullptr;
+    attribBuffer.surface.tileMode = targetTiling;
+    attribBuffer.surface.swizzle = 0;
     attribBuffer.viewNumSlices = 1;
     GX2CalcSurfaceSizeAndAlignment(&attribBuffer.surface);
     GX2InitColorBufferRegs(&attribBuffer);
@@ -224,6 +232,8 @@ bool Gpu3DWiiU::init() {
     attribCompact.surface.format = GX2_SURFACE_FORMAT_UNORM_R16_G16;
     attribCompact.surface.use = (GX2SurfaceUse)(GX2_SURFACE_USE_COLOR_BUFFER | GX2_SURFACE_USE_TEXTURE);
     attribCompact.surface.image = nullptr;
+    attribCompact.surface.tileMode = targetTiling;
+    attribCompact.surface.swizzle = 0;
     attribCompact.viewNumSlices = 1;
     GX2CalcSurfaceSizeAndAlignment(&attribCompact.surface);
     GX2InitColorBufferRegs(&attribCompact);
@@ -235,7 +245,8 @@ bool Gpu3DWiiU::init() {
     attribCompactTexture.compMap = 0x00010405;
     GX2InitTextureRegs(&attribCompactTexture);
 
-    // Let the colors be read as a texture too, and create another color buffer like it for anti-aliasing to write
+    // Let the colors be read as a texture too, and create a linear buffer for the packed results, which the CPU reads
+    // and the high-res copy for the UI is made from
     memset(&colorTexture, 0, sizeof(colorTexture));
     colorTexture.surface = colorBuffer.surface;
     colorTexture.surface.use = GX2_SURFACE_USE_TEXTURE;
@@ -246,6 +257,8 @@ bool Gpu3DWiiU::init() {
     packedBuffer.surface = colorBuffer.surface;
     packedBuffer.surface.use = GX2_SURFACE_USE_COLOR_BUFFER;
     packedBuffer.surface.image = nullptr;
+    packedBuffer.surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+    packedBuffer.surface.swizzle = 0;
     packedBuffer.viewNumSlices = 1;
     GX2CalcSurfaceSizeAndAlignment(&packedBuffer.surface);
     GX2InitColorBufferRegs(&packedBuffer);
