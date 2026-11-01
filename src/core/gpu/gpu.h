@@ -57,6 +57,7 @@ public:
     int frontendUpscale = -1; // Whether getFrame upscales frames, or -1 to do it with high-res 3D or upscaled filtering
     uint32_t *newHiRes3D();
     static void freeHiRes3D(uint32_t *buffer);
+    static uint32_t *shareHiRes3D(uint32_t *buffer);
     void invalidate3D() { dirty3D |= BIT(0); }
 
     void gbaScanline240();

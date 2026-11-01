@@ -69,6 +69,7 @@ Gpu3DRenderer::~Gpu3DRenderer() {
     }
     delete softwareBuffers;
     core->gpu.freeHiRes3D(hardwareCopy);
+    core->gpu.freeHiRes3D(lastCopy);
 }
 
 void Gpu3DRenderer::forgetHardwareRows(int first, int count) {
@@ -87,7 +88,17 @@ uint32_t *Gpu3DRenderer::takeHardwareCopy() {
     uint32_t *copy = hardwareCopy;
     hardwareCopy = nullptr;
     hardwareCopied = false;
+
+    // Keep holding it, in case the next frames don't draw 3D again
+    core->gpu.freeHiRes3D(lastCopy);
+    lastCopy = core->gpu.shareHiRes3D(copy);
     return copy;
+}
+
+uint32_t *Gpu3DRenderer::reuseHardwareCopy() {
+    // Hand over the last high-res frame again if no frame has been drawn since, which saves reading the hardware
+    // renderer's output back
+    return hardwareFrame ? core->gpu.shareHiRes3D(lastCopy) : nullptr;
 }
 
 void Gpu3DRenderer::saveState(FILE *file) {
@@ -305,6 +316,10 @@ void Gpu3DRenderer::drawScanline(int line) {
 
         // Update the resolution shift for the next frame
         resShift = Settings::highRes3D;
+
+        // Stop holding the last high-res frame, since a new one is being drawn
+        core->gpu.freeHiRes3D(lastCopy);
+        lastCopy = nullptr;
 
         // Clean up any existing threads
         EP_START(join);

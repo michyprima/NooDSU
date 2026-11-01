@@ -86,6 +86,7 @@ public:
     uint32_t *getHardwareCopy() { return hardwareCopy; }
     void hardwareCopyDone() { hardwareCopied = true; }
     uint32_t *takeHardwareCopy();
+    uint32_t *reuseHardwareCopy();
     void forgetHardwareRows(int first, int count);
 #ifdef FRAME_CAPTURE
     uint32_t captureId = 0; // The current 3D frame's ID for frame capture
@@ -117,6 +118,7 @@ private:
     uint32_t *hardwareBuffer = nullptr; // Where a hardware renderer leaves its frames instead, with lines 512 apart
     uint32_t *hardwareCopy = nullptr; // Where a hardware renderer also copies high-res frames for the frontend
     bool hardwareCopied = false; // Whether the current frame was copied there
+    uint32_t *lastCopy = nullptr; // The last copy handed over, held while no frame has been drawn since, to hand it again
 
     // Get where a finished scanline is, which can be in the hardware renderer's own buffer
     uint32_t *lineData(int line) {

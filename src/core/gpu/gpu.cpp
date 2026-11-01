@@ -60,9 +60,40 @@ static uint32_t *newFramebuffer(size_t count) {
 #endif
 }
 
+// High-res 3D frames that have more than one holder, with how many extra each has, since frames without new 3D reuse
+// the last high-res frame instead of copying it again
+static std::mutex sharedMutex;
+static std::pair<uint32_t*, int> shared[8];
+
+static uint32_t *shareFramebuffer(uint32_t *buffer) {
+    // Add a holder to a framebuffer, which is only freed once every holder has freed it, or return null if too many
+    // framebuffers are shared already
+    std::lock_guard<std::mutex> guard(sharedMutex);
+    for (auto &entry : shared) {
+        if (entry.first != buffer || !entry.second) continue;
+        entry.second++;
+        return buffer;
+    }
+    for (auto &entry : shared) {
+        if (entry.second) continue;
+        entry = { buffer, 1 };
+        return buffer;
+    }
+    return nullptr;
+}
+
 static void freeFramebuffer(uint32_t *buffer) {
-#ifdef __WIIU__
     if (!buffer) return;
+    {
+        // Only drop a holder if the framebuffer has others
+        std::lock_guard<std::mutex> guard(sharedMutex);
+        for (auto &entry : shared) {
+            if (entry.first != buffer || !entry.second) continue;
+            entry.second--;
+            return;
+        }
+    }
+#ifdef __WIIU__
     std::lock_guard<std::mutex> guard(poolMutex);
     if (poolCount < 8) {
         pool[poolCount++] = buffer;
@@ -149,6 +180,11 @@ uint32_t *Gpu::newHiRes3D() {
 void Gpu::freeHiRes3D(uint32_t *buffer) {
     // Free a high-res 3D frame taken from getFrame
     freeFramebuffer(buffer);
+}
+
+uint32_t *Gpu::shareHiRes3D(uint32_t *buffer) {
+    // Add a holder to a high-res 3D frame, which each holder frees, or return null if that's not possible
+    return buffer ? shareFramebuffer(buffer) : nullptr;
 }
 
 uint32_t Gpu::rgb6ToRgb8(uint32_t color) {
@@ -596,7 +632,9 @@ void Gpu::scanline355() {
                 // Use the copy a hardware renderer made if there is one, since reading its output is slow
                 HB_TIMER(hbHiRes);
                 EP_START(hiRes);
-                if (!(buffers.hiRes3D = core->gpu3DRenderer.takeHardwareCopy())) {
+                // If the 3D frame wasn't drawn again, it's the same as the last one, so that can be shown again
+                if (!(buffers.hiRes3D = core->gpu3DRenderer.takeHardwareCopy()) &&
+                        !(buffers.hiRes3D = core->gpu3DRenderer.reuseHardwareCopy())) {
                     buffers.hiRes3D = newFramebuffer(256 * 192 * 4);
                     uint32_t *frame = core->gpu3DRenderer.getLine(0);
                     core->gpu3DRenderer.forgetHardwareRows(0, 384);
