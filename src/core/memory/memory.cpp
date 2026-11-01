@@ -168,7 +168,7 @@ void Memory::loadState(FILE *file) {
     // Update mapped memory
     updateMap9(0x00000000, 0xFFFFFFFF);
     updateMap7(0x00000000, 0xFFFFFFFF);
-    updateVram();
+    updateVram(true);
 }
 
 bool Memory::loadBios9() {
@@ -225,9 +225,25 @@ void Memory::updateMap9(uint32_t start, uint32_t end, bool tcm) {
     core->jit.mapChanged(start);
     for (uint64_t address = start; address < end; address += 0x1000) {
         // Get the current read and write pointers; there are TCM and non-TCM maps
-        uint8_t *&read = (tcm ? readMap9A : readMap9B)[address >> 12];
-        uint8_t *&write = (tcm ? writeMap9A : writeMap9B)[address >> 12];
+        uint8_t **readMap = (tcm ? readMap9A : readMap9B), **writeMap = (tcm ? writeMap9A : writeMap9B);
+        uint8_t *&read = readMap[address >> 12];
+        uint8_t *&write = writeMap[address >> 12];
         read = write = nullptr;
+
+        // VRAM areas repeat, so copy mirrors from a page already mapped in this update unless data TCM covers
+        // either page; games change VRAM banks often, and each change remaps all of VRAM
+        if ((address & 0xFF000000) == 0x6000000) {
+            uint32_t area = (address >= 0x6800000) ? 0x6800000 : (address & 0xFFE00000);
+            uint32_t period = (area == 0x6800000) ? 0x100000 : (area == 0x6000000) ? 0x80000 : (area == 0x6400000) ?
+                0x40000 : 0x20000;
+            uint32_t source = address - period;
+            if (address - area >= period && source >= start && (!tcm || (address - core->cp15.dtcmAddr >=
+                    core->cp15.dtcmSize && source - core->cp15.dtcmAddr >= core->cp15.dtcmSize))) {
+                read = readMap[source >> 12];
+                write = writeMap[source >> 12];
+                continue;
+            }
+        }
 
         // Map a 4KB block to the corresponding ARM9 memory, excluding special cases
         switch (address & 0xFF000000) {
@@ -336,6 +352,14 @@ void Memory::updateMap7(uint32_t start, uint32_t end) {
         uint8_t *&read = readMap7[address >> 12];
         uint8_t *&write = writeMap7[address >> 12];
         read = write = nullptr;
+
+        // ARM7 VRAM repeats every 256KB, so copy mirrors from a page already mapped in this update
+        if (!core->gbaMode && (address & 0xFF000000) == 0x6000000 && (address & 0xFFFFFF) >= 0x40000 &&
+                address - 0x40000 >= start) {
+            read = readMap7[(address - 0x40000) >> 12];
+            write = writeMap7[(address - 0x40000) >> 12];
+            continue;
+        }
 
         if (core->gbaMode) { // GBA
             // Map a 4KB block to the corresponding GBA memory, excluding special cases
@@ -446,7 +470,18 @@ void Memory::updateMap7(uint32_t start, uint32_t end) {
     core->interpreter[1].getOpcode16();
 }
 
-void Memory::updateVram() {
+void Memory::updateVram(bool all) {
+    // Remember which bank each 16KB slot gave the CPUs direct access to, so only slots that change are remapped
+    // The memory maps only point into slots mapped to a single bank
+    VramMapping *slots9[] = { engABg, engBBg, engAObj, engBObj, lcdc };
+    const int counts9[] = { 32, 8, 16, 8, 64 };
+    uint8_t *before9[128], *before7[2];
+    for (int i = 0, n = 0; i < 5; i++)
+        for (int j = 0; j < counts9[i]; j++, n++)
+            before9[n] = (slots9[i][j].count == 1) ? slots9[i][j].mappings[0] : nullptr;
+    for (int i = 0; i < 2; i++)
+        before7[i] = (vram7[i].count == 1) ? vram7[i].mappings[0] : nullptr;
+
     // Clear the previous VRAM mappings
     memset(engABg, 0, sizeof(engABg));
     memset(engBBg, 0, sizeof(engBBg));
@@ -713,9 +748,32 @@ void Memory::updateVram() {
         }
     }
 
-    // Update the memory maps at the VRAM locations
-    updateMap9(0x6000000, 0x7000000);
-    updateMap7(0x6000000, 0x7000000);
+    // Update the memory maps where slots changed, at every mirror; games switch banks often, sometimes hundreds of
+    // times a frame while loading, so remapping all of VRAM each time is too slow
+    if (all) {
+        updateMap9(0x6000000, 0x7000000);
+        updateMap7(0x6000000, 0x7000000);
+    }
+    else {
+        // Each area's slots repeat over its address range
+        const uint32_t bases9[] = { 0x6000000, 0x6200000, 0x6400000, 0x6600000, 0x6800000 };
+        const uint32_t sizes9[] = { 0x200000, 0x200000, 0x200000, 0x200000, 0x800000 };
+        for (int i = 0, n = 0; i < 5; i++) {
+            uint32_t period = counts9[i] * 0x4000;
+            for (int j = 0; j < counts9[i]; j++, n++) {
+                uint8_t *after = (slots9[i][j].count == 1) ? slots9[i][j].mappings[0] : nullptr;
+                if (after == before9[n]) continue;
+                for (uint32_t mirror = 0; mirror < sizes9[i]; mirror += period)
+                    updateMap9(bases9[i] + mirror + j * 0x4000, bases9[i] + mirror + (j + 1) * 0x4000);
+            }
+        }
+        for (int i = 0; i < 2 && !core->gbaMode; i++) {
+            uint8_t *after = (vram7[i].count == 1) ? vram7[i].mappings[0] : nullptr;
+            if (after == before7[i]) continue;
+            for (uint32_t mirror = 0; mirror < 0x1000000; mirror += 0x40000)
+                updateMap7(0x6000000 + mirror + i * 0x20000, 0x6000000 + mirror + (i + 1) * 0x20000);
+        }
+    }
     core->gpu.invalidate3D();
 }
 
@@ -864,6 +922,8 @@ void Memory::unmapJit(uint8_t **writeMap, uint32_t index) {
 void Memory::protectJit(uint8_t **writeMap, uint32_t start, uint32_t end) {
     // Unmap pages with compiled code again after a remap, so writes to them still reach the JIT
     // Other pages in main RAM and WRAM forget where they pointed, since they were just mapped again
+    // Palettes, VRAM and OAM never have compiled code, so remapping only them needs nothing here
+    if (start >= 0x5000000 && end <= 0x8000000) return;
     bool code = core->jitHasCode();
     if (!code) {
         start = std::max<uint64_t>(start, 0x2000000);
