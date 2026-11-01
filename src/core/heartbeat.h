@@ -36,6 +36,7 @@ enum HeartbeatSlot {
     HB_UI_FRAMES, // Frames drawn by the UI
     HB_UI_STAGE, // Step of the UI loop: 1 = get frame, 2 = start frame, 3 = draw, 4 = end frame, 5 = input
     HB_AUDIO, // Audio callbacks
+    HB_GPU_BUILD_POLYS, // Polygons in the 3D frame the GPU 3D renderer is working on
     HB_GPU_STAGE, // 1 = waiting, 2 = building, 3 = locking GX2, 4 = drawing, 5 = converting, 6 = submitting, 7 = GPU wait, 8 = timeout
     HB_GPU_FRAMES, // Frames finished by the GPU 3D renderer
     HB_GPU_DISP3DCNT, // 3D display control of the frame the GPU 3D renderer is drawing
@@ -43,10 +44,10 @@ enum HeartbeatSlot {
     HB_GPU_LOCK_US, // Total microseconds the GPU 3D renderer waited for GX2
     HB_GPU_DRAW_US, // Total microseconds the GPU 3D renderer spent drawing, until the GPU was done
     HB_GPU_CONVERT_US, // Total microseconds the GPU 3D renderer spent converting scanlines
-    HB_GPU_TEXTURE_US, // Total nanoseconds the GPU 3D renderer spent checking and decoding textures, within building
+    HB_GPU_TEXTURE_US, // Total time base ticks the GPU 3D renderer spent checking and decoding textures, within building
     HB_GPU_PRELOOP_US, // Within building: setup before the polygons, like freeing textures and finding the smallest W
-    HB_GPU_VERTEX_US, // Within building, in nanoseconds: converting polygon vertices
-    HB_GPU_FAN_US, // Within building, in nanoseconds: writing the triangles, with edge distances for anti-aliasing
+    HB_GPU_VERTEX_US, // Within building, in time base ticks: converting polygon vertices
+    HB_GPU_FAN_US, // Within building, in time base ticks: writing the triangles, with edge distances for anti-aliasing
     HB_GPU_POSTLOOP_US, // Within building: after the polygons, until GX2 is locked
     HB_3D_WAIT_US, // Total microseconds the 2D engine waited for 3D scanlines
     HB_EMU_3D_WAIT_US, // Total microseconds the emulator waited for the GPU 3D renderer to finish a frame
@@ -124,9 +125,15 @@ namespace Heartbeat {
 #define HB_TIMER(name) auto name = std::chrono::steady_clock::now()
 #define HB_ADD_US(slot, name) (Heartbeat::values[slot] += \
     std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - name).count())
-// For short steps that are timed many times per frame, which would round down to nothing in microseconds
-#define HB_ADD_NS(slot, name) (Heartbeat::values[slot] += \
-    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - name).count())
+// For short steps that are timed many times per frame: this reads the time base directly and adds up its ticks, which
+// the logger converts, since clock calls and converting their results are slow enough to inflate what's being timed
+inline uint32_t hbTicks() {
+    uint32_t ticks;
+    __asm__ volatile("mftb %0" : "=r"(ticks));
+    return ticks;
+}
+#define HB_TICK_TIMER(name) uint32_t name = hbTicks()
+#define HB_ADD_TICKS(slot, name) (Heartbeat::values[slot] += hbTicks() - name)
 #else
 #define HB_SET(slot, value) do {} while (0)
 #define HB_INC(slot) do {} while (0)
@@ -134,5 +141,6 @@ namespace Heartbeat {
 #define HB_ADD(slot, value) do {} while (0)
 #define HB_TIMER(name) do {} while (0)
 #define HB_ADD_US(slot, name) do {} while (0)
-#define HB_ADD_NS(slot, name) do {} while (0)
+#define HB_TICK_TIMER(name) do {} while (0)
+#define HB_ADD_TICKS(slot, name) do {} while (0)
 #endif

@@ -39,11 +39,15 @@ namespace FrameTrace {
     static const uint32_t SAMPLES = 1 << 16;
     static Sample samples[SAMPLES];
     static volatile uint32_t sampleHead = 0;
-    static OSAlarm alarm;
+    static OSAlarm alarm, rendererAlarm;
 
-    static void callback(OSAlarm *alarm, OSContext *context) {
+    // Samples of the GPU 3D renderer's core, with the polygons in its frame in place of the JIT block
+    static const uint32_t RENDERER_SAMPLES = 1 << 15;
+    static Sample rendererSamples[RENDERER_SAMPLES];
+    static volatile uint32_t rendererHead = 0;
+
+    static void fillSample(Sample &sample, OSContext *context) {
         // Record a sample, following the stack's back chain while it stays in the range stacks are in
-        Sample &sample = samples[sampleHead % SAMPLES];
         sample.record = EmuProfile::recordCount;
         sample.pc = context->srr0;
         sample.lr = context->lr;
@@ -54,9 +58,24 @@ namespace FrameTrace {
             sample.returns[i] = valid ? *(uint32_t*)(uintptr_t)(frame + 4) : 0;
             sp = valid ? frame : 0;
         }
+    }
+
+    static void callback(OSAlarm *alarm, OSContext *context) {
+        Sample &sample = samples[sampleHead % SAMPLES];
+        fillSample(sample, context);
         sample.block = Heartbeat::values[HB_JIT_BLOCK];
         __sync_synchronize();
         sampleHead = sampleHead + 1;
+    }
+
+    static void rendererCallback(OSAlarm *alarm, OSContext *context) {
+        // Only sample while a frame is being built
+        if (Heartbeat::values[HB_GPU_STAGE] != 2) return;
+        Sample &sample = rendererSamples[rendererHead % RENDERER_SAMPLES];
+        fillSample(sample, context);
+        sample.block = Heartbeat::values[HB_GPU_BUILD_POLYS];
+        __sync_synchronize();
+        rendererHead = rendererHead + 1;
     }
 
     void start() {
@@ -67,6 +86,16 @@ namespace FrameTrace {
 
     void stop() {
         OSCancelAlarm(&alarm);
+    }
+
+    void startRenderer() {
+        // Sample the current core 5,000 times a second
+        OSCreateAlarm(&rendererAlarm);
+        OSSetPeriodicAlarm(&rendererAlarm, OSMicrosecondsToTicks(200), OSMicrosecondsToTicks(200), rendererCallback);
+    }
+
+    void stopRenderer() {
+        OSCancelAlarm(&rendererAlarm);
     }
 
     static void chunk(FILE *file, const char *tag, const void *data, uint32_t words) {
@@ -140,6 +169,18 @@ namespace FrameTrace {
             kept.insert(kept.end(), data, data + sizeof(Sample) / 4);
         }
         if (!kept.empty()) chunk(file, "SMPS", kept.data(), kept.size());
+
+        // Write all the GPU 3D renderer's samples since last time
+        static uint32_t rendererTail = 0;
+        head = rendererHead;
+        __sync_synchronize();
+        if (head - rendererTail > RENDERER_SAMPLES) rendererTail = head - RENDERER_SAMPLES;
+        kept.clear();
+        for (; rendererTail != head; rendererTail++) {
+            const uint32_t *data = (const uint32_t*)&rendererSamples[rendererTail % RENDERER_SAMPLES];
+            kept.insert(kept.end(), data, data + sizeof(Sample) / 4);
+        }
+        if (!kept.empty()) chunk(file, "RSMP", kept.data(), kept.size());
         fclose(file);
     }
 }

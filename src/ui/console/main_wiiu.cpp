@@ -1031,6 +1031,7 @@ int logHeartbeat(int argc, const char **argv) {
         float seconds = std::max<int64_t>(OSTicksToMicroseconds(OSGetTime() - lastTime), 1) / 1000000.0f;
         uint32_t frames = v[HB_EMU_FRAMES] - last[HB_EMU_FRAMES], gpuFrames = v[HB_GPU_FRAMES] - last[HB_GPU_FRAMES];
         auto per = [&](int slot, uint32_t count) { return count ? (v[slot] - last[slot]) / count : 0; };
+        auto perTicks = [&](int slot, uint32_t count) { return uint32_t(OSTicksToMicroseconds(uint64_t(per(slot, count)))); };
         uint32_t uiFrames = v[HB_UI_FRAMES] - last[HB_UI_FRAMES];
         fprintf(file, "   %.0f ms | ui fps %.1f, new frames %.1f, skipped %u, repeated %u: get frame %u, textures %u, draw %u, "
             "finish %u us\n", seconds * 1000, uiFrames / seconds, (v[HB_UI_NEW_FRAMES] - last[HB_UI_NEW_FRAMES]) / seconds,
@@ -1039,11 +1040,11 @@ int logHeartbeat(int argc, const char **argv) {
             per(HB_UI_END_US, uiFrames));
         fprintf(file, "   fps %.1f | gpu frames %u: build %u (textures %u) lock %u draw %u convert %u us | "
             "emu waits gpu %u 2D %u | 2D waits 3D %u us | hi-res copy %u us\n", frames / seconds, gpuFrames, per(HB_GPU_BUILD_US, gpuFrames),
-            per(HB_GPU_TEXTURE_US, gpuFrames) / 1000, per(HB_GPU_LOCK_US, gpuFrames), per(HB_GPU_DRAW_US, gpuFrames),
+            perTicks(HB_GPU_TEXTURE_US, gpuFrames), per(HB_GPU_LOCK_US, gpuFrames), per(HB_GPU_DRAW_US, gpuFrames),
             per(HB_GPU_CONVERT_US, gpuFrames), per(HB_EMU_3D_WAIT_US, frames), per(HB_2D_JOIN_US, frames),
             per(HB_3D_WAIT_US, frames), per(HB_EMU_HIRES_US, frames));
-        uint32_t textureUs = per(HB_GPU_TEXTURE_US, gpuFrames) / 1000, vertexUs = per(HB_GPU_VERTEX_US, gpuFrames) / 1000;
-        uint32_t fanUs = per(HB_GPU_FAN_US, gpuFrames) / 1000;
+        uint32_t textureUs = perTicks(HB_GPU_TEXTURE_US, gpuFrames), vertexUs = perTicks(HB_GPU_VERTEX_US, gpuFrames);
+        uint32_t fanUs = perTicks(HB_GPU_FAN_US, gpuFrames);
         fprintf(file, "   gpu draw timeline per frame (GPU_TIMELINE only): earlier work done %u, polygons submitted %u, "
             "polygons done %u, all submitted %u, all done %u us | draws %u, vertices %u\n", per(HB_GPU_PRIOR_US, gpuFrames), per(HB_GPU_MAIN_SUBMIT_US, gpuFrames),
             per(HB_GPU_MAIN_DONE_US, gpuFrames), per(HB_GPU_SUBMIT_US, gpuFrames), per(HB_GPU_DRAW_US, gpuFrames),

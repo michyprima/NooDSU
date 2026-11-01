@@ -47,6 +47,9 @@
 #include <vector>
 
 #include "gpu3d_wiiu.h"
+#if defined(PROFILE_EMU) && defined(HEARTBEAT)
+#include "frame_trace.h"
+#endif
 #include "../../core/core.h"
 #include "../../core/heartbeat.h"
 #include "../../core/frame_capture.h"
@@ -364,7 +367,13 @@ bool Gpu3DWiiU::init() {
 }
 
 int Gpu3DWiiU::threadEntry(int argc, const char **argv) {
+#if defined(PROFILE_EMU) && defined(HEARTBEAT)
+    FrameTrace::startRenderer();
+#endif
     ((Gpu3DWiiU*)argv)->run();
+#if defined(PROFILE_EMU) && defined(HEARTBEAT)
+    FrameTrace::stopRenderer();
+#endif
     return 0;
 }
 
@@ -519,6 +528,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     uint16_t disp3DCnt = renderer->readDisp3DCnt();
     bool texturing = disp3DCnt & BIT(0), blending = disp3DCnt & BIT(3);
     bool wBuffer = polygonCount && polygons[0].wBuffer;
+    HB_SET(HB_GPU_BUILD_POLYS, polygonCount);
     GPU_STAGE(2);
     HB_SET(HB_GPU_DISP3DCNT, disp3DCnt);
     HB_TIMER(hbBuild);
@@ -971,9 +981,9 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             // Pick the shader and texture; toon and highlight polygons use a white texel if they aren't textured
             GpuDraw draw = {};
             bool textured = texturing && polygon->textureFmt != 0;
-            HB_TIMER(hbTexture);
+            HB_TICK_TIMER(hbTexture);
             draw.texture = textured ? getTexture(renderer, polygon) : nullptr;
-            HB_ADD_NS(HB_GPU_TEXTURE_US, hbTexture);
+            HB_ADD_TICKS(HB_GPU_TEXTURE_US, hbTexture);
             draw.lines = wireframe;
             draw.shader = !draw.texture ? 0 : (polygon->mode == 1 || polygon->mode == 3) ? 2 : 1;
             if (polygon->mode == 2) {
@@ -1059,12 +1069,12 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             // They're interpolated with perspective like the other values, which is close enough within a pixel
             // Only solid polygons give coverage, and only when anti-aliasing like the DS, so others skip the work
             bool distances = dsAntiAlias && !translucent;
-            HB_TIMER(hbVertex);
+            HB_TICK_TIMER(hbVertex);
             GpuVertex converted[10]; // Each polygon vertex is converted once, since the fan shares the first one
             for (int k = 0; k < polygon->size; k++)
                 convert(converted[k], k);
-            HB_ADD_NS(HB_GPU_VERTEX_US, hbVertex);
-            HB_TIMER(hbFan);
+            HB_ADD_TICKS(HB_GPU_VERTEX_US, hbVertex);
+            HB_TICK_TIMER(hbFan);
 
             // Wireframe polygons are drawn as lines along their edges instead, which aren't anti-aliased
             for (int k = 0; wireframe && k < polygon->size; k++) {
@@ -1116,7 +1126,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                 }
             }
 
-            HB_ADD_NS(HB_GPU_FAN_US, hbFan);
+            HB_ADD_TICKS(HB_GPU_FAN_US, hbFan);
 
             // Merge the triangles into the last draw if the state is the same
             draw.count = count - draw.first;

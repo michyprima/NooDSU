@@ -28,5 +28,9 @@
 namespace FrameTrace {
     void start();
     void stop();
+
+    // Also sample the GPU 3D renderer's core while it builds frames, from its own thread, written out in full
+    void startRenderer();
+    void stopRenderer();
     void write(const char *path);
 }
