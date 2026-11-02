@@ -217,7 +217,8 @@ JitBlock *Jit::compile(uint32_t address, bool thumb, uint8_t *host, int index) {
     }
 
     // Otherwise decode instructions until one that ends the block, the end of the page, or the size limit
-    uint8_t *pageEnd = (uint8_t*)((uintptr_t(host) & ~0xFFF) + 0x1000);
+    // The page is the guest's, since host memory isn't page aligned and the next guest page can be somewhere else
+    uint8_t *pageEnd = host + (0x1000 - (address & 0xFFF));
     uint8_t *ptr = host;
     while (!block->code && ptr < pageEnd && block->instrs.size() < MAX_INSTRS) {
         JitInstr instr;
