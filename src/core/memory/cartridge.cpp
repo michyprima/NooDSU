@@ -620,6 +620,7 @@ void CartridgeNds::loadState(FILE *file) {
     fread(auxSpiCnt, 2, sizeof(auxSpiCnt) / 2, file);
     fread(auxSpiData, 1, sizeof(auxSpiData), file);
     fread(romCtrl, 4, sizeof(romCtrl) / 4, file);
+    wordWaiting = false;
     fread(romCmdOut, 8, sizeof(romCmdOut) / 8, file);
 
     // Don't overwrite the save file right away; wait until it's modified
@@ -893,6 +894,40 @@ void CartridgeNds::wordReady(bool cpu) {
     core->dma[cpu].trigger((cpu == 0) ? 5 : 2);
 }
 
+void CartridgeNds::scheduleWord(bool cpu) {
+    // Games read a lot of words while loading, and a scheduled task for each makes the CPU stop running compiled code
+    // So if nothing needs to happen when an ARM9 word is ready, just note when that is for reads to check
+    // The ARM7 can run behind the global cycles, so its words are always scheduled
+    if (cpu == 0 && !core->dma[0].cartArmed()) {
+        wordWaiting = true;
+        wordTime = core->globalCycles + wordCycles[0];
+        return;
+    }
+    core->schedule(SchedTask(CART9_WORD_READY + cpu), wordCycles[cpu]);
+}
+
+void CartridgeNds::checkWord() {
+    // Mark a noted word as ready once its time has come
+    if (wordWaiting && int32_t(core->globalCycles - wordTime) >= 0) {
+        wordWaiting = false;
+        romCtrl[0] |= BIT(23);
+    }
+}
+
+void CartridgeNds::flushWord() {
+    // Schedule a noted word for real, for when something depends on the task being there
+    checkWord();
+    if (!wordWaiting) return;
+    wordWaiting = false;
+    core->schedule(CART9_WORD_READY, wordTime - core->globalCycles);
+}
+
+void CartridgeNds::resetCycles() {
+    // Move a noted word's time along with the global cycles; one that's due is handled first, so it can't wrap
+    checkWord();
+    if (wordWaiting) wordTime -= core->globalCycles;
+}
+
 void CartridgeNds::writeAuxSpiCnt(bool cpu, uint16_t mask, uint16_t value) {
     // Write to one of the AUXSPICNT registers
     mask &= 0xE043;
@@ -1148,6 +1183,9 @@ void CartridgeNds::writeRomCtrl(bool cpu, uint32_t mask, uint32_t value) {
 
     if (!transfer) return;
 
+    // Let a word from an earlier transfer finish on its own
+    if (cpu == 0) flushWord();
+
     // Determine the size of the block to transfer
     uint8_t size = (romCtrl[cpu] & 0x07000000) >> 24;
     switch (size) {
@@ -1243,13 +1281,20 @@ void CartridgeNds::writeRomCtrl(bool cpu, uint32_t mask, uint32_t value) {
     }
     else {
         // Schedule the first word to be ready
-        core->schedule(SchedTask(CART9_WORD_READY + cpu), wordCycles[cpu]);
+        scheduleWord(cpu);
         readCount[cpu] = 0;
     }
 }
 
+uint32_t CartridgeNds::readRomCtrl(bool cpu) {
+    // Read from one of the ROMCTRL registers
+    if (cpu == 0) checkWord();
+    return romCtrl[cpu];
+}
+
 uint32_t CartridgeNds::readRomDataIn(bool cpu) {
     // Don't transfer if the word ready bit isn't set
+    if (cpu == 0) checkWord();
     if (!(romCtrl[cpu] & BIT(23)))
         return 0;
 
@@ -1267,7 +1312,7 @@ uint32_t CartridgeNds::readRomDataIn(bool cpu) {
     }
     else {
         // Schedule the next word to be ready
-        core->schedule(SchedTask(CART9_WORD_READY + cpu), wordCycles[cpu]);
+        scheduleWord(cpu);
     }
 
     // Return a value from the cart depending on the current command

@@ -164,10 +164,12 @@ public:
 
     void directBoot();
     void wordReady(bool cpu);
+    void flushWord();
+    void resetCycles();
 
     uint16_t readAuxSpiCnt(bool cpu) { return auxSpiCnt[cpu]; }
     uint8_t readAuxSpiData(bool cpu) { return auxSpiData[cpu]; }
-    uint32_t readRomCtrl(bool cpu) { return romCtrl[cpu]; }
+    uint32_t readRomCtrl(bool cpu);
     uint32_t readRomDataIn(bool cpu);
 
     void writeAuxSpiCnt(bool cpu, uint16_t mask, uint16_t value);
@@ -187,6 +189,12 @@ private:
     uint32_t romAddrReal[2] = {}, romAddrVirt[2] = {};
     uint16_t blockSize[2] = {}, readCount[2] = {};
     uint32_t wordCycles[2] = {};
+
+    // The ARM9's next word, when it's only noted when it'll be ready instead of being scheduled
+    bool wordWaiting = false;
+    uint32_t wordTime = 0;
+    void scheduleWord(bool cpu);
+    void checkWord();
     bool encrypted[2] = {};
 
     uint8_t auxCommand[2] = {};

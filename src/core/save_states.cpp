@@ -83,7 +83,8 @@ bool SaveStates::saveState() {
     fwrite(stateTag, sizeof(uint8_t), 4, file);
     fwrite(&stateVersion, sizeof(uint32_t), 1, file);
 
-    // Save the state of every component
+    // Save the state of every component, with a noted word from the DS cart as a scheduled task like it used to be
+    core->cartridgeNds.flushWord();
     core->saveState(file);
     core->aes.saveState(file);
     core->cartridgeGba.saveState(file);

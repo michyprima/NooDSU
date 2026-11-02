@@ -181,6 +181,15 @@ void Dma::trigger(int mode, uint8_t channels) {
     }
 }
 
+bool Dma::cartArmed() {
+    // Check if an ARM9 channel is waiting for words from the DS cart
+    for (int i = 0; i < 4; i++) {
+        if ((dmaCnt[i] & BIT(31)) && ((dmaCnt[i] & 0x38000000) >> 27) == 5)
+            return true;
+    }
+    return false;
+}
+
 void Dma::writeDmaSad(int channel, uint32_t mask, uint32_t value) {
     // Write to one of the DMASAD registers
     mask &= ((cpu == 0 || channel != 0) ? 0x0FFFFFFF : 0x07FFFFFF);
@@ -199,6 +208,9 @@ void Dma::writeDmaCnt(int channel, uint32_t mask, uint32_t value) {
     // Write to one of the DMACNT registers
     mask &= ((cpu == 0) ? 0xFFFFFFFF : (channel == 3 ? 0xF7E0FFFF : 0xF7E03FFF));
     dmaCnt[channel] = (dmaCnt[channel] & ~mask) | (value & mask);
+
+    // A DMA waiting for words from the DS cart relies on them being scheduled
+    if (cpu == 0 && cartArmed()) core->cartridgeNds.flushWord();
 
     // In GXFIFO mode, schedule a transfer on the channel immediately if the FIFO is already half empty
     // All other modes are only triggered at the moment when the event happens

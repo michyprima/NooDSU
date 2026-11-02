@@ -432,6 +432,7 @@ void Core::resetCycles() {
         events[i].cycles -= globalCycles;
     for (int i = 0; i < 2; i++)
         interpreter[i].resetCycles(), timers[i].resetCycles();
+    cartridgeNds.resetCycles();
     globalCycles -= globalCycles;
     schedule(RESET_CYCLES, 0x7FFFFFFF);
 }
