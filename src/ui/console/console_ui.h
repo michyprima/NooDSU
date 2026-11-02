@@ -101,6 +101,7 @@ public:
 
     static int showFpsCounter;
     static int menuTheme;
+    static int frameColor; // The screen frame's color, or 0 for none
     static int keyBinds[INPUT_MAX];
 
     // Data that is defined per-platform
@@ -112,6 +113,8 @@ public:
     static void endFrame();
     static void *createTexture(uint32_t *data, int width, int height);
     static void destroyTexture(void *texture);
+    static void releaseTexture(void *texture);
+    static void drawFrames(void *tv, void *gamepad);
     static void *createHiResTexture(uint32_t *data);
     static void destroyHiResTexture(void *texture);
     static void drawTexture(void *texture, float tx, float ty, float tw, float th, float x, float y,
@@ -150,6 +153,8 @@ private:
     static std::string ndsPath, gbaPath;
     static std::string basePath, curPath, defaultFolder;
     static bool changed;
+    static void *frameTextures[2]; // The screen frame for the TV and the gamepad
+    static void updateFrames(ScreenLayout *gamepad);
 
     static std::thread *coreThread;
     static WorkerThread *saveThread;

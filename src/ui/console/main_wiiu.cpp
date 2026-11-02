@@ -407,6 +407,13 @@ void ConsoleUI::destroyTexture(void *texture) {
     delete (GX2Texture*)texture;
 }
 
+void ConsoleUI::releaseTexture(void *texture) {
+    // Clean up a large texture that won't be recreated, giving its memory back instead of keeping it for reuse
+    if (!texture) return;
+    MEMFreeToDefaultHeap(((GX2Texture*)texture)->surface.image);
+    delete (GX2Texture*)texture;
+}
+
 static void drawQuad(GX2Texture *texture, bool filter, GX2Texture *last = nullptr) {
     // Draw a texture with the regular shader, or averaged with the last frame's for ghosting if given
     if (!last) {
@@ -576,6 +583,27 @@ void ConsoleUI::destroyHiResTexture(void *texture) {
         delete (GX2Texture*)texture;
 }
 
+static void uploadQuad(const float *pos, const float *tex, const float *col) {
+    // Upload positions to the buffer
+    // Only the written range is flushed, since locking and unlocking normally flush the whole buffer
+    uint8_t *buffer = (uint8_t*)GX2RLockBufferEx(&posBuffer, NO_INVALIDATE);
+    memcpy(&buffer[bufOffset * 2], pos, posBuffer.elemSize * 8);
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, &buffer[bufOffset * 2], posBuffer.elemSize * 8);
+    GX2RUnlockBufferEx(&posBuffer, NO_INVALIDATE);
+
+    // Upload texture coordinates to the buffer
+    buffer = (uint8_t*)GX2RLockBufferEx(&texBuffer, NO_INVALIDATE);
+    memcpy(&buffer[bufOffset], tex, texBuffer.elemSize * 4);
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, &buffer[bufOffset], texBuffer.elemSize * 4);
+    GX2RUnlockBufferEx(&texBuffer, NO_INVALIDATE);
+
+    // Upload vertex colors to the buffer
+    buffer = (uint8_t*)GX2RLockBufferEx(&colBuffer, NO_INVALIDATE);
+    memcpy(&buffer[bufOffset * 2], col, colBuffer.elemSize * 4);
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, &buffer[bufOffset * 2], colBuffer.elemSize * 4);
+    GX2RUnlockBufferEx(&colBuffer, NO_INVALIDATE);
+}
+
 void ConsoleUI::drawTexture(void *texture, float tx, float ty, float tw, float th,
     float x, float y, float w, float h, bool filter, int rotation, uint32_t color) {
     // Skip textures that couldn't be created
@@ -631,24 +659,7 @@ void ConsoleUI::drawTexture(void *texture, float tx, float ty, float tw, float t
         s2, t1, s2, t2, s1, t2, s1, t1, // Counter-clockwise
     };
 
-    // Upload positions to the buffer
-    // Only the written range is flushed, since locking and unlocking normally flush the whole buffer
-    uint8_t *buffer = (uint8_t*)GX2RLockBufferEx(&posBuffer, NO_INVALIDATE);
-    memcpy(&buffer[bufOffset * 2], posCoords, posBuffer.elemSize * 8);
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, &buffer[bufOffset * 2], posBuffer.elemSize * 8);
-    GX2RUnlockBufferEx(&posBuffer, NO_INVALIDATE);
-
-    // Upload texture coordinates to the buffer
-    buffer = (uint8_t*)GX2RLockBufferEx(&texBuffer, NO_INVALIDATE);
-    memcpy(&buffer[bufOffset], &texCoords[rotation * 8], texBuffer.elemSize * 4);
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, &buffer[bufOffset], texBuffer.elemSize * 4);
-    GX2RUnlockBufferEx(&texBuffer, NO_INVALIDATE);
-
-    // Upload vertex colors to the buffer
-    buffer = (uint8_t*)GX2RLockBufferEx(&colBuffer, NO_INVALIDATE);
-    memcpy(&buffer[bufOffset * 2], vtxColors, colBuffer.elemSize * 4);
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, &buffer[bufOffset * 2], colBuffer.elemSize * 4);
-    GX2RUnlockBufferEx(&colBuffer, NO_INVALIDATE);
+    uploadQuad(posCoords, &texCoords[rotation * 8], vtxColors);
 
     // Draw a texture on the TV, with high-res 3D over it if given
     WHBGfxBeginRenderTV();
@@ -686,6 +697,33 @@ void ConsoleUI::drawTexture(void *texture, float tx, float ty, float tw, float t
     GX2RSetAttributeBuffer(&texBuffer, 1, texBuffer.elemSize, bufOffset);
     GX2RSetAttributeBuffer(&colBuffer, 2, colBuffer.elemSize, bufOffset * 2);
     drawQuad(tempTexture ? tempTexture : (GX2Texture*)texture, filter, tempLast);
+
+    // Adjust the buffer offset if there's still room
+    if (bufOffset < 8 * sizeof(float) * MAX_DRAWS)
+        bufOffset += 8 * sizeof(float);
+}
+
+void ConsoleUI::drawFrames(void *tv, void *gamepad) {
+    // Fill each display with its own frame, without counting as a screen for the gamepad's layout
+    static const float posCoords[] = { -1, 1, 1, 1, 1, -1, -1, -1, -1, 1, 1, 1, 1, -1, -1, -1 };
+    static const float texCoords[] = { 0, 0, 1, 0, 1, 1, 0, 1 };
+    static const float vtxColors[] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+    uploadQuad(posCoords, texCoords, vtxColors);
+
+    if (tv) {
+        WHBGfxBeginRenderTV();
+        GX2RSetAttributeBuffer(&posBuffer, 0, posBuffer.elemSize, bufOffset * 2);
+        GX2RSetAttributeBuffer(&texBuffer, 1, texBuffer.elemSize, bufOffset);
+        GX2RSetAttributeBuffer(&colBuffer, 2, colBuffer.elemSize, bufOffset * 2);
+        drawQuad((GX2Texture*)tv, false);
+    }
+    if (gamepad) {
+        WHBGfxBeginRenderDRC();
+        GX2RSetAttributeBuffer(&posBuffer, 0, posBuffer.elemSize, bufOffset * 2 + 8 * sizeof(float));
+        GX2RSetAttributeBuffer(&texBuffer, 1, texBuffer.elemSize, bufOffset);
+        GX2RSetAttributeBuffer(&colBuffer, 2, colBuffer.elemSize, bufOffset * 2);
+        drawQuad((GX2Texture*)gamepad, false);
+    }
 
     // Adjust the buffer offset if there's still room
     if (bufOffset < 8 * sizeof(float) * MAX_DRAWS)

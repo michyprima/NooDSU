@@ -15,6 +15,7 @@
 #                of where its core was during slow frames in trace.bin
 #   framelog     The time of every emulator and UI frame in framelog.bin, cheap enough to measure dropped frames
 #   romload      How long loading the ROM into RAM took, in romload.txt
+#   frameart     How long drawing the screen frames took, in frameart.txt
 set -e
 cd "$(dirname "$0")"
 export DEVKITPRO=${DEVKITPRO:-/opt/devkitpro} DEVKITPPC=${DEVKITPPC:-/opt/devkitpro/devkitPPC}
@@ -35,6 +36,7 @@ for variant in "$@"; do
         frametime) flags='-DHEARTBEAT -DPROFILE_EMU'; name=noodsu-frametime; title='NooDSU Frame Times' ;;
         framelog) flags='-DFRAME_LOG'; name=noodsu-framelog; title='NooDSU Frame Log' ;;
         romload) flags='-DROM_LOAD_TEST'; name=noodsu-romload; title='NooDSU ROM Load' ;;
+        frameart) flags='-DFRAME_ART_TEST'; name=noodsu-frameart; title='NooDSU Frame Art' ;;
         *) echo "Unknown variant: $variant"; exit 1 ;;
     esac
     rm -rf "build-wiiu-$name"

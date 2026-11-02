@@ -22,11 +22,13 @@
 #include <atomic>
 #include <functional>
 #include <cstring>
+#include <new>
 #include <chrono>
 #include <dirent.h>
 #include <sys/stat.h>
 
 #include "console_ui.h"
+#include "screen_frame.h"
 #include "version.h"
 #include <coreinit/core.h>
 #include <coreinit/thread.h>
@@ -150,6 +152,8 @@ static void debugFrameEnd(Core *core) {
 #endif
 int ConsoleUI::showFpsCounter = 0;
 int ConsoleUI::menuTheme = 0;
+int ConsoleUI::frameColor = 1;
+void *ConsoleUI::frameTextures[2];
 int ConsoleUI::keyBinds[] = {};
 
 const uint32_t ConsoleUI::themeColors[] = {
@@ -266,6 +270,7 @@ void ConsoleUI::initialize(int width, int height, std::string root, std::string 
     std::vector<Setting> platformSettings = {
         Setting("showFpsCounter", &showFpsCounter, false),
         Setting("menuTheme", &menuTheme, false),
+        Setting("screenFrame", &frameColor, false),
         Setting("defaultFolder", &defaultFolder, true),
         Setting("keyA", &keyBinds[INPUT_A], false),
         Setting("keyB", &keyBinds[INPUT_B], false),
@@ -333,6 +338,7 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
             layout.update(uiWidth, uiHeight, gbaMode);
             if (touchLayout)
                 touchLayout->update(touchLayout->winWidth, touchLayout->winHeight, gbaMode);
+            if (touchLayout) updateFrames(touchLayout);
             changed = false;
         }
 
@@ -479,6 +485,10 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
             composeScreens(topTexture, botTexture, hiResTexture, hiResTop);
         if (composeGba && (update || !composed[0]))
             composeGbaScreen(gbaTexture);
+
+        // Draw the screen frames first, so the screens go over them
+        if (frameTextures[0] || frameTextures[1])
+            drawFrames(frameTextures[0], frameTextures[1]);
 
         if (gbaMode) {
             // Draw the GBA screen, or the one built from it at twice the size, with the last one for ghosting
@@ -738,6 +748,59 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
     hiResData = nullptr;
     screenFrame = framebuffer;
     lastFrame = nullptr;
+}
+
+void ConsoleUI::updateFrames(ScreenLayout *gamepad) {
+    // Work out what each display shows, which is one screen each when split or with the GBA screen, or both otherwise
+    // A split display shows the same half of the system as its screen, and GBA mode splits them like the top and bottom
+    ScreenFrame::Screen screens[2][2];
+    ScreenLayout *layouts[] = { &layout, gamepad };
+    int count = (gbaMode || ScreenLayout::arrangement() == 3) ? 1 : 2;
+    for (int i = 0; i < 2; i++) {
+        ScreenLayout &l = *layouts[i];
+        bool bottom = (count == 2) ? false : gbaMode ? (i == 1) : ((ScreenLayout::screenSizing == 2) != (i == 1));
+        screens[i][0] = { float(l.topX), float(l.topY), float(l.topWidth), float(l.topHeight), bottom };
+        screens[i][1] = { float(l.botX), float(l.botY), float(l.botWidth), float(l.botHeight), true };
+    }
+
+    // Only draw them again if something changed, since this also runs for changes that don't affect them
+    static float last[1 + 2 * 2 * 5];
+    float next[1 + 2 * 2 * 5] = { float(frameColor) };
+    for (int i = 0; i < 4; i++) {
+        const ScreenFrame::Screen &screen = screens[i / 2][i & 1];
+        const float values[] = { screen.x, screen.y, screen.width, screen.height, float(screen.bottom + count * 2) };
+        memcpy(&next[1 + i * 5], values, sizeof(values));
+    }
+    if (!memcmp(last, next, sizeof(next))) return;
+    memcpy(last, next, sizeof(next));
+
+    for (int i = 0; i < 2; i++) {
+        releaseTexture(frameTextures[i]);
+        frameTextures[i] = nullptr;
+    }
+    if (!frameColor) return;
+
+    // Draw each display's frame in memory, leaving black bars if there isn't enough for it
+#ifdef FRAME_ART_TEST
+    uint64_t start = OSGetSystemTime();
+#endif
+    for (int i = 0; i < 2; i++) {
+        int width = (i == 0) ? uiWidth : 854, height = (i == 0) ? uiHeight : 480;
+        uint32_t *pixels = new (std::nothrow) uint32_t[width * height];
+        if (!pixels) continue;
+        ScreenFrame::draw(pixels, width, height, frameColor - 1, screens[i], count, i == 0,
+            &_binary_src_ui_console_images_font_bmp_start, charWidths);
+        frameTextures[i] = createTexture(pixels, width, height);
+        delete[] pixels;
+    }
+#ifdef FRAME_ART_TEST
+    // Log how long that took
+    if (FILE *log = fopen((Settings::basePath + "/frameart.txt").c_str(), "a")) {
+        fprintf(log, "Color %d, %dx%d, %d screens: %.1f ms\n", frameColor, uiWidth, uiHeight, count,
+            OSTicksToMicroseconds(OSGetSystemTime() - start) / 1000.0);
+        fclose(log);
+    }
+#endif
 }
 
 int ConsoleUI::setPath(std::string path) {
@@ -1213,6 +1276,8 @@ void ConsoleUI::settingsMenu() {
     const std::vector<std::string> gap = { "None", "Quarter", "Half", "Full" };
     const std::vector<std::string> filter = { "Nearest", "Upscaled", "Linear" };
     const std::vector<std::string> aspect = { "Default", "16:10", "16:9", "18:9" };
+    std::vector<std::string> frame = { "Off" };
+    frame.insert(frame.end(), ScreenFrame::colorNames, ScreenFrame::colorNames + ScreenFrame::COLOR_COUNT);
     const std::vector<std::string> antiAlias = { "DS-Style", "Multisample", "Off" };
     const std::vector<std::string> romIn = { "Off", "On", "Streaming" };
     if (Settings::gpuAntiAlias >= (int)antiAlias.size()) Settings::gpuAntiAlias = 0;
@@ -1241,6 +1306,7 @@ void ConsoleUI::settingsMenu() {
         add("Sync to Display", Settings::syncToDisplay, toggle);
         add("Show FPS Counter", showFpsCounter, toggle);
         add("Menu Theme", menuTheme, theme);
+        add("Screen Frame", frameColor, frame);
 
         header("Graphics Settings");
         add("GPU 3D Renderer", Settings::hardware3D, toggle);

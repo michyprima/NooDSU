@@ -46,6 +46,7 @@ It's licensed under the GPL version 3, like NooDS.
 - Simpler settings menu, with the fast options on by default
 - File browser: set a default folder (Y), and open a ROM's launch options (−) to run it with a chosen save type
 - Pause menu rearranged, and Restart asks for confirmation
+- Optional Screen Frame setting: the space around the screens looks like a DSi, in any of its eight colours
 - Version shown in the menus, and an About screen
 - A new icon
 
