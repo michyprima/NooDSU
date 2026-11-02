@@ -13,12 +13,13 @@
 #   drcdebug     What's known about the GamePad's display on the TV, with combos to try getting it back
 #   frametime    Heartbeat, plus where the emulator thread spends each frame, listing every slow frame, and samples
 #                of where its core was during slow frames in trace.bin
+#   framelog     The time of every emulator and UI frame in framelog.bin, cheap enough to measure dropped frames
 set -e
 cd "$(dirname "$0")"
 export DEVKITPRO=${DEVKITPRO:-/opt/devkitpro} DEVKITPPC=${DEVKITPPC:-/opt/devkitpro/devkitPPC}
 BASE='-g -Ofast -fno-allow-store-data-races -flto -ffunction-sections -DESPRESSO -mcpu=750 -meabi -mhard-float $(INCLUDE) -D__WIIU__ -D__WUT__ -DENDIAN_BIG -DNO_FDOPEN -DLOG_LEVEL=0'
 
-[ $# -gt 0 ] || { sed -n '2,16p' "$0"; exit 1; }
+[ $# -gt 0 ] || { sed -n '2,17p' "$0"; exit 1; }
 for variant in "$@"; do
     case $variant in
         heartbeat) flags='-DHEARTBEAT'; name=noods-hb; title='NooDS Heartbeat' ;;
@@ -31,6 +32,7 @@ for variant in "$@"; do
         jittest) flags='-DJIT_SELFTEST'; name=noods-jittest; title='NooDS JIT Test' ;;
         drcdebug) flags='-DDRC_DEBUG'; name=noods-drcdebug; title='NooDS GamePad Debug' ;;
         frametime) flags='-DHEARTBEAT -DPROFILE_EMU'; name=noods-frametime; title='NooDS Frame Times' ;;
+        framelog) flags='-DFRAME_LOG'; name=noods-framelog; title='NooDS Frame Log' ;;
         *) echo "Unknown variant: $variant"; exit 1 ;;
     esac
     rm -rf "build-wiiu-$name"

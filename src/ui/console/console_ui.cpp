@@ -50,6 +50,9 @@ static OSThread *emuThread = nullptr;
 #if defined(PROFILE_EMU) && defined(HEARTBEAT)
 #include "frame_trace.h"
 #endif
+#ifdef FRAME_LOG
+#include "frame_log.h"
+#endif
 
 #define SCALEH(x, h) (((x) * (h)) / 720)
 #define SCALE(x) SCALEH(x, uiHeight)
@@ -201,6 +204,9 @@ void ConsoleUI::fillAudioBuffer(uint32_t *buffer, int count, int rate) {
     // Fill the buffer with resampled output from the core
     int scaled = count * 32768 / rate;
     uint32_t *original = core->spu.getSamples(scaled);
+#ifdef FRAME_LOG
+    FrameLog::audioBuffer(core->spu.ringDry, core->spu.ringFill);
+#endif
     lastSample = original[scaled - 1];
     for (int i = 0; i < 1024; i++)
         buffer[i] = original[i * scaled / 1024];
@@ -344,6 +350,9 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         bool alternate = ghost && !compose && !composeGba; // Screens built on the GPU keep their last ones themselves
         uint32_t *out = (alternate && screenFrame == framebuffer) ? &framebuffer[256 * 192 * 4] : framebuffer;
         bool newFrame = core->gpu.getFrame(out, gbaMode, hiRes3D ? &hiRes : nullptr, &top3D);
+#ifdef FRAME_LOG
+        FrameLog::uiFrame(newFrame ? core->gpu.lastFrameId : 0);
+#endif
         if (newFrame) {
             lastFrame = alternate ? screenFrame : nullptr;
             screenFrame = out;
@@ -1907,6 +1916,9 @@ void ConsoleUI::stopCore() {
 
 void ConsoleUI::runCore() {
     // Run the emulator, waiting for the display after each frame when syncing to it
+#ifdef FRAME_LOG
+    FrameLog::emulatorStarted();
+#endif
     while (running) {
         core->runCore();
         if (core->frameEnded.exchange(false)) {
@@ -1914,7 +1926,13 @@ void ConsoleUI::runCore() {
             debugFrameEnd(core);
 #endif
             EP_START(display);
+#ifdef FRAME_LOG
+            uint32_t finished = OSGetSystemTick();
+#endif
             waitForDisplay();
+#ifdef FRAME_LOG
+            FrameLog::emulatorFrame(finished, core->gpu3D.polygonCountOut);
+#endif
             EP_ADD(EP_DISPLAY, display);
 #if defined(PROFILE_EMU) && defined(HEARTBEAT)
             EmuProfile::recordFrame(core->gpu.frameNumber);

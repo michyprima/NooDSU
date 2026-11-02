@@ -62,6 +62,7 @@
 #include "../core/heartbeat.h"
 #include "../core/emu_profile.h"
 #include "frame_trace.h"
+#include "frame_log.h"
 #include "../core/file_lock.h"
 
 #define MAX_DRAWS 1024
@@ -1147,6 +1148,20 @@ int logHeartbeat(int argc, const char **argv) {
 }
 #endif
 
+#ifdef FRAME_LOG
+int logFrames(int argc, const char **argv) {
+    // Write what the frame log collected every few seconds, unless the system wants the foreground or the UI is done
+    std::string path = std::string(WHBGetSdCardMountPath()) + "/wiiu/apps/noods/framelog.bin";
+    while (true) {
+        OSSleepTicks(OSMillisecondsToTicks(2000));
+        if (releaseRequested.load() || uiParked || uiDone) continue;
+        std::lock_guard<std::recursive_mutex> guard(fileLock());
+        FrameLog::write(path.c_str());
+    }
+    return 0;
+}
+#endif
+
 // Show where a crash happened on an error screen instead of freezing, with this function's own address so the others
 // can be matched to the build's symbols; it formats with the OS, since C runtime locks might be held, and doesn't walk
 // the stack, which might be damaged
@@ -1178,6 +1193,10 @@ int main() {
 #ifdef HEARTBEAT
     WHBMountSdCard();
     WorkerThread::createThread(logHeartbeat, nullptr, 0x10000, 20, OS_THREAD_ATTRIB_AFFINITY_CPU2);
+#endif
+#ifdef FRAME_LOG
+    WHBMountSdCard();
+    WorkerThread::createThread(logFrames, nullptr, 0x10000, 20, OS_THREAD_ATTRIB_AFFINITY_CPU2);
 #endif
 #ifdef THREAD_PROBE
     // Above the other threads' priorities, so they can answer even if threads below them are busy

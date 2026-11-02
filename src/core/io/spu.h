@@ -37,6 +37,10 @@ public:
     void loadState(FILE *file);
 
     uint32_t *getSamples(int count);
+#ifdef FRAME_LOG
+    uint32_t ringDry = 0; // Output samples that had to repeat the last one because the ring ran dry
+    uint32_t ringFill = 0; // Samples in the ring when output last read from it
+#endif
     void runGbaSample();
     void runSample();
     void gbaFifoTimer(int timer);

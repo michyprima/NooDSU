@@ -145,6 +145,9 @@ void Spu::readRing(uint32_t *out, int count) {
     // output buffers and a little slower when it has less, by up to half a percent, which can't be heard
     uint32_t tail = ringTail.load(std::memory_order_relaxed), head = ringHead.load(std::memory_order_acquire);
     float target = count * 2, fill = float(head - tail) - ringPosition;
+#ifdef FRAME_LOG
+    ringFill = head - tail;
+#endif
     if (fill > target * 4) {
         // Drop samples that piled up, like after fast-forwarding
         tail = head - uint32_t(target);
@@ -157,6 +160,9 @@ void Spu::readRing(uint32_t *out, int count) {
         uint32_t index = uint32_t(ringPosition);
         if (head - tail < index + 2) {
             out[i] = ringLast;
+#ifdef FRAME_LOG
+            ringDry = ringDry + 1;
+#endif
             continue;
         }
         uint32_t a = ring[(tail + index) % RING_SIZE], b = ring[(tail + index + 1) % RING_SIZE];
