@@ -1389,11 +1389,10 @@ void ConsoleUI::pauseMenu() {
     std::vector<MenuItem> items = {
         MenuItem("Resume"),
         MenuItem("Restart"),
+        MenuItem("File Browser"),
         MenuItem("Save State"),
         MenuItem("Load State"),
-        MenuItem("Change Save Type"),
-        MenuItem("Settings"),
-        MenuItem("File Browser")
+        MenuItem("Change Save Type")
     };
 #if defined(PROFILE_EMU) || defined(PROFILE_SAMPLER)
     items.push_back(MenuItem("3D Benchmark"));
@@ -1405,7 +1404,7 @@ void ConsoleUI::pauseMenu() {
     int index = 0;
     while (true) {
         // Create the pause menu
-        uint32_t pressed = menu("NooDSU", items, index, "", "Exit");
+        uint32_t pressed = menu("NooDSU", items, index, "Settings", "Exit");
 
         // Handle menu input
         if (pressed & defaultKeys[INPUT_A]) {
@@ -1417,12 +1416,19 @@ void ConsoleUI::pauseMenu() {
                 return;
 
             case 1: // Restart
-                // Restart and return to the emulator
+                // Restart and return to the emulator if confirmed
+                if (!message("Restart", "Do you want to restart the game? Any unsaved progress will be lost.", 1))
+                    break;
                 if (createCore()) startCore();
                 else fileBrowser();
                 return;
 
-            case 2: // Save State
+            case 2: // File Browser
+                // Open the file browser and close the pause menu, unless going back to it
+                if (fileBrowser()) return;
+                break;
+
+            case 3: // Save State
                 // Show a confirmation message, with extra information if a state file doesn't exist yet
                 if (!message("Save State", (core->saveStates.checkState() == STATE_FILE_FAIL) ? "Saving and "
                     "loading states is dangerous and can lead to data loss.\nStates are also not guaranteed to "
@@ -1439,7 +1445,7 @@ void ConsoleUI::pauseMenu() {
                 startCore();
                 return;
 
-            case 3: { // Load State
+            case 4: { // Load State
                 // Show a confirmation message, or an error if something went wrong
                 bool error = true;
                 std::string title, text;
@@ -1478,7 +1484,7 @@ void ConsoleUI::pauseMenu() {
                 return;
             }
 
-            case 4: // Change Save Type
+            case 5: // Change Save Type
                 // Open the save type menu and restart if the save changed
                 if (saveTypeMenu()) {
                     if (createCore()) startCore();
@@ -1487,18 +1493,8 @@ void ConsoleUI::pauseMenu() {
                 }
                 break;
 
-            case 5: // Settings
-                // Open the settings menu
-                settingsMenu();
-                break;
-
-            case 6: // File Browser
-                // Open the file browser and close the pause menu, unless going back to it
-                if (fileBrowser()) return;
-                break;
-
 #if defined(PROFILE_EMU) || defined(PROFILE_SAMPLER)
-            case 7: { // 3D Benchmark
+            case 6: { // 3D Benchmark
                 // Re-render the paused frame's 3D with one thread on core 1, which nothing else uses while paused
                 // With the sampler, it records where rendering spends its time, shown under CPU Samples afterwards
                 struct Bench { Core *core; double ms; uint64_t px[PX_COUNT]; } bench = { core };
@@ -1576,6 +1572,10 @@ void ConsoleUI::pauseMenu() {
         else if (pressed & defaultKeys[INPUT_START]) {
             // Close the pause menu with the emulator stopped, which ends the main loop
             return;
+        }
+        else if (pressed & defaultKeys[INPUT_X]) {
+            // Open the settings menu
+            settingsMenu();
         }
     }
 }
