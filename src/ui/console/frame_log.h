@@ -31,4 +31,10 @@ namespace FrameLog {
     void uiFrame(uint32_t frameId);
     void audioBuffer(uint32_t dry, uint32_t fill);
     void write(const char *path);
+#ifdef AUDIO_CAPTURE
+    void audioProduced(uint32_t sample);
+    void audioOutput(const uint32_t *samples, int count);
+    void mark();
+    bool shouldDeferWrite();
+#endif
 }

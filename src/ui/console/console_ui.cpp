@@ -55,6 +55,9 @@ static OSThread *emuThread = nullptr;
 #ifdef FRAME_LOG
 #include "frame_log.h"
 #endif
+#ifdef AUDIO_CAPTURE
+static uint32_t audioMarks = 0;
+#endif
 
 #define SCALEH(x, h) (((x) * (h)) / 720)
 #define SCALE(x) SCALEH(x, uiHeight)
@@ -214,6 +217,9 @@ void ConsoleUI::fillAudioBuffer(uint32_t *buffer, int count, int rate) {
     lastSample = original[scaled - 1];
     for (int i = 0; i < count; i++)
         buffer[i] = original[i * scaled / count];
+#ifdef AUDIO_CAPTURE
+    FrameLog::audioOutput(buffer, count);
+#endif
     delete[] original;
 }
 
@@ -526,6 +532,11 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
             }
         }
 #endif
+#ifdef AUDIO_CAPTURE
+        // Show how many times the audio capture was marked
+        if (audioMarks) drawString("Marks: " + std::to_string(audioMarks), SCALE(5), SCALE(48), SCALE(36));
+#endif
+
 #ifdef FRAME_CAPTURE
         // Show how frame capture is going
         static const char *captureStates[] = { "Frame capture: hold ZL + ZR + Y", "Capturing frames...",
@@ -651,6 +662,17 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         // Scan for key input
         uint32_t pressed = getInputPress();
         uint32_t held = getInputHeld();
+#ifdef AUDIO_CAPTURE
+        // Mark the audio capture when L, R and Y are pressed, which are ZL, ZR and Y on the GamePad by default
+        uint32_t markCombo = keyBinds[INPUT_L] | keyBinds[INPUT_R] | keyBinds[INPUT_Y];
+        static bool markHeld = false;
+        if ((held & markCombo) == markCombo && !markHeld) {
+            FrameLog::mark();
+            audioMarks++;
+        }
+        markHeld = (held & markCombo) == markCombo;
+#endif
+
 #ifdef FRAME_CAPTURE
         // Start capturing frames when L, R and Y are held, which are ZL, ZR and Y on the GamePad by default
         uint32_t combo = keyBinds[INPUT_L] | keyBinds[INPUT_R] | keyBinds[INPUT_Y];

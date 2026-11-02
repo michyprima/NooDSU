@@ -24,6 +24,9 @@
 
 #include "../core.h"
 #include "../emu_profile.h"
+#ifdef AUDIO_CAPTURE
+#include "../../ui/console/frame_log.h"
+#endif
 
 const int Spu::indexTable[] = {
     -1, -1, -1, -1, 2, 4, 6, 8
@@ -737,6 +740,9 @@ void Spu::runSample() {
 }
 
 void Spu::pushSample(int16_t sampleLeft, int16_t sampleRight) {
+#ifdef AUDIO_CAPTURE
+    FrameLog::audioProduced((sampleRight << 16) | (sampleLeft & 0xFFFF));
+#endif
     // When syncing to the display, add the samples to the ring buffer, dropping them if it's full
     if (Settings::syncToDisplay && Settings::fpsLimiter) {
         uint32_t head = ringHead.load(std::memory_order_relaxed), tail = ringTail.load(std::memory_order_acquire);

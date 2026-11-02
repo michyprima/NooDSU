@@ -1194,6 +1194,9 @@ int logFrames(int argc, const char **argv) {
     while (true) {
         OSSleepTicks(OSMillisecondsToTicks(2000));
         if (releaseRequested.load() || uiParked || uiDone) continue;
+#ifdef AUDIO_CAPTURE
+        if (FrameLog::shouldDeferWrite()) continue;
+#endif
         std::lock_guard<std::recursive_mutex> guard(fileLock());
         FrameLog::write(path.c_str());
     }

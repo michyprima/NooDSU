@@ -14,6 +14,8 @@
 #   frametime    Heartbeat, plus where the emulator thread spends each frame, listing every slow frame, and samples
 #                of where its core was during slow frames in trace.bin
 #   framelog     The time of every emulator and UI frame in framelog.bin, cheap enough to measure dropped frames
+#   audiocap     framelog, plus the audio the emulator made and the audio played in audio-produced.pcm and
+#                audio-output.pcm; press ZL + ZR + Y to mark when you hear something
 #   romload      How long loading the ROM into RAM took, in romload.txt
 #   frameart     How long drawing the screen frames took, in frameart.txt
 set -e
@@ -21,7 +23,7 @@ cd "$(dirname "$0")"
 export DEVKITPRO=${DEVKITPRO:-/opt/devkitpro} DEVKITPPC=${DEVKITPPC:-/opt/devkitpro/devkitPPC}
 BASE='-g -Ofast -fno-allow-store-data-races -flto -ffunction-sections -DESPRESSO -mcpu=750 -meabi -mhard-float $(INCLUDE) -D__WIIU__ -D__WUT__ -DENDIAN_BIG -DNO_FDOPEN -DLOG_LEVEL=0'
 
-[ $# -gt 0 ] || { sed -n '2,18p' "$0"; exit 1; }
+[ $# -gt 0 ] || { sed -n '2,20p' "$0"; exit 1; }
 for variant in "$@"; do
     case $variant in
         heartbeat) flags='-DHEARTBEAT'; name=noodsu-hb; title='NooDS U Heartbeat' ;;
@@ -35,6 +37,7 @@ for variant in "$@"; do
         drcdebug) flags='-DDRC_DEBUG'; name=noodsu-drcdebug; title='NooDS U GamePad Debug' ;;
         frametime) flags='-DHEARTBEAT -DPROFILE_EMU'; name=noodsu-frametime; title='NooDS U Frame Times' ;;
         framelog) flags='-DFRAME_LOG'; name=noodsu-framelog; title='NooDS U Frame Log' ;;
+        audiocap) flags='-DFRAME_LOG -DAUDIO_CAPTURE'; name=noodsu-audiocap; title='NooDS U Audio Capture' ;;
         romload) flags='-DROM_LOAD_TEST'; name=noodsu-romload; title='NooDS U ROM Load' ;;
         frameart) flags='-DFRAME_ART_TEST'; name=noodsu-frameart; title='NooDS U Frame Art' ;;
         *) echo "Unknown variant: $variant"; exit 1 ;;
