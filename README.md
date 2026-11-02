@@ -13,6 +13,11 @@ too, though few have been tested so far.
 It's licensed under the GPL version 3, like NooDS.
 
 <details>
+<summary>Screenshot</summary>
+<p align="center"><img src="screenshots/pokemon-black.webp" width="640" alt="Pokémon Black running on a TV and the Wii U GamePad, with the Screen Frame setting on"></p>
+</details>
+
+<details>
 <summary>What's new compared to NooDS</summary>
 
 #### Speed
@@ -63,6 +68,14 @@ It's licensed under the GPL version 3, like NooDS.
 - Automatic GitHub releases from version tags
 
 </details>
+
+### Alpha software
+NooDS U is alpha software, especially the JIT. Expect some games to hang, crash or misbehave.
+
+If something hangs or isn't working, try changing settings before reporting it. Turning off JIT is the first thing to
+try, followed by Fast CPU Timing, Sync to Display and the GPU 3D Renderer.
+
+When reporting a bug, include the game's name and the ROM's hash (SHA-1 or MD5), plus which settings you tried.
 
 ### Usage
 Put `noodsu.wuhb` in `sd:/wiiu/apps/` on your SD card. Settings, states and cheats are kept in `sd:/wiiu/apps/noodsu/`, and saves next to the ROM.
