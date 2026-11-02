@@ -466,13 +466,11 @@ namespace ScreenFrame {
                 if (left) {
                     drawSpeaker(canvas, leftStart + leftRoom / 2, slot, leftU);
                     drawPad(canvas, base, leftStart + leftRoom / 2, y0 + 30 * leftU, leftU);
-                    drawPad(canvas, base, leftStart + leftRoom / 2, y1 - 22 * leftU, leftU);
                     if (hasHinge) drawStatusIcons(canvas, ink, hingeLeft * 0.28f, y1 - 13 * leftU, leftU);
                 }
                 if (right) {
                     drawSpeaker(canvas, rightStart + rightRoom / 2, slot, rightU);
                     drawPad(canvas, base, rightStart + rightRoom / 2, y0 + 30 * rightU, rightU);
-                    drawPad(canvas, base, rightStart + rightRoom / 2, y1 - 22 * rightU, rightU);
                 }
             }
             else {
