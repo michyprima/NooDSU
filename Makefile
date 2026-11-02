@@ -22,12 +22,16 @@ LDFLAGS = -g $(ARCH) $(RPXSPECS) -Wl,-Map,$(notdir $*.map)
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
 
+# The tag of this commit if it has one, otherwise its short hash, marked if tracked files have uncommitted changes
+VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo unknown)$(shell \
+    git diff --quiet HEAD 2>/dev/null; [ $$? -eq 1 ] && echo -dev)
+
 export LD := $(CXX)
 export OUTPUT := $(CURDIR)/$(NAME)
 export DEPSDIR := $(CURDIR)/$(BUILD)
 export LIBPATHS := $(foreach dir,$(INCS),-L$(dir)/lib)
 export VPATH := $(foreach dir,$(SRCS),$(CURDIR)/$(dir)) $(foreach dir,$(DATA),$(CURDIR)/$(dir))
-export INCLUDE := $(foreach dir,$(SRCS),-I$(CURDIR)/$(dir)) $(foreach dir,$(INCS),-I$(dir)/include)
+export INCLUDE := $(foreach dir,$(SRCS),-I$(CURDIR)/$(dir)) $(foreach dir,$(INCS),-I$(dir)/include) -I$(CURDIR)/$(BUILD)
 
 CPPFILES := $(foreach dir,$(SRCS),$(notdir $(wildcard $(dir)/*.cpp)))
 BMPFILES := $(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.bmp)))
@@ -39,6 +43,8 @@ all: $(BUILD)
 
 $(BUILD):
 	mkdir -p $@
+	@echo '#define NOODSU_VERSION "$(VERSION)"' > $@/version.tmp
+	@cmp -s $@/version.tmp $@/version.h && rm $@/version.tmp || mv $@/version.tmp $@/version.h
 	$(MAKE) -C $(BUILD) -f $(CURDIR)/Makefile
 
 build-shader:

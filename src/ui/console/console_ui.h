@@ -65,6 +65,7 @@ struct MenuItem {
 
     MenuItem(std::string name, std::string setting = "", void *iconTex = nullptr, uint8_t iconSize = 0):
         name(name), setting(setting), iconTex(iconTex), iconSize(iconSize), header(false) {}
+    MenuItem(std::string name, const char *setting): MenuItem(name, std::string(setting)) {} // Not the header one
     MenuItem(std::string name, bool header):
         name(name), setting(""), iconTex(nullptr), iconSize(0), header(header) {}
     bool operator<(const MenuItem &item) { return (name < item.name); }
@@ -164,7 +165,7 @@ private:
     static int stringWidth(std::string &string);
 
     static uint32_t menu(std::string title, std::vector<MenuItem> &items,
-        int &index, std::string actionX = "", std::string actionPlus = "");
+        int &index, std::string actionX = "", std::string actionPlus = "", bool actionOk = true);
     static uint32_t message(std::string title, std::string text, int type = 0);
 
 #ifdef JIT_SELFTEST
@@ -172,6 +173,7 @@ private:
 #endif
     static void settingsMenu();
     static void controlsMenu();
+    static void aboutMenu();
     static void pauseMenu();
     static bool saveTypeMenu();
 

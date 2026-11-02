@@ -27,6 +27,7 @@
 #include <sys/stat.h>
 
 #include "console_ui.h"
+#include "version.h"
 #include <coreinit/core.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
@@ -786,16 +787,17 @@ int ConsoleUI::setPath(std::string path) {
 }
 
 uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
-    int &index, std::string actionX, std::string actionPlus) {
+    int &index, std::string actionX, std::string actionPlus, bool actionOk) {
     // Define the action strings
     if (actionPlus != "") actionPlus = "\x83 " + actionPlus + "     ";
     if (actionX != "") actionX = "\x82 " + actionX + "     ";
-    std::string actionB = "\x81 Back     ";
-    std::string actionA = "\x80 OK";
+    std::string actionB = actionOk ? "\x81 Back     " : "\x81 Back";
+    std::string actionA = actionOk ? "\x80 OK" : "";
 
-    // Calculate touch bounds for the action buttons
+    // Calculate touch bounds for the action buttons, with Back reaching the edge if it's the last one
     int boundsAB = 1218 - (stringWidth(actionA) + 2.5f * charWidths[0]) * 34 / 48;
     int boundsBX = boundsAB - stringWidth(actionB) * 34 / 48;
+    if (!actionOk) boundsAB = 1280;
     int boundsXPlus = boundsBX - stringWidth(actionX) * 34 / 48;
     int boundsPlus = boundsXPlus - stringWidth(actionPlus) * 34 / 48;
 
@@ -815,12 +817,18 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
     index += items.empty() ? 0 : items[index].header;
     int min = items.empty() ? 0 : items[0].header;
 
+    // A list starting with a header starts right under the title, since a header has room above its text, which makes
+    // room for another row if they're slightly shorter, ending as far above the bottom bar as other lists do
+    bool fill = !items.empty() && items[0].header;
+    const int top = fill ? 88 : 124, rows = fill ? 8 : 7, rowHeight = fill ? 66 : 70;
+
     while (true) {
         // Draw the borders
         startFrame(palette[0]);
         drawString(title, SCALE(72), SCALE(30), SCALE(42), palette[1]);
         drawRectangle(SCALE(30), SCALE(88), SCALE(1220), lineHeight, palette[1]);
         drawRectangle(SCALE(30), SCALE(648), SCALE(1220), lineHeight, palette[1]);
+        drawString(NOODSU_VERSION, SCALE(72), SCALE(667), SCALE(34), palette[1]);
         drawString(actionPlus + actionX + actionB + actionA, SCALE(1218), SCALE(667), SCALE(34), palette[1], true);
 
         // Scan for key input
@@ -889,7 +897,10 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
 
             // Scroll up or down at a fixed time interval, skipping headers
             if (scroll && elapsed.count() > 0.1f) {
-                index += (1 + (items.empty() ? 0 : items[index].header)) * (upHeld ? -1 : 1);
+                int step = upHeld ? -1 : 1;
+                int next = index + step;
+                if (!items.empty() && items[next].header) next += step;
+                if (next >= min && next < (int)items.size()) index = next;
                 timeHeld = std::chrono::steady_clock::now();
             }
         }
@@ -910,15 +921,15 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
             // Handle touch scrolling
             if (touchScroll) {
                 // Scroll the list based on how far it's been dragged
-                int newIndex = touchIndex + (touchStart.y - touch.y) / 70;
-                if (items.size() > 7 && newIndex != touchIndex)
-                    index = std::max(3, std::min<int>(items.size() - 4, newIndex));
+                int newIndex = touchIndex + (touchStart.y - touch.y) / rowHeight;
+                if ((int)items.size() > rows && newIndex != touchIndex)
+                    index = std::max(3, std::min<int>(items.size() - rows + 3, newIndex));
             }
             else if (touch.x > touchStart.x + 25 || touch.x < touchStart.x - 25
                 || touch.y > touchStart.y + 25 || touch.y < touchStart.y - 25) {
                 // Start scrolling from the current index if a touch is dragged
                 touchScroll = true;
-                touchIndex = std::max(3, std::min<int>(items.size() - 4, index));
+                touchIndex = std::max(3, std::min<int>(items.size() - rows + 3, index));
             }
         }
         else { // Released
@@ -934,24 +945,24 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
             touchStarted = false;
         }
 
-        // Draw the first item separator
-        if (items.size() > 0)
-            drawRectangle(SCALE(90), SCALE(124), SCALE(1100), lineHeight, palette[2]);
+        // Draw the first item separator, which a list starting with a header doesn't need
+        if (items.size() > 0 && !items[0].header)
+            drawRectangle(SCALE(90), SCALE(top), SCALE(1100), lineHeight, palette[2]);
 
         // Draw the list items
-        int size = std::min<int>(7, items.size());
+        int size = std::min<int>(rows, items.size());
         for (int i = 0, offset; i < size; i++) {
             // Determine the scroll offset
-            if (index < 4 || items.size() <= 7)
+            if (index < 4 || (int)items.size() <= rows)
                 offset = i;
-            else if (index > items.size() - 4)
-                offset = items.size() - 7 + i;
+            else if (index > (int)items.size() - rows + 3)
+                offset = items.size() - rows + i;
             else
                 offset = i + index - 3;
 
             // Simulate an A press on a selection if it was tapped
             if (!items[offset].header && (!touchStarted && !touchScroll && touchStart.x >= 90 &&
-                touchStart.x < 1190 && touchStart.y >= 124 + i * 70 && touchStart.y < 194 + i * 70)) {
+                touchStart.x < 1190 && touchStart.y >= top + i * rowHeight && touchStart.y < top + (i + 1) * rowHeight)) {
                 index = offset;
                 return defaultKeys[INPUT_A];
             }
@@ -959,35 +970,35 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
             // Draw UI elements around the list items
             if (!touchMode && offset == index) {
                 // Draw a box behind the selected item if not in touch mode
-                drawRectangle(SCALE(90), SCALE(125 + i * 70), SCALE(1100), SCALE(69), palette[3]);
-                drawRectangle(SCALE(89), SCALE(121 + i * 70), SCALE(1103), SCALE(5), palette[4]);
-                drawRectangle(SCALE(89), SCALE(191 + i * 70), SCALE(1103), SCALE(5), palette[4]);
-                drawRectangle(SCALE(88), SCALE(122 + i * 70), SCALE(5), SCALE(73), palette[4]);
-                drawRectangle(SCALE(1188), SCALE(122 + i * 70), SCALE(5), SCALE(73), palette[4]);
+                drawRectangle(SCALE(90), SCALE(top + 1 + i * rowHeight), SCALE(1100), SCALE(rowHeight - 1), palette[3]);
+                drawRectangle(SCALE(89), SCALE(top - 3 + i * rowHeight), SCALE(1103), SCALE(5), palette[4]);
+                drawRectangle(SCALE(89), SCALE(top - 3 + (i + 1) * rowHeight), SCALE(1103), SCALE(5), palette[4]);
+                drawRectangle(SCALE(88), SCALE(top - 2 + i * rowHeight), SCALE(5), SCALE(rowHeight + 3), palette[4]);
+                drawRectangle(SCALE(1188), SCALE(top - 2 + i * rowHeight), SCALE(5), SCALE(rowHeight + 3), palette[4]);
             }
             else {
                 // Draw separators between the items
-                drawRectangle(SCALE(90), SCALE(194 + i * 70), SCALE(1100), lineHeight, palette[2]);
+                drawRectangle(SCALE(90), SCALE(top + (i + 1) * rowHeight), SCALE(1100), lineHeight, palette[2]);
             }
 
             // Draw a header item's name and skip the rest
             if (items[offset].header) {
-                drawString(items[offset].name, SCALE(105), SCALE(160 + i * 70), SCALE(28), palette[6]);
+                drawString(items[offset].name, SCALE(105), SCALE(top + rowHeight - 34 + i * rowHeight), SCALE(28), palette[6]);
                 continue;
             }
 
             // Draw the current item's name
             int x = (items[offset].iconSize > 0) ? 184 : 105;
-            drawString(items[offset].name, SCALE(x), SCALE(140 + i * 70), SCALE(38), palette[1]);
+            drawString(items[offset].name, SCALE(x), SCALE(top + (rowHeight - 38) / 2 + i * rowHeight), SCALE(38), palette[1]);
 
             // Draw the current item's icon if it has one
             if (items[offset].iconSize > 0)
                 drawTexture(items[offset].iconTex, 0, 0, items[offset].iconSize,
-                    items[offset].iconSize, SCALE(105), SCALE(127 + i * 70), SCALE(64), SCALE(64));
+                    items[offset].iconSize, SCALE(105), SCALE(top + (rowHeight - 64) / 2 + i * rowHeight), SCALE(64), SCALE(64));
 
             // Draw the current item's setting if it has one
             if (items[offset].setting != "")
-                drawString(items[offset].setting, SCALE(1175), SCALE(143 + i * 70), SCALE(32), palette[5], true);
+                drawString(items[offset].setting, SCALE(1175), SCALE(top + (rowHeight - 32) / 2 + i * rowHeight), SCALE(32), palette[5], true);
         }
 
         // Finish drawing
@@ -1216,6 +1227,10 @@ void ConsoleUI::settingsMenu() {
         add("Integer Scale", ScreenLayout::integerScale, toggle);
         add("GBA Crop", ScreenLayout::gbaCrop, toggle);
 
+        header("About");
+        settings.push_back(MenuItem("About NooDSU"));
+        values.push_back({ nullptr, 0 });
+
         // Create the settings menu
         uint32_t pressed = menu("Settings", settings, index, "Controls");
 
@@ -1224,6 +1239,7 @@ void ConsoleUI::settingsMenu() {
             // Change the chosen setting to its next value
             int *value = values[index].first;
             if (value) *value = (*value + 1) % values[index].second;
+            else aboutMenu();
 
             // Update the palette when changing themes
             palette = &themeColors[menuTheme * 7];
@@ -1239,6 +1255,39 @@ void ConsoleUI::settingsMenu() {
             controlsMenu();
         }
     }
+}
+
+void ConsoleUI::aboutMenu() {
+    // List who made this and what it's based on, staying until backing out
+    std::vector<MenuItem> items = {
+        MenuItem("NooDSU", true),
+        MenuItem("Version", NOODSU_VERSION),
+        MenuItem("Based on", "NooDS by Hydr8gon"),
+        MenuItem("License", "GNU GPL v3 or later"),
+        MenuItem("Authors", true),
+        MenuItem("michyprima", "NooDSU"),
+        MenuItem("Hydr8gon", "NooDS"),
+        MenuItem("NooDS Contributors", true),
+        MenuItem("Nadia Holmquist Pedersen"),
+        MenuItem("Kaua Azevedo"),
+        MenuItem("Adrian Siekierka"),
+        MenuItem("Belle Aerni"),
+        MenuItem("Gran PC"),
+        MenuItem("Matteo Rizzo"),
+        MenuItem("Built With", true),
+        MenuItem("Wii U toolchain", "devkitPro and wut"),
+        MenuItem("Audio", "SDL2"),
+        MenuItem("References", true),
+        MenuItem("GBATEK", "DS and GBA hardware"),
+        MenuItem("melonDS Blog", "3D quirks"),
+        MenuItem("DraStic BIOS", "DS HLE BIOS"),
+        MenuItem("Cult of GBA BIOS", "GBA HLE BIOS"),
+        MenuItem("Links", true),
+        MenuItem("NooDSU", "github.com/michyprima/NooDSU"),
+        MenuItem("NooDS", "github.com/Hydr8gon/NooDS")
+    };
+    int index = 0;
+    while (!(menu("About", items, index, "", "", false) & defaultKeys[INPUT_B]));
 }
 
 void ConsoleUI::controlsMenu() {
