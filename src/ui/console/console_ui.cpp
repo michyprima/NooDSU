@@ -208,8 +208,8 @@ void ConsoleUI::fillAudioBuffer(uint32_t *buffer, int count, int rate) {
     FrameLog::audioBuffer(core->spu.ringDry, core->spu.ringFill);
 #endif
     lastSample = original[scaled - 1];
-    for (int i = 0; i < 1024; i++)
-        buffer[i] = original[i * scaled / 1024];
+    for (int i = 0; i < count; i++)
+        buffer[i] = original[i * scaled / count];
     delete[] original;
 }
 

@@ -93,7 +93,7 @@ private:
     std::atomic<bool> ready;
 
     // When syncing to the display, samples go through a ring buffer instead, which output reads at a rate adjusted to
-    // keep it about 2 output buffers full, since the emulator then runs at the display's rate instead of the DS's
+    // keep it about 62 ms full, since the emulator then runs at the display's rate instead of the DS's
     static const uint32_t RING_SIZE = 16384;
     uint32_t ring[RING_SIZE] = {};
     std::atomic<uint32_t> ringHead{0}, ringTail{0};

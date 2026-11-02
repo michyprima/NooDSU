@@ -918,7 +918,8 @@ int runUi(int argc, const char **argv) {
     AudioSettings.freq = 32768;
     AudioSettings.format = AUDIO_S16MSB;
     AudioSettings.channels = 2;
-    AudioSettings.samples = 1024;
+    // Small buffers mean the emulator can fall further behind before output runs out of samples, like while loading
+    AudioSettings.samples = 512;
     AudioSettings.callback = &outputAudio;
     AudioSettings.userdata = nullptr;
     SDL_AudioDeviceID id = SDL_OpenAudioDevice(nullptr, 0, &AudioSettings, &ObtainedSettings, 0);
