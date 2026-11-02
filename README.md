@@ -5,8 +5,63 @@ A DS and GBA emulator for the Wii U.
 
 ### Overview
 NooDSU is a Wii U-only fork of [NooDS](https://github.com/Hydr8gon/NooDS) by Hydr8gon, focused on running well on real
-hardware. It adds a JIT for the Wii U's CPU, a 3D renderer that uses the Wii U's GPU, and faster threading and ROM loading.
+hardware.
+
+Pokémon Black went from about 20 fps to 60 fps on a real Wii U, three times as fast. Most games should see a large jump
+too, though few have been tested so far.
+
 It's licensed under the GPL version 3, like NooDS.
+
+<details>
+<summary>What's new compared to NooDS</summary>
+
+#### Speed
+- JIT for both the ARM9 and ARM7, generating native PowerPC code
+- GPU 3D renderer that draws with the Wii U's GPU instead of the CPU
+- The emulator gets its own CPU core, with each 2D engine and 3D geometry on separate threads
+- Fast CPU Timing and Fast 2D Threads options, which trade a little accuracy for speed
+- Sync to Display, which runs one emulated frame per display refresh for smoother motion
+- Smoother audio while games load, with smaller output buffers
+- Faster memory access, 2D drawing, display capture, audio mixing, geometry processing and VRAM switching
+- Screen upscaling and ghosting done on the GPU
+
+#### GPU 3D renderer features
+- High-resolution 3D
+- DS-style anti-aliasing, with an optional multisampling mode
+- Edge marking, fog, shadows, toon and highlight shading, wireframe, alpha test and rear-plane bitmaps
+
+#### ROM loading
+- "Keep ROM in RAM" can load the whole ROM first, with progress and cancel, or stream it in the background
+- Loading a whole ROM is over twice as fast (a 256 MB ROM went from 28 to 13 seconds)
+- Restarting reuses the ROM already in memory, so there's no second load
+- Reads from the SD card are cached for ROMs that aren't kept in RAM
+
+#### Wii U support
+- TV + GamePad screen arrangements, with the top screen on the TV and the bottom one on the GamePad
+- The GamePad can be turned on and off during a game
+- Pro Controller and Classic Controller support
+- HOME menu support
+
+#### Interface
+- Simpler settings menu, with the fast options on by default
+- File browser: set a default folder (Y), and open a ROM's launch options (−) to run it with a chosen save type
+- Pause menu rearranged, and Restart asks for confirmation
+- Version shown in the menus, and an About screen
+- A new icon
+
+#### Fixes
+- 3D alpha test and rear-plane bitmaps, which weren't emulated before, now work in the software renderer too
+- Games no longer sometimes freeze after loading a state
+- Fixed several rare freezes and GPU hangs, including a stall caused by Aroma's file redirection
+- Bitmap mode homebrew no longer shows a single stretched pixel
+- A stale object window on the first frame after the display turns back on
+
+#### For developers
+- Debug build variants for profiling, frame timing and diagnosing freezes (`build-wiiu-debug.sh`)
+- Hang reports written to `hang.txt`
+- Automatic GitHub releases from version tags
+
+</details>
 
 ### Usage
 Put `noodsu.wuhb` in `sd:/wiiu/apps/` on your SD card. Settings, states and cheats are kept in `sd:/wiiu/apps/noodsu/`, and saves next to the ROM.
