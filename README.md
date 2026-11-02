@@ -12,10 +12,7 @@ too, though few have been tested so far.
 
 It's licensed under the GPL version 3, like NooDS.
 
-<details>
-<summary>Screenshot</summary>
 <p align="center"><img src="screenshots/pokemon-black.webp" width="640" alt="Pokémon Black running on a TV and the Wii U GamePad, with the Screen Frame setting on"></p>
-</details>
 
 <details>
 <summary>What's new compared to NooDS</summary>
