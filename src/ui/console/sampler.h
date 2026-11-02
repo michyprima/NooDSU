@@ -27,7 +27,7 @@
 
 namespace Sampler {
     // The pause menu item comes after the 3D benchmark, which sampler builds always include
-    static const int MENU_INDEX = 7;
+    static const int MENU_INDEX = 6;
 
     void start();
     void stop();

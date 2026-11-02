@@ -34,6 +34,8 @@
 std::atomic<int> Cartridge::loadPercent{-1};
 std::atomic<bool> Cartridge::cancelLoad{false};
 Cartridge::KeptRom Cartridge::keptRoms[2];
+std::string Cartridge::launchSavePath;
+int Cartridge::launchSaveSize = -1;
 
 static uint8_t *allocRom(size_t size) {
     // Reading from file into memory that's aligned for it is much faster on Wii U
@@ -93,7 +95,12 @@ bool Cartridge::setRom(std::string romPath, int romFd, int saveFd, int stateFd, 
     if (saveFd == -1) this->savePath = savePath; else this->saveFd = saveFd;
     (stateFd == -1) ? core->saveStates.setPath(statePath, gba) : core->saveStates.setFd(stateFd, gba);
     if (!gba) (cheatFd == -1) ? core->actionReplay.setPath(cheatPath) : core->actionReplay.setFd(cheatFd);
-    return loadRom();
+    if (!loadRom()) return false;
+
+    // Apply a save size chosen for this launch, now that the ROM is loaded
+    if (launchSaveSize >= 0 && romPath == launchSavePath)
+        resizeSave(launchSaveSize);
+    return true;
 }
 
 bool Cartridge::loadRom() {

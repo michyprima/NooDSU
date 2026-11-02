@@ -793,9 +793,9 @@ int ConsoleUI::setPath(std::string path) {
 }
 
 uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
-    int &index, std::string actionX, std::string actionPlus, bool actionOk, std::string actionMinus) {
+    int &index, std::string actionX, std::string actionPlus, bool actionOk, std::string actionY, uint32_t hiddenKeys) {
     // Define the action strings
-    if (actionMinus != "") actionMinus = "\x7F " + actionMinus + "     ";
+    if (actionY != "") actionY = "\x7F " + actionY + "     ";
     if (actionPlus != "") actionPlus = "\x83 " + actionPlus + "     ";
     if (actionX != "") actionX = "\x82 " + actionX + "     ";
     std::string actionB = actionOk ? "\x81 Back     " : "\x81 Back";
@@ -805,9 +805,9 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
     int boundsAB = 1218 - (stringWidth(actionA) + 2.5f * charWidths[0]) * 34 / 48;
     int boundsBX = boundsAB - stringWidth(actionB) * 34 / 48;
     if (!actionOk) boundsAB = 1280;
-    int boundsXPlus = boundsBX - stringWidth(actionX) * 34 / 48;
-    int boundsPlus = boundsXPlus - stringWidth(actionPlus) * 34 / 48;
-    int boundsMinus = boundsPlus - stringWidth(actionMinus) * 34 / 48;
+    int boundsX = boundsBX - stringWidth(actionX) * 34 / 48;
+    int boundsY = boundsX - stringWidth(actionY) * 34 / 48;
+    int boundsPlus = boundsY - stringWidth(actionPlus) * 34 / 48;
 
     // Define variables for button input
     bool upHeld = false;
@@ -837,7 +837,7 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
         drawRectangle(SCALE(30), SCALE(88), SCALE(1220), lineHeight, palette[1]);
         drawRectangle(SCALE(30), SCALE(648), SCALE(1220), lineHeight, palette[1]);
         drawString(NOODSU_VERSION, SCALE(72), SCALE(667), SCALE(34), palette[1]);
-        drawString(actionMinus + actionPlus + actionX + actionB + actionA, SCALE(1218), SCALE(667), SCALE(34), palette[1], true);
+        drawString(actionPlus + actionY + actionX + actionB + actionA, SCALE(1218), SCALE(667), SCALE(34), palette[1], true);
 
         // Scan for key input
         uint32_t pressed = getInputPress();
@@ -874,7 +874,7 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
         // Return button presses so they can be handled externally
         if (((pressed & defaultKeys[INPUT_A]) && !touchMode) || (pressed & defaultKeys[INPUT_B]) || (actionX != ""
             && (pressed & defaultKeys[INPUT_X])) || (actionPlus != "" && (pressed & defaultKeys[INPUT_START])) ||
-            (actionMinus != "" && (pressed & defaultKeys[INPUT_SELECT]))) {
+            (actionY != "" && (pressed & defaultKeys[INPUT_Y])) || (pressed & hiddenKeys)) {
             touchMode = false;
             return pressed;
         }
@@ -946,12 +946,12 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
             if (!touchScroll && touchStart.y >= 650) {
                 if (touchStart.x >= boundsBX && touchStart.x < boundsAB)
                     return defaultKeys[INPUT_B];
-                else if (touchStart.x >= boundsXPlus && touchStart.x < boundsBX)
+                else if (touchStart.x >= boundsX && touchStart.x < boundsBX)
                     return defaultKeys[INPUT_X];
-                else if (touchStart.x >= boundsPlus && touchStart.x < boundsXPlus)
+                else if (touchStart.x >= boundsY && touchStart.x < boundsX)
+                    return defaultKeys[INPUT_Y];
+                else if (touchStart.x >= boundsPlus && touchStart.x < boundsY)
                     return defaultKeys[INPUT_START];
-                else if (touchStart.x >= boundsMinus && touchStart.x < boundsPlus)
-                    return defaultKeys[INPUT_SELECT];
             }
             touchStarted = false;
         }
@@ -1130,17 +1130,34 @@ bool ConsoleUI::fileBrowser() {
         closedir(dir);
 
         // Create the file browser menu
-        uint32_t pressed = menu("NooDSU", files, index, "Settings", "Exit", true, "Set Default");
+        uint32_t pressed = menu("NooDSU", files, index, "Settings", "Exit", true,
+            "Set Default", defaultKeys[INPUT_SELECT]);
+
+        // Open the launch options of a selected ROM, and launch it if one was chosen
+        bool launch = (pressed & defaultKeys[INPUT_A]);
+        if ((pressed & defaultKeys[INPUT_SELECT]) && !files.empty()) {
+            const std::string &name = files[index].name;
+            bool gba = (name.find(".gba", name.length() - 4) != std::string::npos);
+            if (gba || name.find(".nds", name.length() - 4) != std::string::npos) {
+                int saveSize = launchOptions(gba);
+                if (saveSize >= 0) {
+                    Cartridge::setLaunchSave(curPath + "/" + name, saveSize);
+                    launch = true;
+                }
+            }
+        }
 
         // Handle menu input
-        if (pressed & defaultKeys[INPUT_A]) {
+        if (launch) {
             // Navigate to the selected file if any exist
             if (files.empty()) continue;
             curPath += "/" + files[index].name;
             index = 0;
 
-            // Try to set a ROM path
-            switch (setPath(curPath)) {
+            // Try to set a ROM path, with any launch option only applying to this attempt
+            int result = setPath(curPath);
+            Cartridge::setLaunchSave("", -1);
+            switch (result) {
             case 1: // ROM failed to load
                 // Remove the ROM from the path and continue browsing
                 curPath = curPath.substr(0, curPath.rfind("/"));
@@ -1172,7 +1189,7 @@ bool ConsoleUI::fileBrowser() {
             // Close the file browser
             return true;
         }
-        else if (pressed & defaultKeys[INPUT_SELECT]) {
+        else if (pressed & defaultKeys[INPUT_Y]) {
             // Start in this folder from now on
             defaultFolder = curPath;
             Settings::save();
@@ -1391,8 +1408,7 @@ void ConsoleUI::pauseMenu() {
         MenuItem("Restart"),
         MenuItem("File Browser"),
         MenuItem("Save State"),
-        MenuItem("Load State"),
-        MenuItem("Change Save Type")
+        MenuItem("Load State")
     };
 #if defined(PROFILE_EMU) || defined(PROFILE_SAMPLER)
     items.push_back(MenuItem("3D Benchmark"));
@@ -1484,17 +1500,8 @@ void ConsoleUI::pauseMenu() {
                 return;
             }
 
-            case 5: // Change Save Type
-                // Open the save type menu and restart if the save changed
-                if (saveTypeMenu()) {
-                    if (createCore()) startCore();
-                    else fileBrowser();
-                    return;
-                }
-                break;
-
 #if defined(PROFILE_EMU) || defined(PROFILE_SAMPLER)
-            case 6: { // 3D Benchmark
+            case 5: { // 3D Benchmark
                 // Re-render the paused frame's 3D with one thread on core 1, which nothing else uses while paused
                 // With the sampler, it records where rendering spends its time, shown under CPU Samples afterwards
                 struct Bench { Core *core; double ms; uint64_t px[PX_COUNT]; } bench = { core };
@@ -1580,75 +1587,51 @@ void ConsoleUI::pauseMenu() {
     }
 }
 
-bool ConsoleUI::saveTypeMenu() {
-    // Build a save type list for the current mode
+int ConsoleUI::launchOptions(bool gba) {
+    // Show what a ROM can be launched with, returning the save size to use, or -1 to go back without launching
+    std::vector<MenuItem> items = { MenuItem("Run with Save Type...") };
+    int index = 0;
+    while (true) {
+        uint32_t pressed = menu("Launch Options", items, index);
+        if (pressed & defaultKeys[INPUT_B])
+            return -1;
+        if (pressed & defaultKeys[INPUT_A]) {
+            int saveSize = saveTypeMenu(gba);
+            if (saveSize >= 0) return saveSize;
+        }
+    }
+}
+
+int ConsoleUI::saveTypeMenu(bool gba) {
+    // Build a save type list for the ROM's system
+    static const std::vector<std::pair<const char*, int>> gbaTypes = {
+        { "None", 0x00000 }, { "EEPROM 0.5KB", 0x00200 }, { "EEPROM 8KB", 0x02000 },
+        { "SRAM 32KB", 0x08000 }, { "FLASH 64KB", 0x10000 }, { "FLASH 128KB", 0x20000 }
+    };
+    static const std::vector<std::pair<const char*, int>> ndsTypes = {
+        { "None", 0x000000 }, { "EEPROM 0.5KB", 0x000200 }, { "EEPROM 8KB", 0x002000 }, { "EEPROM 64KB", 0x010000 },
+        { "EEPROM 128KB", 0x020000 }, { "FRAM 32KB", 0x008000 }, { "FLASH 256KB", 0x040000 },
+        { "FLASH 512KB", 0x080000 }, { "FLASH 1024KB", 0x100000 }, { "FLASH 8192KB", 0x800000 }
+    };
+    const std::vector<std::pair<const char*, int>> &types = gba ? gbaTypes : ndsTypes;
     std::vector<MenuItem> items;
-    if (core->gbaMode) {
-        // Add list items for GBA save types
-        items.push_back(MenuItem("None"));
-        items.push_back(MenuItem("EEPROM 0.5KB"));
-        items.push_back(MenuItem("EEPROM 8KB"));
-        items.push_back(MenuItem("SRAM 32KB"));
-        items.push_back(MenuItem("FLASH 64KB"));
-        items.push_back(MenuItem("FLASH 128KB"));
-    }
-    else {
-        // Add list items for NDS save types
-        items.push_back(MenuItem("None"));
-        items.push_back(MenuItem("EEPROM 0.5KB"));
-        items.push_back(MenuItem("EEPROM 8KB"));
-        items.push_back(MenuItem("EEPROM 64KB"));
-        items.push_back(MenuItem("EEPROM 128KB"));
-        items.push_back(MenuItem("FRAM 32KB"));
-        items.push_back(MenuItem("FLASH 256KB"));
-        items.push_back(MenuItem("FLASH 512KB"));
-        items.push_back(MenuItem("FLASH 1024KB"));
-        items.push_back(MenuItem("FLASH 8192KB"));
-    }
+    for (size_t i = 0; i < types.size(); i++)
+        items.push_back(MenuItem(types[i].first));
 
     int index = 0;
     while (true) {
         // Create the save type menu
-        uint32_t pressed = menu("Change Save Type", items, index);
+        uint32_t pressed = menu("Save Type", items, index);
 
         // Handle menu input
         if (pressed & defaultKeys[INPUT_A]) {
-            // Confirm the change because doing this accidentally could be bad
-            if (!message("Changing Save Type", "Are you sure? This may result in data loss!", 1))
-                continue;
-
-            // Apply the change for the current mode
-            if (core->gbaMode) {
-                // Resize a GBA save file
-                switch (index) {
-                    case 0: core->cartridgeGba.resizeSave(0x00000); break; // None
-                    case 1: core->cartridgeGba.resizeSave(0x00200); break; // EEPROM 0.5KB
-                    case 2: core->cartridgeGba.resizeSave(0x02000); break; // EEPROM 8KB
-                    case 3: core->cartridgeGba.resizeSave(0x08000); break; // SRAM 32KB
-                    case 4: core->cartridgeGba.resizeSave(0x10000); break; // FLASH 64KB
-                    case 5: core->cartridgeGba.resizeSave(0x20000); break; // FLASH 128KB
-                }
-            }
-            else {
-                // Resize an NDS save file
-                switch (index) {
-                    case 0: core->cartridgeNds.resizeSave(0x000000); break; // None
-                    case 1: core->cartridgeNds.resizeSave(0x000200); break; // EEPROM 0.5KB
-                    case 2: core->cartridgeNds.resizeSave(0x002000); break; // EEPROM 8KB
-                    case 3: core->cartridgeNds.resizeSave(0x010000); break; // EEPROM 64KB
-                    case 4: core->cartridgeNds.resizeSave(0x020000); break; // EEPROM 128KB
-                    case 5: core->cartridgeNds.resizeSave(0x008000); break; // FRAM 32KB
-                    case 6: core->cartridgeNds.resizeSave(0x040000); break; // FLASH 256KB
-                    case 7: core->cartridgeNds.resizeSave(0x080000); break; // FLASH 512KB
-                    case 8: core->cartridgeNds.resizeSave(0x100000); break; // FLASH 1024KB
-                    case 9: core->cartridgeNds.resizeSave(0x800000); break; // FLASH 8192KB
-                }
-            }
-            return true;
+            // Confirm the change because doing this accidentally could be bad, since it resizes the save file for good
+            if (message("Changing Save Type", "Are you sure? This may result in data loss!", 1))
+                return types[index].second;
         }
         else if (pressed & defaultKeys[INPUT_B]) {
             // Close the save type menu
-            return false;
+            return -1;
         }
     }
 }

@@ -166,7 +166,7 @@ private:
 
     static uint32_t menu(std::string title, std::vector<MenuItem> &items,
         int &index, std::string actionX = "", std::string actionPlus = "", bool actionOk = true,
-        std::string actionMinus = "");
+        std::string actionY = "", uint32_t hiddenKeys = 0);
     static uint32_t message(std::string title, std::string text, int type = 0);
 
 #ifdef JIT_SELFTEST
@@ -176,7 +176,8 @@ private:
     static void controlsMenu();
     static void aboutMenu();
     static void pauseMenu();
-    static bool saveTypeMenu();
+    static int launchOptions(bool gba);
+    static int saveTypeMenu(bool gba);
 
     static bool createCore();
     static void runCore();

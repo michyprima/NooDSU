@@ -47,6 +47,9 @@ public:
     static std::atomic<int> loadPercent;
     static std::atomic<bool> cancelLoad; // Set to stop waiting for a ROM to fully load, which cancels creating the core
 
+    // Set the save size a ROM gets when it's next loaded, which resizes its save file for good; -1 for none
+    static void setLaunchSave(std::string path, int size) { launchSavePath = path; launchSaveSize = size; }
+
     // Free ROMs kept from a previous core, unless they're the ones about to be loaded
     static void dropKeptRoms(std::string ndsPath, std::string gbaPath);
 
@@ -97,6 +100,8 @@ private:
     };
 
     static KeptRom keptRoms[2];
+    static std::string launchSavePath;
+    static int launchSaveSize;
     static void freeKeptRom(KeptRom &kept);
 
     // Large chunks of a ROM file kept in memory, so that small streamed reads don't each go to the file
