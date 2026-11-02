@@ -145,7 +145,7 @@ void Spu::readRing(uint32_t *out, int count) {
     // Read samples from the ring buffer, interpolating between them, a little faster when it has more than about 62 ms
     // of samples and a little slower when it has less, by up to half a percent, which can't be heard
     uint32_t tail = ringTail.load(std::memory_order_relaxed), head = ringHead.load(std::memory_order_acquire);
-    float target = 2048, fill = float(head - tail) - ringPosition;
+    float target = RING_TARGET, fill = float(head - tail) - ringPosition;
 #ifdef FRAME_LOG
     ringFill = head - tail;
 #endif
@@ -176,6 +176,15 @@ void Spu::readRing(uint32_t *out, int count) {
     uint32_t advance = uint32_t(ringPosition);
     ringPosition -= advance;
     ringTail.store(tail + advance, std::memory_order_release);
+}
+
+bool Spu::ringLow() {
+    // Check if the ring needs filling faster than the display allows, starting when it's clearly low so that normal
+    // wobble doesn't trigger it, and stopping when it's back at its target
+    uint32_t fill = ringHead.load(std::memory_order_relaxed) - ringTail.load(std::memory_order_acquire);
+    if (fill < RING_TARGET * 3 / 4) ringCatchingUp = true;
+    else if (fill >= RING_TARGET) ringCatchingUp = false;
+    return ringCatchingUp;
 }
 
 uint32_t *Spu::getSamples(int count) {

@@ -2030,6 +2030,13 @@ void ConsoleUI::waitForDisplay() {
     // refreshes stop being reported
     if (!Settings::syncToDisplay || !Settings::fpsLimiter) return;
     std::unique_lock<std::mutex> lock(displayMutex);
+
+    // Don't wait if slow frames left the audio buffer low, so the emulator makes up the time instead of the buffer
+    // staying low for the next scene change
+    if (core->spu.ringLow()) {
+        displayTicks = 0;
+        return;
+    }
     displayCond.wait_for(lock, std::chrono::milliseconds(100), [] { return displayTicks > 0; });
     if (displayTicks > 0) displayTicks--;
 }
