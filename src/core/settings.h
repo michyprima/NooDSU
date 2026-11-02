@@ -57,6 +57,10 @@ public:
     static int gpuAntiAlias;
     static int gpuOverlap;
 
+    // The threaded settings only choose for the software renderer, since the GPU renderer's setup relies on the threads
+    static bool threads2D() { return threaded2D || hardware3D; }
+    static bool worker3D() { return (threaded3D & 0xF) || hardware3D; }
+
     static std::string gbaBiosPath;
     static std::string ndsBios9Path;
     static std::string ndsBios7Path;

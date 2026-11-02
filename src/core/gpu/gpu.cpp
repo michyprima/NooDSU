@@ -443,7 +443,7 @@ void Gpu::gbaScanline308() {
         core->gpu2D[0].reloadRegisters();
 
         // Start the 2D thread if enabled
-        if (Settings::threaded2D && frames == 0 && !thread) {
+        if (Settings::threads2D() && frames == 0 && !thread) {
             running.store(true);
             thread = new WorkerThread(&Gpu::drawGbaThreaded, this);
         }
@@ -707,7 +707,7 @@ void Gpu::scanline355() {
         // Engine A's thread has core 0 to itself, since it also does display captures and waits on 3D
         // Otherwise stop them, since they're kept between frames
         EP_START(start);
-        if (Settings::threaded2D && frames == 0) {
+        if (Settings::threads2D() && frames == 0) {
             if (!thread) {
                 running.store(true);
                 thread = new WorkerThread(WorkerThread::CORE_0, &Gpu::drawThreaded, this, 0);

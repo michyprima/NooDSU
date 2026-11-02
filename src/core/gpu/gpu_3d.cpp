@@ -596,7 +596,7 @@ void Gpu3D::runCommands() {
     struct GeomTimer { uint32_t start; ~GeomTimer() { EP_ADD(EP_GEOM, start); } } geomTimer = { geom };
 #endif
     // Execute commands on a worker thread if threaded 3D is enabled
-    if (!worker != !(Settings::threaded3D & 0xF))
+    if (!worker != !Settings::worker3D())
         worker ? stopWorker() : startWorker();
 
     // Run a batch of geometry commands

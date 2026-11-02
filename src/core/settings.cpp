@@ -22,11 +22,11 @@
 #include "file_lock.h"
 
 int Settings::directBoot = 1;
-int Settings::romInRam = 0;
+int Settings::romInRam = 1;
 int Settings::fpsLimiter = 1;
 int Settings::frameskip = 0;
 int Settings::threaded2D = 1;
-int Settings::threaded3D = 1;
+int Settings::threaded3D = 2;
 int Settings::highRes3D = 0;
 int Settings::screenGhost = 0;
 int Settings::emulateAudio = 1;
@@ -37,10 +37,10 @@ int Settings::cheatsFolder = 1;
 int Settings::screenFilter = 2;
 int Settings::dsiMode = 0;
 int Settings::arm7Hle = 0;
-int Settings::jit = 0;
-int Settings::fastTiming = 0;
-int Settings::hardware3D = 0;
-int Settings::fast2D = 0;
+int Settings::jit = 1;
+int Settings::fastTiming = 1;
+int Settings::hardware3D = 1;
+int Settings::fast2D = 1;
 int Settings::syncToDisplay = 1;
 int Settings::gpuAntiAlias = 0;
 int Settings::gpuOverlap = 1;

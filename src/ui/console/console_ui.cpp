@@ -290,9 +290,15 @@ void ConsoleUI::initialize(int width, int height, std::string root, std::string 
 
     // Load settings or set additional defaults
     if (!Settings::load(prefix)) {
-        ScreenLayout::screenArrangement = 2;
+        ScreenLayout::screenArrangement = 4;
         Settings::save();
     }
+
+    // Settings that aren't in the menu can't be left in a bad state by an old settings file
+    Settings::emulateAudio = 1;
+    Settings::audio16Bit = 1;
+    Settings::arm7Hle = 0;
+    Settings::gpuOverlap = 1;
 
     // Initialize some values
     palette = &themeColors[menuTheme * 7];
@@ -1173,58 +1179,57 @@ void ConsoleUI::settingsMenu() {
     const std::vector<std::string> filter = { "Nearest", "Upscaled", "Linear" };
     const std::vector<std::string> aspect = { "Default", "16:10", "16:9", "18:9" };
     const std::vector<std::string> antiAlias = { "DS-Style", "Multisample", "Off" };
-    const std::vector<std::string> romInRam = { "Off", "On", "Streaming" };
+    const std::vector<std::string> romIn = { "Off", "On", "Streaming" };
     if (Settings::gpuAntiAlias >= (int)antiAlias.size()) Settings::gpuAntiAlias = 0;
 
     int index = 0;
     while (true) {
-        // Create a list of settings and current values
-        std::vector<MenuItem> settings = {
-            MenuItem("General Settings", true),
-            MenuItem("Direct Boot", toggle[Settings::directBoot]),
-            MenuItem("Keep ROM in RAM", romInRam[Settings::romInRam % 3]),
-            MenuItem("FPS Limiter", toggle[Settings::fpsLimiter]),
-            MenuItem("Show FPS Counter", toggle[showFpsCounter]),
-            MenuItem("Menu Theme", theme[menuTheme]),
-            MenuItem("Graphics Settings", true),
-            MenuItem("Skip Frames", frames[Settings::frameskip]),
-            MenuItem("Threaded 2D", toggle[Settings::threaded2D]),
-            MenuItem("Threaded 3D", threads[Settings::threaded3D]),
-            MenuItem("High-Resolution 3D", toggle[Settings::highRes3D]),
-            MenuItem("Simulate Ghosting", toggle[Settings::screenGhost]),
-            MenuItem("Audio Settings", true),
-            MenuItem("Audio Emulation", toggle[Settings::emulateAudio]),
-            MenuItem("16-bit Audio Output", toggle[Settings::audio16Bit]),
-            MenuItem("Experimental Settings", true),
-            MenuItem("DSi Mode", toggle[Settings::dsiMode]),
-            MenuItem("ARM7 HLE", toggle[Settings::arm7Hle]),
-            MenuItem("Path Settings", true),
-            MenuItem("Separate Saves Folder", toggle[Settings::savesFolder]),
-            MenuItem("Separate States Folder", toggle[Settings::statesFolder]),
-            MenuItem("Separate Cheats Folder", toggle[Settings::cheatsFolder]),
-            MenuItem("Screen Layout", true),
-            MenuItem("Screen Position", position[ScreenLayout::screenPosition]),
-            MenuItem("Screen Rotation", rotation[ScreenLayout::screenRotation]),
-            MenuItem("Screen Arrangement", arrangement[ScreenLayout::screenArrangement]),
-            MenuItem("Screen Sizing", sizing[ScreenLayout::screenSizing]),
-            MenuItem("Screen Gap", gap[ScreenLayout::screenGap]),
-            MenuItem("Screen Filter", filter[Settings::screenFilter]),
-            MenuItem("Aspect Ratio", aspect[ScreenLayout::aspectRatio]),
-            MenuItem("Integer Scale", toggle[ScreenLayout::integerScale]),
-            MenuItem("GBA Crop", toggle[ScreenLayout::gbaCrop])
+        // Create a list of settings and current values, remembering what each one changes
+        std::vector<MenuItem> settings;
+        std::vector<std::pair<int*, int>> values;
+        auto header = [&](const char *name) {
+            settings.push_back(MenuItem(name, true));
+            values.push_back({ nullptr, 0 });
+        };
+        auto add = [&](const char *name, int &value, const std::vector<std::string> &choices) {
+            settings.push_back(MenuItem(name, choices[value % choices.size()]));
+            values.push_back({ &value, (int)choices.size() });
         };
 
-#ifdef __WIIU__
-        // Add Wii U settings at the end, so the indices of the others stay the same
-        settings.push_back(MenuItem("Wii U Settings", true));
-        settings.push_back(MenuItem("JIT (Experimental)", toggle[Settings::jit]));
-        settings.push_back(MenuItem("Fast CPU Timing (Experimental)", toggle[Settings::fastTiming]));
-        settings.push_back(MenuItem("GPU 3D Renderer (Experimental)", toggle[Settings::hardware3D]));
-        settings.push_back(MenuItem("Fast 2D Threads (Experimental)", toggle[Settings::fast2D]));
-        settings.push_back(MenuItem("GPU 3D Anti-Aliasing", antiAlias[Settings::gpuAntiAlias]));
-        settings.push_back(MenuItem("GPU 3D Overlap Building", toggle[Settings::gpuOverlap]));
-        settings.push_back(MenuItem("Sync to Display", toggle[Settings::syncToDisplay]));
-#endif
+        header("General Settings");
+        add("Direct Boot", Settings::directBoot, toggle);
+        add("Keep ROM in RAM", Settings::romInRam, romIn);
+        add("DSi Mode", Settings::dsiMode, toggle);
+        add("JIT", Settings::jit, toggle);
+        add("Fast CPU Timing", Settings::fastTiming, toggle);
+        add("FPS Limiter", Settings::fpsLimiter, toggle);
+        add("Sync to Display", Settings::syncToDisplay, toggle);
+        add("Show FPS Counter", showFpsCounter, toggle);
+        add("Menu Theme", menuTheme, theme);
+
+        header("Graphics Settings");
+        add("GPU 3D Renderer", Settings::hardware3D, toggle);
+        if (!Settings::hardware3D) {
+            // These only do something for the software renderer
+            add("Threaded 2D", Settings::threaded2D, toggle);
+            add("Threaded 3D", Settings::threaded3D, threads);
+        }
+        add("Fast 2D Threads", Settings::fast2D, toggle);
+        add("High-Resolution 3D", Settings::highRes3D, toggle);
+        add("GPU 3D Anti-Aliasing", Settings::gpuAntiAlias, antiAlias);
+        add("Skip Frames", Settings::frameskip, frames);
+        add("Simulate Ghosting", Settings::screenGhost, toggle);
+
+        header("Screen Layout");
+        add("Screen Position", ScreenLayout::screenPosition, position);
+        add("Screen Rotation", ScreenLayout::screenRotation, rotation);
+        add("Screen Arrangement", ScreenLayout::screenArrangement, arrangement);
+        add("Screen Sizing", ScreenLayout::screenSizing, sizing);
+        add("Screen Gap", ScreenLayout::screenGap, gap);
+        add("Screen Filter", Settings::screenFilter, filter);
+        add("Aspect Ratio", ScreenLayout::aspectRatio, aspect);
+        add("Integer Scale", ScreenLayout::integerScale, toggle);
+        add("GBA Crop", ScreenLayout::gbaCrop, toggle);
 
         // Create the settings menu
         uint32_t pressed = menu("Settings", settings, index, "Controls");
@@ -1232,46 +1237,11 @@ void ConsoleUI::settingsMenu() {
         // Handle menu input
         if (pressed & defaultKeys[INPUT_A]) {
             // Change the chosen setting to its next value
-            switch (index) {
-                case 1: Settings::directBoot = (Settings::directBoot + 1) % 2; break;
-                case 2: Settings::romInRam = (Settings::romInRam + 1) % 3; break;
-                case 3: Settings::fpsLimiter = (Settings::fpsLimiter + 1) % 2; break;
-                case 4: showFpsCounter = (showFpsCounter + 1) % 2; break;
-                case 7: Settings::frameskip = (Settings::frameskip + 1) % 6; break;
-                case 8: Settings::threaded2D = (Settings::threaded2D + 1) % 2; break;
-                case 9: Settings::threaded3D = (Settings::threaded3D + 1) % 3; break;
-                case 10: Settings::highRes3D = (Settings::highRes3D + 1) % 2; break;
-                case 11: Settings::screenGhost = (Settings::screenGhost + 1) % 2; break;
-                case 13: Settings::emulateAudio = (Settings::emulateAudio + 1) % 2; break;
-                case 14: Settings::audio16Bit = (Settings::audio16Bit + 1) % 2; break;
-                case 16: Settings::dsiMode = (Settings::dsiMode + 1) % 2; break;
-                case 17: Settings::arm7Hle = (Settings::arm7Hle + 1) % 2; break;
-                case 19: Settings::savesFolder = (Settings::savesFolder + 1) % 2; break;
-                case 20: Settings::statesFolder = (Settings::statesFolder + 1) % 2; break;
-                case 21: Settings::cheatsFolder = (Settings::cheatsFolder + 1) % 2; break;
-                case 23: ScreenLayout::screenPosition = (ScreenLayout::screenPosition + 1) % 5; break;
-                case 24: ScreenLayout::screenRotation = (ScreenLayout::screenRotation + 1) % 3; break;
-                case 25: ScreenLayout::screenArrangement = (ScreenLayout::screenArrangement + 1) % arrangement.size(); break;
-                case 26: ScreenLayout::screenSizing = (ScreenLayout::screenSizing + 1) % 3; break;
-                case 27: ScreenLayout::screenGap = (ScreenLayout::screenGap + 1) % 4; break;
-                case 28: Settings::screenFilter = (Settings::screenFilter + 1) % 3; break;
-                case 29: ScreenLayout::aspectRatio = (ScreenLayout::aspectRatio + 1) % 4; break;
-                case 30: ScreenLayout::integerScale = (ScreenLayout::integerScale + 1) % 2; break;
-                case 31: ScreenLayout::gbaCrop = (ScreenLayout::gbaCrop + 1) % 2; break;
-                case 33: Settings::jit = (Settings::jit + 1) % 2; break;
-                case 34: Settings::fastTiming = (Settings::fastTiming + 1) % 2; break;
-                case 35: Settings::hardware3D = (Settings::hardware3D + 1) % 2; break;
-                case 36: Settings::fast2D = (Settings::fast2D + 1) % 2; break;
-                case 37: Settings::gpuAntiAlias = (Settings::gpuAntiAlias + 1) % antiAlias.size(); break;
-                case 38: Settings::gpuOverlap = (Settings::gpuOverlap + 1) % 2; break;
-                case 39: Settings::syncToDisplay = (Settings::syncToDisplay + 1) % 2; break;
+            int *value = values[index].first;
+            if (value) *value = (*value + 1) % values[index].second;
 
-            case 5:
-                // Update the palette when changing themes
-                menuTheme = (menuTheme + 1) % 2;
-                palette = &themeColors[menuTheme * 7];
-                break;
-            }
+            // Update the palette when changing themes
+            palette = &themeColors[menuTheme * 7];
         }
         else if (pressed & defaultKeys[INPUT_B]) {
             // Close the settings menu
@@ -1630,10 +1600,12 @@ void ConsoleUI::jitSelfTest() {
     // The user's settings are restored afterwards, so they aren't saved with the test values
     // The test uses the current CPU timing; compiled code checks for events after every instruction while testing,
     // like the interpreter, since fast timing would otherwise let it check less often
-    int saved[] = { Settings::threaded2D, Settings::threaded3D, Settings::emulateAudio, Settings::frameskip, Settings::jit };
+    int saved[] = { Settings::threaded2D, Settings::threaded3D, Settings::emulateAudio, Settings::frameskip, Settings::jit,
+        Settings::hardware3D };
     Jit::testing = true;
     Settings::threaded2D = 0;
     Settings::threaded3D = 0;
+    Settings::hardware3D = 0;
     Settings::emulateAudio = 0;
     Settings::frameskip = 5;
     Rtc::fixedTime = std::time(nullptr); // Both cores must read the same clock
@@ -1654,6 +1626,7 @@ void ConsoleUI::jitSelfTest() {
         Settings::emulateAudio = saved[2];
         Settings::frameskip = saved[3];
         Settings::jit = saved[4];
+        Settings::hardware3D = saved[5];
         Jit::testing = false;
         Rtc::fixedTime = 0;
     };
