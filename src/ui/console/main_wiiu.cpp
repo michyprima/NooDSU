@@ -2,20 +2,20 @@
     Copyright 2019-2026 Hydr8gon
     Copyright 2026 michyprima
 
-    This file is part of NooDSU.
+    This file is part of NooDS U.
 
-    NooDSU is free software: you can redistribute it and/or modify it
+    NooDS U is free software: you can redistribute it and/or modify it
     under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
 
-    NooDSU is distributed in the hope that it will be useful, but
+    NooDS U is distributed in the hope that it will be useful, but
     WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
     General Public License for more details.
 
     You should have received a copy of the GNU General Public License
-    along with NooDSU. If not, see <https://www.gnu.org/licenses/>.
+    along with NooDS U. If not, see <https://www.gnu.org/licenses/>.
 */
 
 
@@ -1014,8 +1014,8 @@ int probeThreads(int argc, const char **argv) {
             if (RPLWRAP(recvfrom)(udp, &request, sizeof(request), 0, (sockaddr*)&sender, &length) < 0) continue;
             destination.sin_addr = sender.sin_addr;
         }
-        __os_snprintf(message, sizeof(message), "NooDSU thread probe %u on core %u, probe address %08X\n", tick, OSGetCoreId(),
-            (uint32_t)&probeThreads);
+        __os_snprintf(message, sizeof(message), "NooDS U thread probe %u on core %u, probe address %08X\n", tick,
+            OSGetCoreId(), (uint32_t)&probeThreads);
         send();
         if (!tick) continue;
 
@@ -1206,7 +1206,7 @@ int logFrames(int argc, const char **argv) {
 // the stack, which might be damaged
 static BOOL showCrash(OSContext *context, const char *type) {
     char message[512];
-    __os_snprintf(message, sizeof(message), "NooDSU crashed (%s) on core %u\n"
+    __os_snprintf(message, sizeof(message), "NooDS U crashed (%s) on core %u\n"
         "PC %08X LR %08X address %08X status %08X\nSP %08X handler %08X\n"
         "r3 %08X r4 %08X r5 %08X r6 %08X\nr7 %08X r8 %08X r9 %08X r10 %08X\n",
         type, OSGetCoreId(), context->srr0, context->lr, context->dar, context->srr1,

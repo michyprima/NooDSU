@@ -2,8 +2,8 @@ ifeq ($(strip $(DEVKITPRO)),)
 $(error "Please set DEVKITPRO in your environment. export DEVKITPRO=<path to>/devkitpro")
 endif
 
-APP_NAME := NooDSU
-APP_SHORTNAME := NooDSU
+APP_NAME := NooDS U
+APP_SHORTNAME := NooDS U
 APP_AUTHOR := michyprima, Hydr8gon
 APP_ICON := ../icon/icon-wiiu.png
 

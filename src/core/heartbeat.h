@@ -2,20 +2,20 @@
     Copyright 2019-2026 Hydr8gon
     Copyright 2026 michyprima
 
-    This file is part of NooDSU.
+    This file is part of NooDS U.
 
-    NooDSU is free software: you can redistribute it and/or modify it
+    NooDS U is free software: you can redistribute it and/or modify it
     under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
 
-    NooDSU is distributed in the hope that it will be useful, but
+    NooDS U is distributed in the hope that it will be useful, but
     WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
     General Public License for more details.
 
     You should have received a copy of the GNU General Public License
-    along with NooDSU. If not, see <https://www.gnu.org/licenses/>.
+    along with NooDS U. If not, see <https://www.gnu.org/licenses/>.
 */
 
 // Progress counters for builds made with HEARTBEAT, which a frontend logs regularly to find where things stop

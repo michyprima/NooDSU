@@ -1,10 +1,10 @@
-<p align="center"><img src="icon/icon-wiiu-framed.png" width="256" alt="NooDSU icon"></p>
+<p align="center"><img src="icon/icon-wiiu-framed.png" width="256" alt="NooDS U icon"></p>
 
-# NooDSU
+# NooDS U
 A DS and GBA emulator for the Wii U.
 
 ### Overview
-NooDSU is a Wii U-only fork of [NooDS](https://github.com/Hydr8gon/NooDS) by Hydr8gon, focused on running well on real
+NooDS U is a Wii U-only fork of [NooDS](https://github.com/Hydr8gon/NooDS) by Hydr8gon, focused on running well on real
 hardware.
 
 Pokémon Black went from about 20 fps to 60 fps on a real Wii U, three times as fast. Most games should see a large jump
@@ -67,7 +67,7 @@ It's licensed under the GPL version 3, like NooDS.
 ### Usage
 Put `noodsu.wuhb` in `sd:/wiiu/apps/` on your SD card. Settings, states and cheats are kept in `sd:/wiiu/apps/noodsu/`, and saves next to the ROM.
 
-NooDSU should be able to run most things without any setup. DS BIOS and firmware files must be provided to boot the
+NooDS U should be able to run most things without any setup. DS BIOS and firmware files must be provided to boot the
 system menu, and can be dumped from a DS with [DSBF Dumper](https://archive.org/details/dsbf-dumper). The firmware must
 come from an original DS; DSi and 3DS dumps don't contain any boot code. A GBA BIOS file can be optionally provided, and
 can be dumped from many systems with [this dumper](https://github.com/mgba-emu/bios-dump). File paths can be configured

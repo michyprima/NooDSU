@@ -2,20 +2,20 @@
     Copyright 2019-2026 Hydr8gon
     Copyright 2026 michyprima
 
-    This file is part of NooDSU.
+    This file is part of NooDS U.
 
-    NooDSU is free software: you can redistribute it and/or modify it
+    NooDS U is free software: you can redistribute it and/or modify it
     under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
 
-    NooDSU is distributed in the hope that it will be useful, but
+    NooDS U is distributed in the hope that it will be useful, but
     WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
     General Public License for more details.
 
     You should have received a copy of the GNU General Public License
-    along with NooDSU. If not, see <https://www.gnu.org/licenses/>.
+    along with NooDS U. If not, see <https://www.gnu.org/licenses/>.
 */
 
 #include <algorithm>
@@ -1193,7 +1193,7 @@ bool ConsoleUI::fileBrowser() {
         closedir(dir);
 
         // Create the file browser menu
-        uint32_t pressed = menu("NooDSU", files, index, "Settings", "Exit", true,
+        uint32_t pressed = menu("NooDS U", files, index, "Settings", "Exit", true,
             "Set Default", defaultKeys[INPUT_SELECT]);
 
         // Open the launch options of a selected ROM, and launch it if one was chosen
@@ -1333,7 +1333,7 @@ void ConsoleUI::settingsMenu() {
         add("GBA Crop", ScreenLayout::gbaCrop, toggle);
 
         header("About");
-        settings.push_back(MenuItem("About NooDSU"));
+        settings.push_back(MenuItem("About NooDS U"));
         values.push_back({ nullptr, 0 });
 
         // Create the settings menu
@@ -1365,12 +1365,12 @@ void ConsoleUI::settingsMenu() {
 void ConsoleUI::aboutMenu() {
     // List who made this and what it's based on, staying until backing out
     std::vector<MenuItem> items = {
-        MenuItem("NooDSU", true),
+        MenuItem("NooDS U", true),
         MenuItem("Version", NOODSU_VERSION),
         MenuItem("Based on", "NooDS by Hydr8gon"),
         MenuItem("License", "GNU GPL v3 or later"),
         MenuItem("Authors", true),
-        MenuItem("michyprima", "NooDSU"),
+        MenuItem("michyprima", "NooDS U"),
         MenuItem("Hydr8gon", "NooDS"),
         MenuItem("NooDS Contributors", true),
         MenuItem("Nadia Holmquist Pedersen"),
@@ -1388,7 +1388,7 @@ void ConsoleUI::aboutMenu() {
         MenuItem("DraStic BIOS", "DS HLE BIOS"),
         MenuItem("Cult of GBA BIOS", "GBA HLE BIOS"),
         MenuItem("Links", true),
-        MenuItem("NooDSU", "github.com/michyprima/NooDSU"),
+        MenuItem("NooDS U", "github.com/michyprima/NooDSU"),
         MenuItem("NooDS", "github.com/Hydr8gon/NooDS")
     };
     int index = 0;
@@ -1486,7 +1486,7 @@ void ConsoleUI::pauseMenu() {
     int index = 0;
     while (true) {
         // Create the pause menu
-        uint32_t pressed = menu("NooDSU", items, index, "Settings", "Exit");
+        uint32_t pressed = menu("NooDS U", items, index, "Settings", "Exit");
 
         // Handle menu input
         if (pressed & defaultKeys[INPUT_A]) {
@@ -1551,7 +1551,7 @@ void ConsoleUI::pauseMenu() {
 
                 case STATE_VERSION_FAIL:
                     title = "Error";
-                    text = "The state file isn't compatible with this version of NooDSU.";
+                    text = "The state file isn't compatible with this version of NooDS U.";
                     break;
                 }
 
