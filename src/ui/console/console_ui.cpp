@@ -1092,7 +1092,8 @@ uint32_t ConsoleUI::message(std::string title, std::string text, int type) {
     }
 }
 
-void ConsoleUI::fileBrowser() {
+bool ConsoleUI::fileBrowser() {
+    // Return whether the browser was closed for good, or false if going back to a paused game's menu
     int index = 0;
     while (true) {
         // Open the current directory to list files from
@@ -1150,14 +1151,17 @@ void ConsoleUI::fileBrowser() {
             case 2: // ROM loaded
                 // Save the previous directory and close the file browser
                 curPath = curPath.substr(0, curPath.rfind("/"));
-                return;
+                return true;
             }
         }
         else if (pressed & defaultKeys[INPUT_B]) {
-            // Navigate to the previous directory
+            // Navigate to the previous directory, or back to the pause menu from the top if a game is paused
             if (curPath != basePath) {
                 curPath = curPath.substr(0, curPath.rfind("/"));
                 index = 0;
+            }
+            else if (core) {
+                return false;
             }
         }
         else if (pressed & defaultKeys[INPUT_X]) {
@@ -1166,7 +1170,7 @@ void ConsoleUI::fileBrowser() {
         }
         else if (pressed & defaultKeys[INPUT_START]) {
             // Close the file browser
-            return;
+            return true;
         }
         else if (pressed & defaultKeys[INPUT_SELECT]) {
             // Start in this folder from now on
@@ -1414,7 +1418,8 @@ void ConsoleUI::pauseMenu() {
 
             case 1: // Restart
                 // Restart and return to the emulator
-                createCore() ? startCore() : fileBrowser();
+                if (createCore()) startCore();
+                else fileBrowser();
                 return;
 
             case 2: // Save State
@@ -1475,8 +1480,11 @@ void ConsoleUI::pauseMenu() {
 
             case 4: // Change Save Type
                 // Open the save type menu and restart if the save changed
-                if (saveTypeMenu())
-                    return createCore() ? startCore() : fileBrowser();
+                if (saveTypeMenu()) {
+                    if (createCore()) startCore();
+                    else fileBrowser();
+                    return;
+                }
                 break;
 
             case 5: // Settings
@@ -1485,9 +1493,9 @@ void ConsoleUI::pauseMenu() {
                 break;
 
             case 6: // File Browser
-                // Open the file browser and close the pause menu
-                fileBrowser();
-                return;
+                // Open the file browser and close the pause menu, unless going back to it
+                if (fileBrowser()) return;
+                break;
 
 #if defined(PROFILE_EMU) || defined(PROFILE_SAMPLER)
             case 7: { // 3D Benchmark

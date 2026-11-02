@@ -133,7 +133,7 @@ public:
     static void initialize(int width, int height, std::string root, std::string prefix);
     static void mainLoop(MenuTouch (*specialTouch)() = nullptr, ScreenLayout *touchLayout = nullptr);
     static int setPath(std::string path);
-    static void fileBrowser();
+    static bool fileBrowser();
     static void startCore();
     static void stopCore();
 
