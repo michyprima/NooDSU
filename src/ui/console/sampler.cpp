@@ -67,7 +67,7 @@ namespace Sampler {
     static volatile bool idling;
     static OSThread *idleThread;
 
-    static int idleSpin(int argc, const char **argv) {
+    static int idleSpin(int argc, void *argv) {
         while (idling);
         return 0;
     }

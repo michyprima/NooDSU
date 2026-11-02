@@ -42,17 +42,20 @@ public:
 // threads can't change cores once running, so this has to be set when they're created
 class WorkerThread {
 public:
+    // Thread entry point; wut before 1.9.2 declares the argument as const char**, but it's passed the same way
+    typedef int (*Entry)(int argc, void *argv);
+
     // Create and start a thread on Wii U with its memory in one block, freed by the OS once the thread has
     // fully exited, like std::thread does; freeing it right after joining isn't safe, since the thread can
     // still be exiting on its stack at that point
-    static OSThread *createThread(OSThreadEntryPointFn entry, void *arg, int stackSize, int priority,
+    static OSThread *createThread(Entry entry, void *arg, int stackSize, int priority,
             uint32_t affinity) {
         uint8_t *block = (uint8_t*)memalign(16, sizeof(OSThread) + stackSize);
         if (!block) return nullptr;
         memset(block, 0, sizeof(OSThread));
         OSThread *thread = (OSThread*)block;
-        if (!OSCreateThread(thread, entry, 0, (char*)arg, block + sizeof(OSThread) + stackSize, stackSize,
-                priority, (OSThreadAttributes)affinity)) {
+        if (!OSCreateThread(thread, (OSThreadEntryPointFn)entry, 0, (char*)arg, block + sizeof(OSThread) + stackSize,
+                stackSize, priority, (OSThreadAttributes)affinity)) {
             free(block);
             return nullptr;
         }
@@ -100,7 +103,7 @@ private:
     static const int STACK_SIZE = 0x20000;
     OSThread *thread = nullptr;
 
-    static int entry(int argc, const char **argv) {
+    static int entry(int argc, void *argv) {
         ((WorkerThread*)argv)->func();
         return 0;
     }

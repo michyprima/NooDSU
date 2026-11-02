@@ -155,7 +155,7 @@ private:
     Gpu3DRenderer *job = nullptr;
     std::atomic<bool> busy;
 
-    static int threadEntry(int argc, const char **argv);
+    static int threadEntry(int argc, void *argv);
     void run();
     void renderFrame(Gpu3DRenderer *renderer);
     GX2Texture *getTexture(Gpu3DRenderer *renderer, _Polygon *polygon);
@@ -366,7 +366,7 @@ bool Gpu3DWiiU::init() {
         OS_THREAD_ATTRIB_AFFINITY_CPU2) != nullptr;
 }
 
-int Gpu3DWiiU::threadEntry(int argc, const char **argv) {
+int Gpu3DWiiU::threadEntry(int argc, void *argv) {
 #if defined(PROFILE_EMU) && defined(HEARTBEAT)
     FrameTrace::startRenderer();
 #endif

@@ -1593,7 +1593,7 @@ void ConsoleUI::pauseMenu() {
                 // Re-render the paused frame's 3D with one thread on core 1, which nothing else uses while paused
                 // With the sampler, it records where rendering spends its time, shown under CPU Samples afterwards
                 struct Bench { Core *core; double ms; uint64_t px[PX_COUNT]; } bench = { core };
-                OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int {
+                WorkerThread::Entry entry = [](int argc, void *argv) -> int {
                     Bench *b = (Bench*)argv;
                     int saved = Settings::threaded3D;
                     Settings::threaded3D = 0;
@@ -1822,7 +1822,7 @@ void ConsoleUI::jitSelfTest() {
         if (result == "") result = "Stopped early";
         done.store(true);
     };
-    OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int {
+    WorkerThread::Entry entry = [](int argc, void *argv) -> int {
         (*(std::function<void()>*)argv)();
         return 0;
     };
@@ -1963,21 +1963,21 @@ void ConsoleUI::startCore() {
     int priority = OSGetThreadPriority(OSGetCurrentThread());
     if (OSGetCoreId() == 1) priority = std::min(priority + 1, 31);
 #ifdef PROFILE_SAMPLER
-    OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int {
+    WorkerThread::Entry entry = [](int argc, void *argv) -> int {
         Sampler::start();
         runCore();
         Sampler::stop();
         return 0;
     };
 #elif defined(PROFILE_EMU) && defined(HEARTBEAT)
-    OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int {
+    WorkerThread::Entry entry = [](int argc, void *argv) -> int {
         FrameTrace::start();
         runCore();
         FrameTrace::stop();
         return 0;
     };
 #else
-    OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int { runCore(); return 0; };
+    WorkerThread::Entry entry = [](int argc, void *argv) -> int { runCore(); return 0; };
 #endif
     if ((emuThread = WorkerThread::createThread(entry, nullptr, 0x100000, priority, OS_THREAD_ATTRIB_AFFINITY_CPU1))) {
         saveThread = new WorkerThread(WorkerThread::CORE_2, checkSave);

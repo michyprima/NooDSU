@@ -248,7 +248,7 @@ FILE *openHangReport(const char *reason) {
     return file;
 }
 
-int reportVsyncs(int argc, const char **argv) {
+int reportVsyncs(int argc, void *argv) {
     // Tell the UI each time the display refreshes, so the emulator can run one frame per refresh
     while (true) {
         GX2WaitForVsync();
@@ -257,7 +257,7 @@ int reportVsyncs(int argc, const char **argv) {
     return 0;
 }
 
-int watchHangs(int argc, const char **argv) {
+int watchHangs(int argc, void *argv) {
     // Write a hang report if the UI stops finishing frames for a few seconds, unless the system has it stopped; this
     // only wakes twice a second, and reports each hang once
     uint32_t last = 0;
@@ -842,7 +842,7 @@ void outputAudio(void *data, uint8_t *buffer, int length) {
     ConsoleUI::fillAudioBuffer((uint32_t*)buffer, length / sizeof(uint32_t), 32768);
 }
 
-int runUi(int argc, const char **argv) {
+int runUi(int argc, void *argv) {
     // Initialize various things
     WHBGfxInit();
     drcStartMode = drcBufferMode = GX2GetSystemDRCMode();
@@ -973,9 +973,8 @@ int runUi(int argc, const char **argv) {
     return 0;
 }
 
-#ifdef HEARTBEAT
 #ifdef THREAD_PROBE
-int probeThreads(int argc, const char **argv) {
+int probeThreads(int argc, void *argv) {
     // Reply to any UDP packet on port 4406 plus this thread's core with every thread's state, the mutex it waits on,
     // and where it is, using only the OS's sockets and formatting so locks held by stuck threads can't block it
     // There's one on each core, to tell which cores still run after a freeze
@@ -1045,7 +1044,8 @@ int probeThreads(int argc, const char **argv) {
 }
 #endif
 
-int logHeartbeat(int argc, const char **argv) {
+#ifdef HEARTBEAT
+int logHeartbeat(int argc, void *argv) {
     // Append the progress counters to a file a few times a second, closing it every time so it survives a freeze
     std::string path = std::string(WHBGetSdCardMountPath()) + "/wiiu/apps/noodsu/heartbeat.log";
     FILE *file = fopen(path.c_str(), "w");
@@ -1188,7 +1188,7 @@ int logHeartbeat(int argc, const char **argv) {
 #endif
 
 #ifdef FRAME_LOG
-int logFrames(int argc, const char **argv) {
+int logFrames(int argc, void *argv) {
     // Write what the frame log collected every few seconds, unless the system wants the foreground or the UI is done
     std::string path = std::string(WHBGetSdCardMountPath()) + "/wiiu/apps/noodsu/framelog.bin";
     while (true) {
@@ -1248,7 +1248,7 @@ int main() {
 #endif
     // Watch for hangs on core 2, where writing the report is safe, above the other threads so it still runs
     WorkerThread::createThread(watchHangs, nullptr, 0x10000, 10, OS_THREAD_ATTRIB_AFFINITY_CPU2);
-    OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int {
+    WorkerThread::Entry entry = [](int argc, void *argv) -> int {
         runUi(argc, argv);
         std::lock_guard<std::mutex> guard(procMutex);
         uiDone = true;
