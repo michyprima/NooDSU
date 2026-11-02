@@ -1,0 +1,27 @@
+name: Release
+
+on:
+  push:
+    tags:
+    - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitppc:latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Compile
+      run: make -j$(nproc)
+    - name: Publish
+      uses: softprops/action-gh-release@v2
+      with:
+        generate_release_notes: true
+        fail_on_unmatched_files: true
+        files: |
+          noodsu.wuhb
+          noodsu.elf
