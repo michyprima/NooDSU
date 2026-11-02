@@ -786,6 +786,9 @@ template <typename T> T Memory::readFallback(bool arm7, uint32_t address) {
     if (!arm7) { // ARM9
         switch (address & 0xFF000000) {
         case 0x4000000: // I/O registers
+            // Read 32-bit ROMDATAIN straight from the cartridge, since games read lots of it while loading
+            if (sizeof(T) == 4 && address == 0x4100010)
+                return core->cartridgeNds.readRomDataIn(0);
             return ioRead9<T>(address);
 
         case 0x5000000: // Palettes

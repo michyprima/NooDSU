@@ -246,6 +246,7 @@ JitBlock *Jit::compile(uint32_t address, bool thumb, uint8_t *host, int index) {
         JitPage &p = pages[page];
         if (p.blocks.empty()) {
             p.blocks.push_back(block);
+            p.overwrites = 0;
             protect(page);
         }
         else {
@@ -412,10 +413,19 @@ bool Jit::writeCode(uint8_t *host, int size) {
         if (p.covered[((uintptr_t(host) + i) & 0xFFF) >> 1]) overlap = true;
 
     // Invalidate every block that overlaps the write
+    // After several such writes, the page is probably being loaded over, so drop all of its code; the page can then be
+    // mapped back, which makes the rest of the writes much faster
+    // Code that overwrites its own page would keep compiling itself again, so each time takes twice as many writes,
+    // until it's more than a page can hold and blocks only go when they're overwritten
     if (overlap) {
+        bool clear = ++p.overwrites >= (8 << p.cleared);
+        if (clear) {
+            p.overwrites = 0;
+            if (p.cleared < 10) p.cleared++;
+        }
         hitBlocks.clear();
         for (size_t i = 0; i < p.blocks.size(); i++)
-            if (host < p.blocks[i]->end && host + size > p.blocks[i]->start)
+            if (clear || (host < p.blocks[i]->end && host + size > p.blocks[i]->start))
                 hitBlocks.push_back(p.blocks[i]);
         for (size_t i = 0; i < hitBlocks.size(); i++)
             retire(hitBlocks[i]);

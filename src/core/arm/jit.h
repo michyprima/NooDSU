@@ -81,6 +81,8 @@ struct JitPage {
     std::vector<JitBlock*> blocks;
     uint8_t covered[0x1000 / 2] = {};
     bool saturated = false;
+    uint16_t overwrites = 0; // Writes over its code since the page last got code
+    uint8_t cleared = 0; // Times its code was dropped for being overwritten, which makes that take more writes
 };
 
 // Host memory that code is compiled from, and whether code there can be overwritten
