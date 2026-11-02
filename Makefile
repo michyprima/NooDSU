@@ -1,117 +1,68 @@
-NAME := noods
-BUILD := build
-META := meta
-GRADLE := gradle
-SRCS := src src/core src/core/arm src/core/gpu src/core/hle src/core/io src/core/memory src/ui src/ui/desktop
-ARGS := -Ofast -flto -std=c++11 -DUSE_GL_CANVAS -DLOG_LEVEL=0
-LIBS := $(shell pkg-config --libs portaudio-2.0)
-INCS := $(shell pkg-config --cflags portaudio-2.0)
-
-APPNAME := NooDS
-PKGNAME := com.hydra.noods
-DESTDIR ?= /usr
-
-ifeq ($(OS),Windows_NT)
-  ARGS += -static -DWINDOWS
-  LIBS += $(shell wx-config-static --libs --gl-libs) -lole32 -lsetupapi -lwinmm
-  INCS += $(shell wx-config-static --cxxflags)
-else
-  LIBS += $(shell wx-config --libs --gl-libs)
-  INCS += $(shell wx-config --cxxflags)
-  ifeq ($(shell uname -s),Darwin)
-    ARGS += -DMACOS
-    LIBS += -headerpad_max_install_names
-  else
-    ARGS += -no-pie
-    LIBS += -lGL
-  endif
+ifeq ($(strip $(DEVKITPRO)),)
+$(error "Please set DEVKITPRO in your environment. export DEVKITPRO=<path to>/devkitpro")
 endif
 
-CPPFILES := $(foreach dir,$(SRCS),$(wildcard $(dir)/*.cpp))
-HFILES := $(foreach dir,$(SRCS),$(wildcard $(dir)/*.h))
-OFILES := $(patsubst %.cpp,$(BUILD)/%.o,$(CPPFILES))
+APP_NAME := NooDSU
+APP_SHORTNAME := NooDSU
+APP_AUTHOR := michyprima, Hydr8gon
+APP_ICON := ../icon/icon-wiiu.png
 
-ifeq ($(OS),Windows_NT)
-  OFILES += $(BUILD)/icon-windows.o
-endif
+include $(DEVKITPRO)/wut/share/wut_rules
 
-all: $(NAME)
+NAME := noodsu
+BUILD := build-wiiu
+SRCS := src src/core src/core/arm src/core/gpu src/core/hle src/core/io src/core/memory src/ui src/ui/console
+DATA := src/ui/console/images src/ui/console/shaders
+LIBS := -lwut -lSDL2
+INCS := $(PORTLIBS) $(WUT_ROOT)
 
-ifneq ($(OS),Windows_NT)
-ifeq ($(shell uname -s),Darwin)
+CXXFLAGS := -g -Ofast -fno-allow-store-data-races -flto -ffunction-sections $(MACHDEP) $(INCLUDE) \
+    -D__WIIU__ -D__WUT__ -DENDIAN_BIG -DNO_FDOPEN -DLOG_LEVEL=0
+LDFLAGS = -g $(ARCH) $(RPXSPECS) -Wl,-Map,$(notdir $*.map)
 
-install: $(NAME)
-	$(META)/mac-bundle.sh
-	cp -r $(APPNAME).app /Applications/
+ifneq ($(BUILD),$(notdir $(CURDIR)))
 
-uninstall:
-	rm -rf /Applications/$(APPNAME).app
+export LD := $(CXX)
+export OUTPUT := $(CURDIR)/$(NAME)
+export DEPSDIR := $(CURDIR)/$(BUILD)
+export LIBPATHS := $(foreach dir,$(INCS),-L$(dir)/lib)
+export VPATH := $(foreach dir,$(SRCS),$(CURDIR)/$(dir)) $(foreach dir,$(DATA),$(CURDIR)/$(dir))
+export INCLUDE := $(foreach dir,$(SRCS),-I$(CURDIR)/$(dir)) $(foreach dir,$(INCS),-I$(dir)/include)
 
-ios:
-	xcodebuild archive -scheme NooDS -configuration Release -sdk iphoneos -archivePath noods.xcarchive \
-		CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
-	cd noods.xcarchive/Products && mv Applications Payload && zip -r ../../noods.ipa Payload
-	rm -rf noods.xcarchive
+CPPFILES := $(foreach dir,$(SRCS),$(notdir $(wildcard $(dir)/*.cpp)))
+BMPFILES := $(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.bmp)))
+GSHFILES := $(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.gsh)))
+export OFILES := $(CPPFILES:.cpp=.o) $(BMPFILES:.bmp=.o) $(addsuffix .o,$(GSHFILES))
 
-else
-
-flatpak:
-	flatpak-builder --repo=repo --force-clean build-flatpak $(META)/$(PKGNAME).yml
-	flatpak build-bundle repo $(NAME).flatpak $(PKGNAME)
-
-flatpak-clean:
-	rm -rf .flatpak-builder
-	rm -rf build-flatpak
-	rm -rf repo
-	rm -f $(NAME).flatpak
-
-install: $(NAME)
-	install -Dm755 $(NAME) "$(DESTDIR)/bin/$(NAME)"
-	install -Dm644 $(META)/$(PKGNAME).desktop "$(DESTDIR)/share/applications/$(PKGNAME).desktop"
-	install -Dm644 icon/icon-linux.png "$(DESTDIR)/share/icons/hicolor/64x64/apps/$(PKGNAME).png"
-
-uninstall: 
-	rm -f "$(DESTDIR)/bin/$(NAME)"
-	rm -f "$(DESTDIR)/share/applications/$(PKGNAME).desktop"
-	rm -f "$(DESTDIR)/share/icons/hicolor/64x64/apps/$(PKGNAME).png"
-
-endif
-endif
-
-$(NAME): $(OFILES)
-	g++ -o $@ $(ARGS) $^ $(LIBS)
-
-$(BUILD)/%.o: %.cpp $(HFILES) $(BUILD)
-	g++ -c -o $@ $(ARGS) $(INCS) $<
-
-$(BUILD)/icon-windows.o:
-	windres $(shell wx-config-static --cppflags) icon/icon-windows.rc $@
+.PHONY: $(BUILD)
+all: $(BUILD)
 
 $(BUILD):
-	for dir in $(SRCS); do mkdir -p $(BUILD)/$$dir; done
+	mkdir -p $@
+	$(MAKE) -C $(BUILD) -f $(CURDIR)/Makefile
 
-android-bundle:
-	git apply src/ui/android/play-store.patch
-	$(GRADLE)/gradlew bundle
-	git apply -R src/ui/android/play-store.patch
-	jarsigner -keystore $(META)/keystore.jks -signedjar noods.aab build-android/outputs/bundle/release/android-release.aab keystore
-
-android:
-	$(GRADLE)/gradlew assembleDebug
-
-switch:
-	$(MAKE) -f Makefile.switch
-
-wiiu:
-	$(MAKE) -f Makefile.wiiu
-
-vita:
-	$(MAKE) -f Makefile.vita
+build-shader:
+	cd src/ui/console/shaders; ./latte-assembler compile shader_wiiu.gsh --vsh shader_wiiu.vsh --psh shader_wiiu.psh
 
 clean:
-	if [ -d "build-android" ]; then $(GRADLE)/gradlew clean; fi
-	if [ -d "build-switch" ]; then $(MAKE) -f Makefile.switch clean; fi
-	if [ -d "build-wiiu" ]; then $(MAKE) -f Makefile.wiiu clean; fi
-	if [ -d "build-vita" ]; then $(MAKE) -f Makefile.vita clean; fi
-	rm -rf $(BUILD)
-	rm -f $(NAME)
+	rm -rf $(BUILD) $(NAME).wuhb $(NAME).rpx $(NAME).elf
+
+else
+
+all: $(OUTPUT).wuhb
+$(OUTPUT).wuhb: $(OUTPUT).rpx
+$(OUTPUT).rpx: $(OUTPUT).elf
+$(OUTPUT).elf: $(OFILES)
+
+%.o: %.bmp
+	@echo $(notdir $<)
+	@cd ..; $(PREFIX)ld -r -b binary -o $(BUILD)/$@ src/ui/console/images/$*.bmp
+
+%.gsh.o: %.gsh
+	@echo $(notdir $<)
+	@$(bin2o)
+
+DEPENDS := $(OFILES:.o=.d)
+-include $(DEPENDS)
+
+endif

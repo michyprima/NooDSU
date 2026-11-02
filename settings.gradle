@@ -1,2 +1,0 @@
-include ':src:ui:android'
-rootProject.name = 'NooDS'

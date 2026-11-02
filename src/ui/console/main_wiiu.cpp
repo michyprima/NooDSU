@@ -1,23 +1,23 @@
 /*
     Copyright 2019-2026 Hydr8gon
+    Copyright 2026 michyprima
 
-    This file is part of NooDS.
+    This file is part of NooDSU.
 
-    NooDS is free software: you can redistribute it and/or modify it
+    NooDSU is free software: you can redistribute it and/or modify it
     under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
 
-    NooDS is distributed in the hope that it will be useful, but
+    NooDSU is distributed in the hope that it will be useful, but
     WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
     General Public License for more details.
 
     You should have received a copy of the GNU General Public License
-    along with NooDS. If not, see <https://www.gnu.org/licenses/>.
+    along with NooDSU. If not, see <https://www.gnu.org/licenses/>.
 */
 
-#ifdef __WIIU__
 
 #include <coreinit/core.h>
 #include <coreinit/debug.h>
@@ -927,7 +927,7 @@ int runUi(int argc, const char **argv) {
 
     // Initialize the UI and open the file browser
     std::string base = WHBGetSdCardMountPath();
-    ConsoleUI::initialize(tvWidth, tvHeight, base, base + "/wiiu/apps/noods/");
+    ConsoleUI::initialize(tvWidth, tvHeight, base, base + "/wiiu/apps/noodsu/");
     ConsoleUI::fileBrowser();
 
     // Run the emulator until it exits
@@ -976,7 +976,7 @@ int probeThreads(int argc, const char **argv) {
             if (RPLWRAP(recvfrom)(udp, &request, sizeof(request), 0, (sockaddr*)&sender, &length) < 0) continue;
             destination.sin_addr = sender.sin_addr;
         }
-        __os_snprintf(message, sizeof(message), "NooDS thread probe %u on core %u, probe address %08X\n", tick, OSGetCoreId(),
+        __os_snprintf(message, sizeof(message), "NooDSU thread probe %u on core %u, probe address %08X\n", tick, OSGetCoreId(),
             (uint32_t)&probeThreads);
         send();
         if (!tick) continue;
@@ -1009,7 +1009,7 @@ int probeThreads(int argc, const char **argv) {
 
 int logHeartbeat(int argc, const char **argv) {
     // Append the progress counters to a file a few times a second, closing it every time so it survives a freeze
-    std::string path = std::string(WHBGetSdCardMountPath()) + "/wiiu/apps/noods/heartbeat.log";
+    std::string path = std::string(WHBGetSdCardMountPath()) + "/wiiu/apps/noodsu/heartbeat.log";
     FILE *file = fopen(path.c_str(), "w");
     if (file) fclose(file);
     uint32_t last[HB_COUNT] = {};
@@ -1134,7 +1134,7 @@ int logHeartbeat(int argc, const char **argv) {
             }
         }
         lastRecord = count;
-        FrameTrace::write((std::string(WHBGetSdCardMountPath()) + "/wiiu/apps/noods/trace.bin").c_str());
+        FrameTrace::write((std::string(WHBGetSdCardMountPath()) + "/wiiu/apps/noodsu/trace.bin").c_str());
 #endif
         // Show the heap use, to spot leaks
         struct mallinfo info = mallinfo();
@@ -1152,7 +1152,7 @@ int logHeartbeat(int argc, const char **argv) {
 #ifdef FRAME_LOG
 int logFrames(int argc, const char **argv) {
     // Write what the frame log collected every few seconds, unless the system wants the foreground or the UI is done
-    std::string path = std::string(WHBGetSdCardMountPath()) + "/wiiu/apps/noods/framelog.bin";
+    std::string path = std::string(WHBGetSdCardMountPath()) + "/wiiu/apps/noodsu/framelog.bin";
     while (true) {
         OSSleepTicks(OSMillisecondsToTicks(2000));
         if (releaseRequested.load() || uiParked || uiDone) continue;
@@ -1168,7 +1168,7 @@ int logFrames(int argc, const char **argv) {
 // the stack, which might be damaged
 static BOOL showCrash(OSContext *context, const char *type) {
     char message[512];
-    __os_snprintf(message, sizeof(message), "NooDS crashed (%s) on core %u\n"
+    __os_snprintf(message, sizeof(message), "NooDSU crashed (%s) on core %u\n"
         "PC %08X LR %08X address %08X status %08X\nSP %08X handler %08X\n"
         "r3 %08X r4 %08X r5 %08X r6 %08X\nr7 %08X r8 %08X r9 %08X r10 %08X\n",
         type, OSGetCoreId(), context->srr0, context->lr, context->dar, context->srr1,
@@ -1276,4 +1276,3 @@ int main() {
     }
 }
 
-#endif // __WIIU__

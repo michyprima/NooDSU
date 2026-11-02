@@ -1,20 +1,21 @@
 /*
     Copyright 2019-2026 Hydr8gon
+    Copyright 2026 michyprima
 
-    This file is part of NooDS.
+    This file is part of NooDSU.
 
-    NooDS is free software: you can redistribute it and/or modify it
+    NooDSU is free software: you can redistribute it and/or modify it
     under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
 
-    NooDS is distributed in the hope that it will be useful, but
+    NooDSU is distributed in the hope that it will be useful, but
     WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
     General Public License for more details.
 
     You should have received a copy of the GNU General Public License
-    along with NooDS. If not, see <https://www.gnu.org/licenses/>.
+    along with NooDSU. If not, see <https://www.gnu.org/licenses/>.
 */
 
 #pragma once
@@ -34,7 +35,7 @@
 
 // On Wii U, check that fast 2D drawing copies keep the framebuffer they were given, and stop with the details if not,
 // to catch a rare crash where one was overwritten; it costs a pointer check per scanline
-#if defined(__WIIU__) && !defined(NO_FAST2D_CHECK)
+#ifndef NO_FAST2D_CHECK
 #define FAST2D_CHECK
 #endif
 

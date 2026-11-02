@@ -1,28 +1,27 @@
 /*
     Copyright 2019-2026 Hydr8gon
+    Copyright 2026 michyprima
 
-    This file is part of NooDS.
+    This file is part of NooDSU.
 
-    NooDS is free software: you can redistribute it and/or modify it
+    NooDSU is free software: you can redistribute it and/or modify it
     under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
 
-    NooDS is distributed in the hope that it will be useful, but
+    NooDSU is distributed in the hope that it will be useful, but
     WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
     General Public License for more details.
 
     You should have received a copy of the GNU General Public License
-    along with NooDS. If not, see <https://www.gnu.org/licenses/>.
+    along with NooDSU. If not, see <https://www.gnu.org/licenses/>.
 */
 
 #include <algorithm>
 #include <cstring>
-#ifdef __WIIU__
 #include <malloc.h>
 #include <mutex>
-#endif
 
 #include "../core.h"
 
@@ -33,17 +32,14 @@
 #include "../emu_profile.h"
 #include "../frame_capture.h"
 
-#ifdef __WIIU__
 // Framebuffers freed by the frontend, kept for reuse since a few are made every frame; allocating and freeing such
 // large blocks all the time fragments the heap until they no longer fit
 static std::mutex poolMutex;
 static uint32_t *pool[8];
 static int poolCount = 0;
-#endif
 
 // Allocate framebuffers for the frontend, aligned to cache blocks on Wii U so lines can be claimed without reading them
 static uint32_t *newFramebuffer(size_t count) {
-#ifdef __WIIU__
     {
         std::lock_guard<std::mutex> guard(poolMutex);
         for (int i = 0; i < poolCount; i++) {
@@ -55,9 +51,6 @@ static uint32_t *newFramebuffer(size_t count) {
         }
     }
     return (uint32_t*)memalign(0x1000, count * sizeof(uint32_t)); // Aligned enough for the GPU to write too
-#else
-    return new uint32_t[count];
-#endif
 }
 
 // High-res 3D frames that have more than one holder, with how many extra each has, since frames without new 3D reuse
@@ -93,16 +86,12 @@ static void freeFramebuffer(uint32_t *buffer) {
             return;
         }
     }
-#ifdef __WIIU__
     std::lock_guard<std::mutex> guard(poolMutex);
     if (poolCount < 8) {
         pool[poolCount++] = buffer;
         return;
     }
     free(buffer);
-#else
-    delete[] buffer;
-#endif
 }
 
 Gpu::Gpu(Core *core): core(core) {

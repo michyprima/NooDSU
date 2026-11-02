@@ -1,30 +1,29 @@
 /*
     Copyright 2019-2026 Hydr8gon
+    Copyright 2026 michyprima
 
-    This file is part of NooDS.
+    This file is part of NooDSU.
 
-    NooDS is free software: you can redistribute it and/or modify it
+    NooDSU is free software: you can redistribute it and/or modify it
     under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
 
-    NooDS is distributed in the hope that it will be useful, but
+    NooDSU is distributed in the hope that it will be useful, but
     WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
     General Public License for more details.
 
     You should have received a copy of the GNU General Public License
-    along with NooDS. If not, see <https://www.gnu.org/licenses/>.
+    along with NooDSU. If not, see <https://www.gnu.org/licenses/>.
 */
 
 #include <cstring>
 #include <vector>
 
 #include <new>
-#ifdef __WIIU__
 #include <coreinit/cache.h>
 #include <coreinit/time.h>
-#endif
 #include "../core.h"
 #include "../emu_profile.h"
 #include "../frame_capture.h"
@@ -73,13 +72,11 @@ Gpu3DRenderer::~Gpu3DRenderer() {
 }
 
 void Gpu3DRenderer::forgetHardwareRows(int first, int count) {
-#ifdef __WIIU__
     // The GPU writes the hardware renderer's frames to memory, and the renderer drops them from the CPU's caches on its
     // own core; readers on other cores also drop the rows they're about to read from theirs, in case that doesn't
     // reach them, which costs little
     if (hardwareFrame && hardwareBuffer)
         DCInvalidateRange(&hardwareBuffer[first * 256 * 2], count * 256 * 2 * sizeof(uint32_t));
-#endif
 }
 
 uint32_t *Gpu3DRenderer::takeHardwareCopy() {
@@ -470,7 +467,6 @@ void Gpu3DRenderer::drawScanline1(int line) {
 
     // Clear the scanline buffers with the clear values
     int start = line * 256 * 2, end = start + (256 << resShift);
-#ifdef __WIIU__
     // Zero whole cache blocks first, so the CPU doesn't fetch lines from memory that are about to be overwritten
     uint32_t *buffers[] = { &framebuffer[0][start], (uint32_t*)&depthBuffer[0][start], &attribBuffer[0][start] };
     for (uint32_t *buffer : buffers) {
@@ -479,7 +475,6 @@ void Gpu3DRenderer::drawScanline1(int line) {
         for (; block < last; block += 32)
             asm volatile("dcbz 0, %0" :: "r"(block) : "memory");
     }
-#endif
     if (disp3DCnt & BIT(14)) {
         // With the rear-plane bitmap, each pixel's color and depth come from 256x256 images in texture slots 2 and 3,
         // which repeat from the clear image offset; colors are opaque or transparent by bit 15, and depths have the

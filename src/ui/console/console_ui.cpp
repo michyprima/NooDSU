@@ -1,20 +1,21 @@
 /*
     Copyright 2019-2026 Hydr8gon
+    Copyright 2026 michyprima
 
-    This file is part of NooDS.
+    This file is part of NooDSU.
 
-    NooDS is free software: you can redistribute it and/or modify it
+    NooDSU is free software: you can redistribute it and/or modify it
     under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
 
-    NooDS is distributed in the hope that it will be useful, but
+    NooDSU is distributed in the hope that it will be useful, but
     WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
     General Public License for more details.
 
     You should have received a copy of the GNU General Public License
-    along with NooDS. If not, see <https://www.gnu.org/licenses/>.
+    along with NooDSU. If not, see <https://www.gnu.org/licenses/>.
 */
 
 #include <algorithm>
@@ -26,21 +27,19 @@
 #include <sys/stat.h>
 
 #include "console_ui.h"
-#ifdef __WIIU__
 #include <coreinit/core.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
 
 // The emulator runs on its own thread, bound to the core that can run generated code
 static OSThread *emuThread = nullptr;
-#endif
 #include "../nds_icon.h"
 #include "../../core/settings.h"
 #include "../../core/heartbeat.h"
 #include "../../core/worker_thread.h"
 #include "../../core/emu_profile.h"
 #include "../../core/frame_capture.h"
-#if defined(STATE_DEBUG) && defined(__WIIU__)
+#ifdef STATE_DEBUG
 #include "gpu3d_wiiu.h"
 #endif
 
@@ -335,17 +334,11 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         // DS screens with high-res 3D, drawing it over them, or with the upscaled filter, and the GBA screen with the
         // upscaled filter, which looks like the core's upscaling since it's drawn filtered from there; it also does
         // ghosting, averaging frames with the last ones
-#ifdef __WIIU__
         bool hiRes3D = Settings::highRes3D && !gbaMode;
         bool compose = !gbaMode && (Settings::highRes3D || Settings::screenFilter == 1);
         bool composeGba = gbaMode && Settings::screenFilter == 1;
         bool shift = false;
         bool ghost = Settings::screenGhost;
-#else
-        bool hiRes3D = false, compose = false, composeGba = false;
-        bool shift = (Settings::highRes3D || Settings::screenFilter == 1);
-        bool ghost = false;
-#endif
         screenShift = shift;
         core->gpu.frontendUpscale = shift;
         core->gpu.frontendGhosting = ghost;
@@ -392,11 +385,9 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
                 debugThreads = false;
             }
             for (std::string &snapshot : snapshots) debugWrite(snapshot);
-#ifdef __WIIU__
             if (threads)
                 if (FILE *file = openHangReport("State debug: both CPUs halted without waking for 120 frames"))
                     fclose(file);
-#endif
         }
 #endif
 #ifdef FRAME_CAPTURE
@@ -426,7 +417,6 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
             FrameCapture::state.store(3);
         }
 #endif
-#ifdef __WIIU__
         // Replace the high-res 3D frame with a new one, or drop it when it's not used
         if (newFrame || !hiRes3D) {
             if (hiResTexture) destroyHiResTexture(hiResTexture);
@@ -435,7 +425,6 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
             hiResTop = top3D;
             hiResTexture = hiRes3D ? createHiResTexture(hiRes) : nullptr;
         }
-#endif
         HB_ADD_US(HB_UI_GETFRAME_US, hbGetFrame);
         if (update) HB_INC(HB_UI_NEW_FRAMES);
         HB_TIMER(hbTexture);
@@ -478,13 +467,11 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         HB_TIMER(hbDraw);
         startFrame(0);
         HB_SET(HB_UI_STAGE, 3);
-#ifdef __WIIU__
         // Build the screens at twice the size once for each new frame
         if (compose && (update || !composed[0]))
             composeScreens(topTexture, botTexture, hiResTexture, hiResTop);
         if (composeGba && (update || !composed[0]))
             composeGbaScreen(gbaTexture);
-#endif
 
         if (gbaMode) {
             // Draw the GBA screen, or the one built from it at twice the size, with the last one for ghosting
@@ -738,14 +725,12 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
     if (lastTopTexture) destroyTexture(lastTopTexture);
     if (lastBotTexture) destroyTexture(lastBotTexture);
     if (lastGbaTexture) destroyTexture(lastGbaTexture);
-#ifdef __WIIU__
     if (hiResTexture) destroyHiResTexture(hiResTexture);
     Gpu::freeHiRes3D(hiResData);
     hiResTexture = nullptr;
     hiResData = nullptr;
     screenFrame = framebuffer;
     lastFrame = nullptr;
-#endif
 }
 
 int ConsoleUI::setPath(std::string path) {
@@ -1122,7 +1107,7 @@ void ConsoleUI::fileBrowser() {
         closedir(dir);
 
         // Create the file browser menu
-        uint32_t pressed = menu("NooDS", files, index, "Settings", "Exit");
+        uint32_t pressed = menu("NooDSU", files, index, "Settings", "Exit");
 
         // Handle menu input
         if (pressed & defaultKeys[INPUT_A]) {
@@ -1349,7 +1334,7 @@ void ConsoleUI::pauseMenu() {
     int index = 0;
     while (true) {
         // Create the pause menu
-        uint32_t pressed = menu("NooDS", items, index, "", "Exit");
+        uint32_t pressed = menu("NooDSU", items, index, "", "Exit");
 
         // Handle menu input
         if (pressed & defaultKeys[INPUT_A]) {
@@ -1406,7 +1391,7 @@ void ConsoleUI::pauseMenu() {
 
                 case STATE_VERSION_FAIL:
                     title = "Error";
-                    text = "The state file isn't compatible with this version of NooDS.";
+                    text = "The state file isn't compatible with this version of NooDSU.";
                     break;
                 }
 
@@ -1691,16 +1676,12 @@ void ConsoleUI::jitSelfTest() {
         if (result == "") result = "Stopped early";
         done.store(true);
     };
-#ifdef __WIIU__
     OSThreadEntryPointFn entry = [](int argc, const char **argv) -> int {
         (*(std::function<void()>*)argv)();
         return 0;
     };
     OSThread *testThread = WorkerThread::createThread(entry, &work, 0x100000,
         OSGetThreadPriority(OSGetCurrentThread()), OS_THREAD_ATTRIB_AFFINITY_CPU1);
-#else
-    std::thread testThread(work);
-#endif
 
     // Show progress twice a second, and stop if B is pressed
     while (!done.load()) {
@@ -1717,11 +1698,7 @@ void ConsoleUI::jitSelfTest() {
         drawString("Press B to stop", SCALE(90), SCALE(238), SCALE(38), palette[1]);
         endFrame();
     }
-#ifdef __WIIU__
     OSJoinThread(testThread, nullptr);
-#else
-    testThread.join();
-#endif
     mode = std::string(!b.jit.enabled ? "JIT off" : (b.jit.isNative() ? "native code" : "portable executor")) +
         (Settings::fastTiming ? ", fast timing" : "");
 
@@ -1791,27 +1768,27 @@ bool ConsoleUI::createCore() {
         switch (e) {
         case ERROR_NDS_BIOS: // Missing NDS BIOS files
             text = "Make sure the path settings point to valid NDS BIOS files, or boot ROMs directly.\n"
-                "You can modify path settings in the noods.ini file.";
+                "You can modify path settings in the noodsu.ini file.";
             message("Error Loading NDS BIOS", text);
             break;
         case ERROR_NDS_FIRM: // Non-bootable firmware file
             text = "Make sure the path settings point to a firmware file dumped from a pre-DSi console,"
-                " or boot ROMs directly.\nYou can modify path settings in the noods.ini file.";
+                " or boot ROMs directly.\nYou can modify path settings in the noodsu.ini file.";
             message("Error Loading NDS Firmware", text);
             break;
         case ERROR_DSI_BIOS: // Missing DSi BIOS files
             text = "Make sure the path settings point to valid DSi BIOS files, or turn off DSi mode.\n"
-                "You can modify path settings in the noods.ini file.";
+                "You can modify path settings in the noodsu.ini file.";
             message("Error Loading DSi BIOS", text);
                 break;
         case ERROR_DSI_FIRM: // Invalid DSi firmware file
             text = "Make sure the path settings point to a firmware file dumped from a DSi console,"
-                " or turn off DSi mode.\nYou can modify path settings in the noods.ini file.";
+                " or turn off DSi mode.\nYou can modify path settings in the noodsu.ini file.";
             message("Error Loading DSi Firmware", text);
             break;
         case ERROR_DSI_NAND: // Missing DSi NAND file
             text = "Make sure the path settings point to a valid DSi NAND file, or turn off DSi mode.\n"
-                "You can modify path settings in the noods.ini file.";
+                "You can modify path settings in the noodsu.ini file.";
             message("Error Loading DSi NAND", text);
             break;
         case ERROR_ROM: // Unreadable ROM file
@@ -1833,7 +1810,6 @@ void ConsoleUI::startCore() {
     if (running) return;
     running = true;
 
-#ifdef __WIIU__
     // Generated code only runs on core 1, and running threads can't be moved between cores, so create
     // the emulator thread there
     // The UI and helper threads stay off core 1, so the emulator has it to itself with or without the JIT
@@ -1861,7 +1837,6 @@ void ConsoleUI::startCore() {
         saveThread = new WorkerThread(WorkerThread::CORE_2, checkSave);
         return;
     }
-#endif
 
     // Start the threads
     coreThread = new std::thread(runCore);
@@ -1878,13 +1853,11 @@ void ConsoleUI::stopCore() {
     else return;
 
     // Wait for the threads to stop
-#ifdef __WIIU__
     if (emuThread) {
         OSJoinThread(emuThread, nullptr);
         emuThread = nullptr;
     }
     else
-#endif
     {
         coreThread->join();
         delete coreThread;

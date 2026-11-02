@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build Wii U debug variants of NooDS, each with its own build folder, app file and title, so they can sit next to
+# Build Wii U debug variants of NooDSU, each with its own build folder, app file and title, so they can sit next to
 # the regular build. The folder is cleared first, since make doesn't notice when only the flags change.
 # Usage: ./build-wiiu-debug.sh <variant>...
 #   heartbeat    Progress counters and timings in heartbeat.log, 4 times a second
@@ -23,22 +23,22 @@ BASE='-g -Ofast -fno-allow-store-data-races -flto -ffunction-sections -DESPRESSO
 [ $# -gt 0 ] || { sed -n '2,18p' "$0"; exit 1; }
 for variant in "$@"; do
     case $variant in
-        heartbeat) flags='-DHEARTBEAT'; name=noods-hb; title='NooDS Heartbeat' ;;
-        timeline) flags='-DHEARTBEAT -DGPU_TIMELINE'; name=noods-timeline; title='NooDS GPU Timeline' ;;
-        capture) flags='-DFRAME_CAPTURE'; name=noods-capture; title='NooDS Capture' ;;
-        statedebug) flags='-DSTATE_DEBUG -DHEARTBEAT'; name=noods-statedebug; title='NooDS State Debug' ;;
-        gpudump) flags='-DGPU_DUMP'; name=noods-dump; title='NooDS Dump' ;;
-        threadprobe) flags='-DTHREAD_PROBE'; name=noods-probe; title='NooDS Probe' ;;
-        profile) flags='-DPROFILE_EMU'; name=noods-profile; title='NooDS Profile' ;;
-        jittest) flags='-DJIT_SELFTEST'; name=noods-jittest; title='NooDS JIT Test' ;;
-        drcdebug) flags='-DDRC_DEBUG'; name=noods-drcdebug; title='NooDS GamePad Debug' ;;
-        frametime) flags='-DHEARTBEAT -DPROFILE_EMU'; name=noods-frametime; title='NooDS Frame Times' ;;
-        framelog) flags='-DFRAME_LOG'; name=noods-framelog; title='NooDS Frame Log' ;;
-        romload) flags='-DROM_LOAD_TEST'; name=noods-romload; title='NooDS ROM Load' ;;
+        heartbeat) flags='-DHEARTBEAT'; name=noodsu-hb; title='NooDSU Heartbeat' ;;
+        timeline) flags='-DHEARTBEAT -DGPU_TIMELINE'; name=noodsu-timeline; title='NooDSU GPU Timeline' ;;
+        capture) flags='-DFRAME_CAPTURE'; name=noodsu-capture; title='NooDSU Capture' ;;
+        statedebug) flags='-DSTATE_DEBUG -DHEARTBEAT'; name=noodsu-statedebug; title='NooDSU State Debug' ;;
+        gpudump) flags='-DGPU_DUMP'; name=noodsu-dump; title='NooDSU Dump' ;;
+        threadprobe) flags='-DTHREAD_PROBE'; name=noodsu-probe; title='NooDSU Probe' ;;
+        profile) flags='-DPROFILE_EMU'; name=noodsu-profile; title='NooDSU Profile' ;;
+        jittest) flags='-DJIT_SELFTEST'; name=noodsu-jittest; title='NooDSU JIT Test' ;;
+        drcdebug) flags='-DDRC_DEBUG'; name=noodsu-drcdebug; title='NooDSU GamePad Debug' ;;
+        frametime) flags='-DHEARTBEAT -DPROFILE_EMU'; name=noodsu-frametime; title='NooDSU Frame Times' ;;
+        framelog) flags='-DFRAME_LOG'; name=noodsu-framelog; title='NooDSU Frame Log' ;;
+        romload) flags='-DROM_LOAD_TEST'; name=noodsu-romload; title='NooDSU ROM Load' ;;
         *) echo "Unknown variant: $variant"; exit 1 ;;
     esac
     rm -rf "build-wiiu-$name"
-    make -f Makefile.wiiu -j8 BUILD="build-wiiu-$name" NAME="$name" APP_NAME="$title" \
+    make -j8 BUILD="build-wiiu-$name" NAME="$name" APP_NAME="$title" \
         CXXFLAGS="$BASE $flags" CFLAGS="$BASE $flags"
     echo "Built $name.wuhb ($title)"
 done

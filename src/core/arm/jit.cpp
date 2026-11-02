@@ -1,26 +1,25 @@
 /*
     Copyright 2019-2026 Hydr8gon
+    Copyright 2026 michyprima
 
-    This file is part of NooDS.
+    This file is part of NooDSU.
 
-    NooDS is free software: you can redistribute it and/or modify it
+    NooDSU is free software: you can redistribute it and/or modify it
     under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
 
-    NooDS is distributed in the hope that it will be useful, but
+    NooDSU is distributed in the hope that it will be useful, but
     WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
     General Public License for more details.
 
     You should have received a copy of the GNU General Public License
-    along with NooDS. If not, see <https://www.gnu.org/licenses/>.
+    along with NooDSU. If not, see <https://www.gnu.org/licenses/>.
 */
 
 #include <cstring>
-#ifdef __WIIU__
 #include <coreinit/core.h>
-#endif
 
 #include "../core.h"
 #include "../emu_profile.h"
@@ -539,7 +538,6 @@ void Jit::execute(JitBlock *block, const uint32_t *limit) {
     running = true;
     codeChanged = 0;
 
-#ifdef __WIIU__
     // Run generated code if there is any, which only works on the codegen core
     if (block->code && OSGetCoreId() == codeCore) {
 #ifdef JIT_LOG
@@ -558,7 +556,6 @@ void Jit::execute(JitBlock *block, const uint32_t *limit) {
 #endif
         block = nullptr;
     }
-#endif
 
     // Run each instruction like the interpreter does, setting the program counter as if it was fetched
     // When the next instruction can't follow straight away, the other CPU and scheduler are handled like the

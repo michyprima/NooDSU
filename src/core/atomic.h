@@ -2,7 +2,6 @@
 
 #include <atomic>
 
-#ifdef __WIIU__
 #include <cstdint>
 #include <type_traits>
 #include <coreinit/atomic.h>
@@ -49,6 +48,3 @@ public:
         return compare_exchange_strong(expected, next);
     }
 };
-#else
-template <typename T> using Atomic32 = std::atomic<T>;
-#endif

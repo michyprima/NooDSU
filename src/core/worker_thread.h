@@ -1,20 +1,21 @@
 /*
     Copyright 2019-2026 Hydr8gon
+    Copyright 2026 michyprima
 
-    This file is part of NooDS.
+    This file is part of NooDSU.
 
-    NooDS is free software: you can redistribute it and/or modify it
+    NooDSU is free software: you can redistribute it and/or modify it
     under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
 
-    NooDS is distributed in the hope that it will be useful, but
+    NooDSU is distributed in the hope that it will be useful, but
     WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
     General Public License for more details.
 
     You should have received a copy of the GNU General Public License
-    along with NooDS. If not, see <https://www.gnu.org/licenses/>.
+    along with NooDSU. If not, see <https://www.gnu.org/licenses/>.
 */
 
 #pragma once
@@ -22,12 +23,10 @@
 #include <functional>
 #include <thread>
 
-#ifdef __WIIU__
 #include <cstdlib>
 #include <cstring>
 #include <malloc.h>
 #include <coreinit/thread.h>
-#endif
 
 // Waits in a loop for something another thread does, by yielding; it's one place to change how waits behave
 class SpinWait {
@@ -43,7 +42,6 @@ public:
 // threads can't change cores once running, so this has to be set when they're created
 class WorkerThread {
 public:
-#ifdef __WIIU__
     // Create and start a thread on Wii U with its memory in one block, freed by the OS once the thread has
     // fully exited, like std::thread does; freeing it right after joining isn't safe, since the thread can
     // still be exiting on its stack at that point
@@ -63,7 +61,6 @@ public:
         OSResumeThread(thread);
         return thread;
     }
-#endif
 
     // A core to keep a thread on, for platforms that let threads be placed
     enum Core { ANY_CORE, CORE_0, CORE_2 };
@@ -71,13 +68,11 @@ public:
     template <typename... Args> WorkerThread(Args&&... args): WorkerThread(ANY_CORE, std::forward<Args>(args)...) {}
 
     template <typename... Args> WorkerThread(Core core, Args&&... args): func(std::bind(std::forward<Args>(args)...)) {
-#ifdef __WIIU__
         // Create the thread like std::thread does on Wii U, but only allowed on cores 0 and 2, or just one of them
         uint32_t affinity = ((core != CORE_2) ? OS_THREAD_ATTRIB_AFFINITY_CPU0 : 0) |
             ((core != CORE_0) ? OS_THREAD_ATTRIB_AFFINITY_CPU2 : 0);
         thread = createThread(entry, this, STACK_SIZE, 16, affinity);
         if (thread) return;
-#endif
         fallback = new std::thread(func);
     }
 
@@ -86,19 +81,15 @@ public:
     }
 
     void setPriority(int priority) {
-#ifdef __WIIU__
         if (thread) OSSetThreadPriority(thread, priority);
-#endif
     }
 
     void join() {
-#ifdef __WIIU__
         if (thread) {
             OSJoinThread(thread, nullptr);
             thread = nullptr;
             return;
         }
-#endif
         fallback->join();
     }
 
@@ -106,7 +97,6 @@ private:
     std::function<void()> func;
     std::thread *fallback = nullptr;
 
-#ifdef __WIIU__
     static const int STACK_SIZE = 0x20000;
     OSThread *thread = nullptr;
 
@@ -114,5 +104,4 @@ private:
         ((WorkerThread*)argv)->func();
         return 0;
     }
-#endif
 };

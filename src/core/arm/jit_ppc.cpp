@@ -1,20 +1,21 @@
 /*
     Copyright 2019-2026 Hydr8gon
+    Copyright 2026 michyprima
 
-    This file is part of NooDS.
+    This file is part of NooDSU.
 
-    NooDS is free software: you can redistribute it and/or modify it
+    NooDSU is free software: you can redistribute it and/or modify it
     under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
 
-    NooDS is distributed in the hope that it will be useful, but
+    NooDSU is distributed in the hope that it will be useful, but
     WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
     General Public License for more details.
 
     You should have received a copy of the GNU General Public License
-    along with NooDS. If not, see <https://www.gnu.org/licenses/>.
+    along with NooDSU. If not, see <https://www.gnu.org/licenses/>.
 */
 
 // PowerPC code generation for the JIT, used on Wii U
@@ -22,15 +23,12 @@
 
 #include <cstddef>
 #include <cstring>
-#ifdef __WIIU__
 #include <coreinit/cache.h>
 #include <coreinit/codegen.h>
 #include <coreinit/core.h>
-#endif
 
 #include "../core.h"
 
-#if defined(__WIIU__) || defined(JIT_PPC_TEST)
 
 // Registers that hold state while generated code runs; they're saved by the entry code
 enum PpcReg {
@@ -171,9 +169,7 @@ template <typename T> static void *memberAddress(T func) {
     return (parts.ptr & 1 || parts.adj) ? nullptr : (void*)parts.ptr;
 }
 
-#ifdef __WIIU__
 static_assert(sizeof(JitCacheEntry) == 16, "Generated code expects 16-byte cache entries");
-#endif
 
 // Memory accesses for native loads and stores that miss the memory maps, done like the interpreter
 template <bool arm7> static uint32_t jitLoad32(Memory *memory, uint32_t address) {
@@ -204,14 +200,11 @@ template <bool arm7> static void jitStore8(Memory *memory, uint32_t address, uin
 
 // The codegen area is shared by one ARM9 and one ARM7 JIT at a time, with the ARM9 getting most of it
 static Jit *codeOwners[2] = {};
-#ifdef __WIIU__
 static uint8_t *sharedArea = nullptr;
 static uint32_t sharedSize = 0;
-#endif
 
 void Jit::initCodegen() {
     if (codeArea) return;
-#ifdef __WIIU__
     // Get the codegen area, which can only be used from one CPU core
     // Try again later if this thread isn't on that core yet, and give up for anything else
     if (OSGetCoreId() != (OSGetCodegenCore() & 3)) return;
@@ -234,15 +227,8 @@ void Jit::initCodegen() {
     uint32_t split = (sharedSize / 4 * 3) & ~0xFFF;
     uint8_t *area = arm7 ? (sharedArea + split) : sharedArea;
     uint32_t size = arm7 ? (sharedSize - split) : split;
-#else
-    // When testing on other platforms, generate code into normal memory without running it
-    uint32_t size = 0x2000000;
-    uint8_t *area = new uint8_t[size];
-#endif
     codeOwners[arm7] = this;
-#ifdef __WIIU__
     codeCore = OSGetCoreId();
-#endif
     codeArea = area;
     codeEnd = codeArea + size;
 
@@ -486,9 +472,6 @@ void Jit::emitStubs(PpcEmitter &e) {
 void Jit::freeCodegen() {
     // Let another JIT use this part of the codegen area
     if (codeOwners[arm7] != this) return;
-#ifndef __WIIU__
-    delete[] codeArea;
-#endif
     codeOwners[arm7] = nullptr;
     codeArea = codeStart = codePtr = codeEnd = nullptr;
 }
@@ -505,9 +488,7 @@ void Jit::applyUnlinks() {
         unlinks.clear();
         return;
     }
-#ifdef __WIIU__
     if (OSGetCoreId() != codeCore || !OSSwitchSecCodeGenMode(CODEGEN_RW_)) return;
-#endif
     for (size_t i = 0; i < unlinks.size(); i++)
         patchJump(unlinks[i], codeDispatch);
     finishCode(nullptr, 0, unlinks);
@@ -515,7 +496,6 @@ void Jit::applyUnlinks() {
 }
 
 void Jit::finishCode(uint8_t *start, size_t size, const std::vector<uint32_t*> &patched) {
-#ifdef __WIIU__
     // Write the code and any patched jumps to memory and make the area executable again
     if (start) DCFlushRange(start, size);
     for (size_t i = 0; i < patched.size(); i++)
@@ -528,7 +508,6 @@ void Jit::finishCode(uint8_t *start, size_t size, const std::vector<uint32_t*> &
     static uint32_t count = 0;
     if (++count <= 200 || (count % 10000) == 0)
         JLOG("code %u: %p size %X, switch to RX returned %X, sec %X", count, start, (uint32_t)size, rx, OSGetSecCodeGenMode());
-#endif
 #endif
 }
 
@@ -1079,10 +1058,8 @@ void *Jit::generate(JitBlock *block) {
     // Make sure there's room for the block, starting over if the area is full
     size_t maxSize = block->instrs.size() * MAX_INSTR_WORDS * 4 + 16;
     if (codePtr + maxSize > codeEnd) return nullptr;
-#ifdef __WIIU__
     // The codegen area can only be touched from its core; blocks use the portable executor otherwise
     if (OSGetCoreId() != codeCore || !OSSwitchSecCodeGenMode(CODEGEN_RW_)) return nullptr;
-#endif
 
     // Set the program counter register at the start, then step it before each instruction
     // Record where each instruction starts after stepping, so other blocks can jump into the middle
@@ -1122,9 +1099,7 @@ void *Jit::generate(JitBlock *block) {
 void *Jit::generateEntry(JitBlock *host, size_t index) {
     // Generate a small entry point into the middle of another block's code, instead of compiling it again
     if (!codeArea || !host->code || index >= host->entries.size() || codePtr + 64 > codeEnd) return nullptr;
-#ifdef __WIIU__
     if (OSGetCoreId() != codeCore || !OSSwitchSecCodeGenMode(CODEGEN_RW_)) return nullptr;
-#endif
     PpcEmitter e(codePtr);
     e.loadConst(R_PC, host->address + (index + 2) * (host->thumb ? 2 : 4));
     e.b((uint8_t*)host->code + host->entries[index]);
@@ -1145,38 +1120,6 @@ void Jit::linkEntry(JitBlock *block) {
     finishCode((uint8_t*)block->code, 16, patched);
 }
 
-#else
-
-void Jit::initCodegen() {
-    // There's no native code backend on this platform, so blocks use the portable executor
-    codeFailed = true;
-}
-
-void Jit::freeCodegen() {}
-
-bool Jit::codeFull() {
-    return false;
-}
-
-void Jit::finishCode(uint8_t *start, size_t size, const std::vector<uint32_t*> &patched) {}
-
-void Jit::patchJump(uint32_t *site, void *target) {}
-
-void Jit::applyUnlinks() {
-    unlinks.clear();
-}
-
-void Jit::linkEntry(JitBlock *block) {}
-
-void *Jit::generate(JitBlock *block) {
-    return nullptr;
-}
-
-void *Jit::generateEntry(JitBlock *host, size_t index) {
-    return nullptr;
-}
-
-#endif
 
 #ifdef JIT_PPC_TEST
 // Generate the shared routines and then one native instruction, for testing generated code in an emulator
