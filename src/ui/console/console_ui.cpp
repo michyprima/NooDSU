@@ -75,7 +75,7 @@ bool ConsoleUI::touchMode;
 Core *ConsoleUI::core;
 bool ConsoleUI::running;
 std::string ConsoleUI::ndsPath, ConsoleUI::gbaPath;
-std::string ConsoleUI::basePath, ConsoleUI::curPath;
+std::string ConsoleUI::basePath, ConsoleUI::curPath, ConsoleUI::defaultFolder;
 
 alignas(4096) uint32_t ConsoleUI::framebuffer[256 * 192 * 8];
 ScreenLayout ConsoleUI::layout;
@@ -167,7 +167,7 @@ const uint8_t ConsoleUI::charWidths[] = {
     16, 12, 18, 16, 9, 20, 21, 18, 21, 20,
     10, 20, 20, 8, 12, 19, 9, 30, 20, 21,
     21, 21, 12, 16, 12, 20, 17, 29, 17, 17,
-    16, 9, 8, 9, 12, 0, 40, 40, 40, 40
+    16, 9, 8, 9, 12, 40, 40, 40, 40, 40
 };
 
 void ConsoleUI::drawRectangle(float x, float y, float w, float h, uint32_t color) {
@@ -266,6 +266,7 @@ void ConsoleUI::initialize(int width, int height, std::string root, std::string 
     std::vector<Setting> platformSettings = {
         Setting("showFpsCounter", &showFpsCounter, false),
         Setting("menuTheme", &menuTheme, false),
+        Setting("defaultFolder", &defaultFolder, true),
         Setting("keyA", &keyBinds[INPUT_A], false),
         Setting("keyB", &keyBinds[INPUT_B], false),
         Setting("keySelect", &keyBinds[INPUT_SELECT], false),
@@ -307,6 +308,11 @@ void ConsoleUI::initialize(int width, int height, std::string root, std::string 
     lineHeight = height / 480;
     basePath = curPath = root;
     changed = true;
+
+    // Start in the default folder if it's set and still there
+    struct stat folder;
+    if (defaultFolder.rfind(root, 0) == 0 && !stat(defaultFolder.c_str(), &folder) && S_ISDIR(folder.st_mode))
+        curPath = defaultFolder;
 }
 
 void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout) {
@@ -787,8 +793,9 @@ int ConsoleUI::setPath(std::string path) {
 }
 
 uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
-    int &index, std::string actionX, std::string actionPlus, bool actionOk) {
+    int &index, std::string actionX, std::string actionPlus, bool actionOk, std::string actionMinus) {
     // Define the action strings
+    if (actionMinus != "") actionMinus = "\x7F " + actionMinus + "     ";
     if (actionPlus != "") actionPlus = "\x83 " + actionPlus + "     ";
     if (actionX != "") actionX = "\x82 " + actionX + "     ";
     std::string actionB = actionOk ? "\x81 Back     " : "\x81 Back";
@@ -800,6 +807,7 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
     if (!actionOk) boundsAB = 1280;
     int boundsXPlus = boundsBX - stringWidth(actionX) * 34 / 48;
     int boundsPlus = boundsXPlus - stringWidth(actionPlus) * 34 / 48;
+    int boundsMinus = boundsPlus - stringWidth(actionMinus) * 34 / 48;
 
     // Define variables for button input
     bool upHeld = false;
@@ -829,7 +837,7 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
         drawRectangle(SCALE(30), SCALE(88), SCALE(1220), lineHeight, palette[1]);
         drawRectangle(SCALE(30), SCALE(648), SCALE(1220), lineHeight, palette[1]);
         drawString(NOODSU_VERSION, SCALE(72), SCALE(667), SCALE(34), palette[1]);
-        drawString(actionPlus + actionX + actionB + actionA, SCALE(1218), SCALE(667), SCALE(34), palette[1], true);
+        drawString(actionMinus + actionPlus + actionX + actionB + actionA, SCALE(1218), SCALE(667), SCALE(34), palette[1], true);
 
         // Scan for key input
         uint32_t pressed = getInputPress();
@@ -865,7 +873,8 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
 
         // Return button presses so they can be handled externally
         if (((pressed & defaultKeys[INPUT_A]) && !touchMode) || (pressed & defaultKeys[INPUT_B]) || (actionX != ""
-            && (pressed & defaultKeys[INPUT_X])) || (actionPlus != "" && (pressed & defaultKeys[INPUT_START]))) {
+            && (pressed & defaultKeys[INPUT_X])) || (actionPlus != "" && (pressed & defaultKeys[INPUT_START])) ||
+            (actionMinus != "" && (pressed & defaultKeys[INPUT_SELECT]))) {
             touchMode = false;
             return pressed;
         }
@@ -941,6 +950,8 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
                     return defaultKeys[INPUT_X];
                 else if (touchStart.x >= boundsPlus && touchStart.x < boundsXPlus)
                     return defaultKeys[INPUT_START];
+                else if (touchStart.x >= boundsMinus && touchStart.x < boundsPlus)
+                    return defaultKeys[INPUT_SELECT];
             }
             touchStarted = false;
         }
@@ -1118,7 +1129,7 @@ void ConsoleUI::fileBrowser() {
         closedir(dir);
 
         // Create the file browser menu
-        uint32_t pressed = menu("NooDSU", files, index, "Settings", "Exit");
+        uint32_t pressed = menu("NooDSU", files, index, "Settings", "Exit", true, "Set Default");
 
         // Handle menu input
         if (pressed & defaultKeys[INPUT_A]) {
@@ -1156,6 +1167,13 @@ void ConsoleUI::fileBrowser() {
         else if (pressed & defaultKeys[INPUT_START]) {
             // Close the file browser
             return;
+        }
+        else if (pressed & defaultKeys[INPUT_SELECT]) {
+            // Start in this folder from now on
+            defaultFolder = curPath;
+            Settings::save();
+            std::string shown = curPath.substr(basePath.size());
+            message("Default Folder", "The file browser will now start in:\n" + (shown.empty() ? "/" : shown));
         }
     }
 }

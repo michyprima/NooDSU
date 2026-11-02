@@ -148,7 +148,7 @@ private:
     static bool touchMode;
 
     static std::string ndsPath, gbaPath;
-    static std::string basePath, curPath;
+    static std::string basePath, curPath, defaultFolder;
     static bool changed;
 
     static std::thread *coreThread;
@@ -165,7 +165,8 @@ private:
     static int stringWidth(std::string &string);
 
     static uint32_t menu(std::string title, std::vector<MenuItem> &items,
-        int &index, std::string actionX = "", std::string actionPlus = "", bool actionOk = true);
+        int &index, std::string actionX = "", std::string actionPlus = "", bool actionOk = true,
+        std::string actionMinus = "");
     static uint32_t message(std::string title, std::string text, int type = 0);
 
 #ifdef JIT_SELFTEST
