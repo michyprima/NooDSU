@@ -1765,9 +1765,16 @@ void ConsoleUI::jitSelfTest() {
 
 bool ConsoleUI::createCore() {
     try {
-        // Attempt to create the core
-        if (core) delete core;
+        // Let a new core reuse ROMs that are already in memory, instead of reading them from file again
+        if (core) {
+            core->cartridgeNds.keepRom();
+            core->cartridgeGba.keepRom();
+            delete core;
+        }
         core = nullptr;
+        Cartridge::dropKeptRoms(ndsPath, gbaPath);
+
+        // Attempt to create the core
         if (Settings::romInRam == 1) {
             // Create the core on another thread when the whole ROM is loaded first, showing how far along it is
             std::atomic<bool> done(false);

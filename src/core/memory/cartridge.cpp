@@ -27,6 +27,7 @@
 
 std::atomic<int> Cartridge::loadPercent{-1};
 std::atomic<bool> Cartridge::cancelLoad{false};
+Cartridge::KeptRom Cartridge::keptRoms[2];
 
 Cartridge::~Cartridge() {
     // Update the save file before exiting
@@ -299,6 +300,55 @@ bool Cartridge::startRomLoad() {
     return true;
 }
 
+void Cartridge::freeKeptRom(KeptRom &kept) {
+    delete[] kept.data;
+    kept.data = nullptr;
+}
+
+void Cartridge::dropKeptRoms(std::string ndsPath, std::string gbaPath) {
+    // Free what won't be used, before anything new is loaded, so two ROMs are never in memory at once
+    if (keptRoms[0].path != ndsPath || !Settings::romInRam) freeKeptRom(keptRoms[0]);
+    if (keptRoms[1].path != gbaPath) freeKeptRom(keptRoms[1]);
+}
+
+void Cartridge::keepRom() {
+    // Hand over a fully loaded ROM for the next core, with no loading progress left to show
+    if (!rom || romFd != -1 || !romLoaded.load(std::memory_order_acquire)) return;
+    KeptRom &kept = keptRoms[this == &core->cartridgeGba];
+    freeKeptRom(kept);
+    kept.path = romPath;
+    kept.data = rom;
+    kept.size = romSize;
+    kept.dsiMode = core->dsiMode;
+    kept.dldiPatched = core->dldi.isPatched();
+    rom = nullptr;
+    loadPercent.store(-1);
+}
+
+bool Cartridge::takeKeptRom() {
+    // Use the ROM kept from the last core if it's this one, or free it to make room
+    KeptRom &kept = keptRoms[this == &core->cartridgeGba];
+    if (!kept.data) return false;
+    if (romFd != -1 || kept.path != romPath || kept.size != romSize || kept.dsiMode != core->dsiMode) {
+        freeKeptRom(kept);
+        return false;
+    }
+
+    // Read from memory like a ROM that was just loaded into RAM, which needs the file no more
+    delete[] rom;
+    rom = kept.data;
+    romBufSize = romSize;
+    kept.data = nullptr;
+    if (kept.dldiPatched) core->dldi.setPatched();
+    {
+        std::lock_guard<std::recursive_mutex> guard(fileLock());
+        fclose(romFile);
+    }
+    romFile = nullptr;
+    setRomLoaded();
+    return true;
+}
+
 void Cartridge::waitRomLoad() {
     // Wait for a ROM that's being loaded into RAM to be fully loaded, giving up if loading is cancelled
     // The loading thread is stopped when the cartridge is destroyed, as the core is thrown out
@@ -532,6 +582,9 @@ bool CartridgeNds::loadRom() {
     // Try to load the ROM into RAM if enabled; otherwise fall back to file-based loading
     if (!Cartridge::loadRom()) {
         return false;
+    }
+    else if (Settings::romInRam && takeKeptRom()) {
+        // The ROM is already in RAM from the last core
     }
     else if (Settings::romInRam) {
         // Load the ROM into RAM on another thread, or fall back to reading from file if there isn't room
@@ -1263,9 +1316,12 @@ bool CartridgeGba::loadRom() {
 
     // Load the ROM into memory
     if (!Cartridge::loadRom()) return false;
-    loadRomSection(0, romSize);
-    fclose(romFile);
-    romFile = nullptr;
+    if (!takeKeptRom()) {
+        loadRomSection(0, romSize);
+        fclose(romFile);
+        romFile = nullptr;
+        setRomLoaded();
+    }
 
     // Calculate the mask for ROM mirroring
     if (romSize > 0xAC && rom[0xAC] == 'F') { // NES classic

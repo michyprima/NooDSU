@@ -46,11 +46,15 @@ public:
     static std::atomic<int> loadPercent;
     static std::atomic<bool> cancelLoad; // Set to stop waiting for a ROM to fully load, which cancels creating the core
 
+    // Free ROMs kept from a previous core, unless they're the ones about to be loaded
+    static void dropKeptRoms(std::string ndsPath, std::string gbaPath);
+
     Cartridge(Core *core): core(core) {}
     ~Cartridge();
 
     bool setRom(std::string romPath, int romFd = -1, int saveFd = -1, int stateFd = -1, int cheatFd = -1);
     void writeSave();
+    void keepRom();
 
     void trimRom();
     void resizeSave(int newSize, bool dirty = true);
@@ -72,6 +76,8 @@ protected:
 
     virtual bool loadRom();
     void loadRomSection(size_t offset, size_t size);
+    void setRomLoaded() { romLoaded.store(true, std::memory_order_release); }
+    bool takeKeptRom();
     bool startRomLoad();
     void waitRomLoad();
     void ensureLoaded(size_t offset, size_t size);
@@ -79,6 +85,18 @@ protected:
 private:
     std::string romPath, savePath;
     int romFd = -1, saveFd = -1;
+
+    // A fully loaded ROM handed over by the last core, so restarting doesn't read it from file again
+    // NDS and GBA ROMs each have a place, and what a ROM looks like once loaded only depends on the DSi mode
+    struct KeptRom {
+        std::string path;
+        uint8_t *data = nullptr;
+        int size = 0;
+        bool dsiMode = false, dldiPatched = false;
+    };
+
+    static KeptRom keptRoms[2];
+    static void freeKeptRom(KeptRom &kept);
 
     // Large chunks of a ROM file kept in memory, so that small streamed reads don't each go to the file
     // Chunks are filled in blocks: a block that's needed is read right away, while another thread loads the rest of

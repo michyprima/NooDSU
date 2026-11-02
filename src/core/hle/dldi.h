@@ -41,6 +41,7 @@ public:
 
     void patchRom(uint8_t *rom, uint32_t offset, uint32_t size);
     bool isPatched() { return patched; }
+    void setPatched() { patched = true; }
 
     int startup();
     int isInserted();
