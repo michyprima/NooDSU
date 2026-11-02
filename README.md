@@ -1,3 +1,5 @@
+<p align="center"><img src="icon/icon-wiiu-framed.png" width="256" alt="NooDSU icon"></p>
+
 # NooDSU
 A DS and GBA emulator for the Wii U.
 
