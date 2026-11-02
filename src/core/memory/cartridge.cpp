@@ -25,9 +25,25 @@
 #include "../file_lock.h"
 #include "../heartbeat.h"
 
+#ifdef __WIIU__
+#include <malloc.h>
+#endif
+#ifdef ROM_LOAD_TEST
+#include <coreinit/time.h>
+#endif
+
 std::atomic<int> Cartridge::loadPercent{-1};
 std::atomic<bool> Cartridge::cancelLoad{false};
 Cartridge::KeptRom Cartridge::keptRoms[2];
+
+static uint8_t *allocRom(size_t size) {
+    // Reading from file into memory that's aligned for it is much faster on Wii U
+#ifdef __WIIU__
+    return (uint8_t*)memalign(64, size);
+#else
+    return (uint8_t*)malloc(size);
+#endif
+}
 
 Cartridge::~Cartridge() {
     // Update the save file before exiting
@@ -55,7 +71,7 @@ Cartridge::~Cartridge() {
 
     // Free the ROM and save memory
     if (romFile) fclose(romFile);
-    if (rom) delete[] rom;
+    free(rom);
     if (save) delete[] save;
     for (int i = 0; i < CHUNK_COUNT; i++)
         delete[] chunks[i].alloc;
@@ -117,8 +133,8 @@ bool Cartridge::loadRom() {
 void Cartridge::loadRomSection(size_t offset, size_t size) {
     // Make sure the ROM buffer can hold the section, keeping it between loads
     if (size > romBufSize) {
-        if (rom) delete[] rom;
-        rom = new uint8_t[size];
+        free(rom);
+        rom = allocRom(size);
         romBufSize = size;
     }
 
@@ -275,11 +291,11 @@ void Cartridge::runPrefetch() {
 bool Cartridge::startRomLoad() {
     // Allocate memory for the whole ROM, with room for DLDI patches that run past the end, and track its blocks
     size_t blocks = (romSize + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    delete[] rom;
-    rom = new (std::nothrow) uint8_t[romSize + 0x100];
+    free(rom);
+    rom = allocRom(romSize + 0x100);
     romBlocks = new (std::nothrow) std::atomic<uint8_t>[blocks];
     if (!rom || !romBlocks) {
-        delete[] rom;
+        free(rom);
         delete[] romBlocks;
         rom = nullptr;
         romBlocks = nullptr;
@@ -289,19 +305,27 @@ bool Cartridge::startRomLoad() {
     for (size_t i = 0; i < blocks; i++)
         romBlocks[i].store(0);
 
-    // Hand the file over to loading, so the ROM is read from memory, then load the start of the ROM, which has
-    // the header and secure area, and start loading the rest on another thread
+    // Hand the file over to loading, so the ROM is read from memory, and start loading it on another thread
     loadFile = romFile;
     romFile = nullptr;
     blocksLoaded = 0;
     loadPercent.store(0);
+#ifdef ROM_LOAD_TEST
+    loadStart = OSGetSystemTime();
+#endif
+    if (Settings::romInRam != 2) {
+        loadThread = new WorkerThread(WorkerThread::CORE_2, &Cartridge::runFullLoad, this);
+        return true;
+    }
+
+    // When streaming, the game starts right away, so load the start of the ROM, which has the header and secure area
     loadRomBlocks(0, std::min<size_t>(blocks, (0x8200 + BLOCK_SIZE - 1) / BLOCK_SIZE));
     loadThread = new WorkerThread(WorkerThread::CORE_2, &Cartridge::runRomLoad, this);
     return true;
 }
 
 void Cartridge::freeKeptRom(KeptRom &kept) {
-    delete[] kept.data;
+    free(kept.data);
     kept.data = nullptr;
 }
 
@@ -335,7 +359,7 @@ bool Cartridge::takeKeptRom() {
     }
 
     // Read from memory like a ROM that was just loaded into RAM, which needs the file no more
-    delete[] rom;
+    free(rom);
     rom = kept.data;
     romBufSize = romSize;
     kept.data = nullptr;
@@ -431,13 +455,49 @@ void Cartridge::runRomLoad() {
     }
 
     // Every claimed read has completed on this worker, so no other thread can still be using the file
-    if (stopLoad.load()) return;
+    if (!stopLoad.load()) finishRomLoad();
+}
+
+void Cartridge::runFullLoad() {
+    // Nothing reads the ROM until it's all loaded, so read it straight into place, in pieces as large as reading gets
+    // faster for while still being able to stop; patches can read and write a little past the end of the ROM
+    const size_t romEnd = romSize, pieceSize = 0x100000, lookahead = 0x100;
+    memset(&rom[romEnd], 0xFF, lookahead);
+    size_t scanned = 0;
+    for (size_t pos = 0; pos < romEnd && !stopLoad.load(); pos += pieceSize) {
+        HB_SET(HB_ROM_LOAD_STAGE, 2);
+        size_t end = std::min(pos + pieceSize, romEnd);
+        readRomFile(loadFile, &rom[pos], pos, end - pos);
+
+        // Patch what's been read, leaving the end for the next piece in case a driver continues there
+        size_t patchEnd = (end == romEnd) ? end : end - lookahead;
+        if (!core->dsiMode)
+            core->dldi.patchRom(&rom[scanned], scanned, patchEnd - scanned);
+        scanned = patchEnd;
+        loadPercent.store(uint64_t(end) * 100 / romEnd);
+        HB_SET(HB_ROM_LOAD_BLOCK, end / BLOCK_SIZE);
+    }
+    if (!stopLoad.load()) finishRomLoad();
+}
+
+void Cartridge::finishRomLoad() {
     HB_SET(HB_ROM_LOAD_STAGE, 5);
-    std::lock_guard<std::recursive_mutex> guard(fileLock());
-    fclose(loadFile);
+    {
+        std::lock_guard<std::recursive_mutex> guard(fileLock());
+        fclose(loadFile);
+    }
     loadFile = nullptr;
     romLoaded.store(true, std::memory_order_release);
     HB_SET(HB_ROM_LOAD_STAGE, 6);
+#ifdef ROM_LOAD_TEST
+    // Log how long the load took
+    if (FILE *log = fopen((Settings::basePath + "/romload.txt").c_str(), "w")) {
+        uint64_t us = OSTicksToMicroseconds(OSGetSystemTime() - loadStart);
+        fprintf(log, "Keep ROM in RAM = %d: %.2f s for %d bytes, %.2f MB/s\n", Settings::romInRam, us / 1000000.0, romSize,
+            romSize / 1048576.0 / (us / 1000000.0));
+        fclose(log);
+    }
+#endif
 }
 
 void Cartridge::writeSave() {
@@ -477,9 +537,9 @@ void Cartridge::trimRom() {
     if (newSize < romSize) {
         // Update the ROM in memory
         romSize = newSize;
-        uint8_t *newRom = new uint8_t[newSize];
+        uint8_t *newRom = allocRom(newSize);
         memcpy(newRom, rom, newSize * sizeof(uint8_t));
-        delete[] rom;
+        free(rom);
         rom = newRom;
         romBufSize = newSize;
 

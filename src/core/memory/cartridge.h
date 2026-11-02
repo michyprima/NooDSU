@@ -135,10 +135,15 @@ private:
     std::condition_variable loadCond;
     FILE *loadFile = nullptr;
     WorkerThread *loadThread = nullptr;
+#ifdef ROM_LOAD_TEST
+    uint64_t loadStart = 0;
+#endif
 
     void readRomFile(FILE *file, uint8_t *data, size_t offset, size_t size);
     void loadRomBlocks(size_t first, size_t count);
     void runRomLoad();
+    void runFullLoad();
+    void finishRomLoad();
     int findChunk(uint32_t index);
     int claimChunk(uint32_t index);
     void readBlocks(int slot, int first, int count, std::unique_lock<std::mutex> &lock);
