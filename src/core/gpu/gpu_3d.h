@@ -173,6 +173,7 @@ public:
 
     uint32_t readGxStat();
     bool fifoHalfEmpty() { return gxStat & BIT(25); }
+    void checkFifoIrq();
     uint32_t readPosResult(int index) { sync(); return posResult[index]; }
     uint32_t readVecResult(int index) { sync(); return vecResult[index]; }
     uint32_t readRamCount();

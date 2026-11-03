@@ -630,9 +630,9 @@ void Gpu3D::runCommands() {
         pipeSize = 4 - ((pipeSize + count) & 1);
         if (pipeSize > fifo.size()) pipeSize = fifo.size();
 
-        // End a batch early if there aren't enough parameters
+        // End a batch early if the engine halted or there aren't enough parameters
         cycles += 2;
-        if (fifo.empty() || fifo.size() < paramCounts[fifo.front().command])
+        if (state == GX_HALTED || fifo.empty() || fifo.size() < paramCounts[fifo.front().command])
             break;
     }
 
@@ -652,10 +652,7 @@ void Gpu3D::runCommands() {
     }
 
     // Send a GXFIFO interrupt if enabled
-    switch ((gxStat & 0xC0000000) >> 30) {
-        case 1: if (gxStat & BIT(25)) core->interpreter[0].sendInterrupt(21); break;
-        case 2: if (gxStat & BIT(26)) core->interpreter[0].sendInterrupt(21); break;
-    }
+    checkFifoIrq();
 
     // Unhalt the CPU if the FIFO was full but now has space free
     if (fifo.size() - pipeSize <= 256)
@@ -1673,9 +1670,9 @@ void Gpu3D::finishEntries(size_t oldSize) {
             gxStat &= ~BIT(25);
     }
 
-    // Start executing commands if one is ready
+    // Start executing commands if one is ready, after a moment so that words written one by one share a batch
     if (state == GX_IDLE && fifo.size() >= paramCounts[fifo.front().command]) {
-        core->schedule(GPU3D_COMMANDS, 2);
+        core->schedule(GPU3D_COMMANDS, GPU3D_START);
         state = GX_RUNNING;
     }
 }
@@ -1961,6 +1958,17 @@ void Gpu3D::writeGxStat(uint32_t mask, uint32_t value) {
     // Write to the GXSTAT register
     mask &= 0xC0000000;
     gxStat = (gxStat & ~mask) | (value & mask);
+
+    // The interrupt follows the FIFO's state, so it's sent right away if the FIFO already meets the new condition
+    checkFifoIrq();
+}
+
+void Gpu3D::checkFifoIrq() {
+    // Send a GXFIFO interrupt if the FIFO meets the enabled condition
+    switch ((gxStat & 0xC0000000) >> 30) {
+        case 1: if (gxStat & BIT(25)) core->interpreter[0].sendInterrupt(21); break;
+        case 2: if (gxStat & BIT(26)) core->interpreter[0].sendInterrupt(21); break;
+    }
 }
 
 uint32_t Gpu3D::readGxStat() {

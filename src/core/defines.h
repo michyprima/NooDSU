@@ -25,7 +25,8 @@
 #include <cstring>
 
 // Control how many cycles of 3D GPU commands are batched
-#define GPU3D_BATCH 32
+#define GPU3D_BATCH 256
+#define GPU3D_START 64
 
 // Print critical logs in red if enabled
 #if LOG_LEVEL > 0

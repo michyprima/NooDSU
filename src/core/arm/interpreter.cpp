@@ -641,6 +641,9 @@ void Interpreter::writeIe(int i, uint32_t mask, uint32_t value) {
 void Interpreter::writeIrf(int i, uint32_t mask, uint32_t value) {
     // Clear bits in one of the IF registers
     irf &= ~(uint64_t(value & mask) << (i * 32));
+
+    // The GXFIFO interrupt comes straight back if the FIFO still meets its condition
+    if (!arm7) core->gpu3D.checkFifoIrq();
 }
 
 void Interpreter::writePostFlg(uint8_t value) {
