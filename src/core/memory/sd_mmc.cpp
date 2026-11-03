@@ -88,10 +88,13 @@ uint32_t *SdMmc::init() {
 
     // Try to open a NAND dump and load IDs from its nocash footer
     if (!(nand = fopen(Settings::dsiNandPath.c_str(), "rb+"))) return nullptr;
-    fseek(nand, -0x20, SEEK_END);
-    fread(consoleId, sizeof(uint32_t), 2, nand);
+    uint8_t footer[0x18];
     fseek(nand, -0x30, SEEK_END);
-    fread(mmcCid, sizeof(uint32_t), 4, nand);
+    fread(footer, sizeof(uint8_t), sizeof(footer), nand);
+    for (int i = 0; i < 4; i++)
+        mmcCid[i] = U8TO32(footer, i * 4);
+    for (int i = 0; i < 2; i++)
+        consoleId[i] = U8TO32(footer, 0x10 + i * 4);
     return mmcCid;
 }
 
@@ -202,7 +205,7 @@ void SdMmc::readBlock() {
     uint32_t len = (hc ? 0x80 : blockLen);
 
     // Read a block of data from the SD or MMC if present, in 512- or 1-byte units
-    uint32_t data[0x80];
+    uint8_t data[0x200];
     if (FILE *src = (sdPortSelect & BIT(0)) ? nand : sd) {
         fseek(src, hc ? (int64_t(curAddress) << 9) : curAddress, SEEK_SET);
         fread(data, sizeof(uint32_t), len, src);
@@ -214,7 +217,7 @@ void SdMmc::readBlock() {
     // Push the data to a FIFO
     LOG_INFO("Reading %s block from 0x%X with size 0x%X\n",
         (sdPortSelect & BIT(0)) ? "MMC" : "SD", curAddress, len << 2);
-    for (int i = 0; i < len; i++) pushFifo(data[i]);
+    for (int i = 0; i < len; i++) pushFifo(U8TO32(data, i * 4));
 
     // Change to read or idle state based on blocks left and trigger a DRQ
     cardStatus = (cardStatus & ~0x1E00) | ((curBlock ? 0x5 : 0x4) << 9);
