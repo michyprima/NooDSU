@@ -110,7 +110,9 @@ private:
     static const int QUAD = MAX_VERTICES; // Where the screen quad is, after the polygons
     static const int CHUNK_POLYGONS = 256; // How many polygons a frame needs to be sent in pieces
     static const uint32_t FIRST_CHUNK_VERTICES = 768, CHUNK_VERTICES = 1536; // How many vertices go in each piece
-    static constexpr float EDGE_BIAS = 1.0f / 64; // How far short of half a pixel vertices are moved
+    // How far short of half a pixel vertices are moved; on long edges, a bigger distance also takes in pixels that are
+    // really outside the polygon, whose texture coordinates can then fall on the next part of the texture
+    static constexpr float EDGE_BIAS = 1.0f / 256;
     static const uint32_t MAX_EDGE_INDICES = 2048 * 10 * 2; // Enough for every edge of the most polygons
 
     WHBGfxShaderGroup groups[11];
