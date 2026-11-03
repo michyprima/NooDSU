@@ -2034,7 +2034,7 @@ void ConsoleUI::runCore() {
 #endif
             EP_ADD(EP_DISPLAY, display);
 #if defined(PROFILE_EMU) && defined(HEARTBEAT)
-            EmuProfile::recordFrame(core->gpu.frameNumber);
+            EmuProfile::recordFrame(core->gpu.frameNumber, core->spu.ringLevel(), core->spu.ringCatching());
 #endif
         }
     }

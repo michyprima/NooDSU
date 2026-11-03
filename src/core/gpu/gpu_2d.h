@@ -49,8 +49,11 @@ public:
         // Wait for room if the drawing thread is far behind
         uint32_t end = tail.load(std::memory_order_relaxed);
         SpinWait spin;
-        while (end - head.load(std::memory_order_acquire) >= SIZE)
+        while (end - head.load(std::memory_order_acquire) >= SIZE) {
+            EP_START_EMU(wait);
             spin.pause();
+            EP_ADD_EMU(EP_QUEUE2D, wait);
+        }
         entries[end % SIZE] = entry;
         tail.store(end + 1, std::memory_order_release);
     }

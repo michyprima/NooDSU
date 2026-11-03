@@ -39,6 +39,8 @@ public:
 
     uint32_t *getSamples(int count);
     bool ringLow();
+    uint32_t ringLevel() { return ringHead.load() - ringTail.load(); }
+    bool ringCatching() { return ringCatchingUp; }
 #ifdef FRAME_LOG
     uint32_t ringDry = 0; // Output samples that had to repeat the last one because the ring ran dry
     uint32_t ringFill = 0; // Samples in the ring when output last read from it

@@ -80,23 +80,34 @@ namespace FrameTrace {
     }
 
     void start() {
+#ifdef NO_FRAME_SAMPLES
+        // Keep the frame records only, since sampling this often slows the emulator down enough to change the results
+        return;
+#endif
         // Sample the current core 5,000 times a second
         OSCreateAlarm(&alarm);
         OSSetPeriodicAlarm(&alarm, OSMicrosecondsToTicks(200), OSMicrosecondsToTicks(200), callback);
     }
 
     void stop() {
+#ifndef NO_FRAME_SAMPLES
         OSCancelAlarm(&alarm);
+#endif
     }
 
     void startRenderer() {
+#ifdef NO_FRAME_SAMPLES
+        return;
+#endif
         // Sample the current core 5,000 times a second
         OSCreateAlarm(&rendererAlarm);
         OSSetPeriodicAlarm(&rendererAlarm, OSMicrosecondsToTicks(200), OSMicrosecondsToTicks(200), rendererCallback);
     }
 
     void stopRenderer() {
+#ifndef NO_FRAME_SAMPLES
         OSCancelAlarm(&rendererAlarm);
+#endif
     }
 
     static void chunk(FILE *file, const char *tag, const void *data, uint32_t words) {
@@ -170,6 +181,21 @@ namespace FrameTrace {
             kept.insert(kept.end(), data, data + sizeof(Sample) / 4);
         }
         if (!kept.empty()) chunk(file, "SMPS", kept.data(), kept.size());
+
+#ifdef NO_FRAME_SAMPLES
+        // Write every frame's record instead, since there are no samples to choose them by
+        static uint32_t recordTail = 0;
+        uint32_t recordHead = EmuProfile::recordCount;
+        if (recordHead - recordTail > EmuProfile::RECORDS) recordTail = recordHead - EmuProfile::RECORDS;
+        for (; recordTail != recordHead; recordTail++) {
+            const EmuFrameRecord &record = EmuProfile::records[recordTail % EmuProfile::RECORDS];
+            uint32_t words = 1 + sizeof(record) / 4;
+            fwrite("FRAM", 1, 4, file);
+            fwrite(&words, 4, 1, file);
+            fwrite(&recordTail, 4, 1, file);
+            fwrite(&record, 4, sizeof(record) / 4, file);
+        }
+#endif
 
         // Write all the GPU 3D renderer's samples since last time
         static uint32_t rendererTail = 0;

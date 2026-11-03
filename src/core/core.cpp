@@ -42,14 +42,21 @@ uint64_t EmuProfile::pixelTicks[3][PX_COUNT];
 EmuFrameRecord EmuProfile::records[RECORDS];
 volatile uint32_t EmuProfile::recordCount = 0;
 
-void EmuProfile::recordFrame(uint32_t frame) {
+void EmuProfile::recordFrame(uint32_t frame, uint32_t ringLevel, bool ringLow) {
     // Record what the emulator thread did since the last frame, from the differences in the totals
     static uint64_t lastTicks[EP_COUNT];
+    static uint64_t lastTasks[64];
     static uint32_t lastCounts[EC_COUNT], lastHb[4];
     static OSTick lastTime = OSGetSystemTick();
     OSTick time = OSGetSystemTick();
     EmuFrameRecord &record = records[recordCount % RECORDS];
     record.frame = frame;
+    record.ringLevel = ringLevel;
+    record.ringLow = ringLow;
+    for (int i = 0; i < 64; i++) {
+        record.taskTime[i] = OSTicksToMicroseconds(taskTicks[i] - lastTasks[i]);
+        lastTasks[i] = taskTicks[i];
+    }
     record.wall = OSTicksToMicroseconds(uint32_t(time - lastTime));
     lastTime = time;
     for (int i = 0; i < EP_COUNT; i++) {

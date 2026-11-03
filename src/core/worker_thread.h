@@ -28,10 +28,16 @@
 #include <malloc.h>
 #include <coreinit/thread.h>
 
+#include "emu_profile.h"
+
 // Waits in a loop for something another thread does, by yielding; it's one place to change how waits behave
 class SpinWait {
 public:
-    void pause() { std::this_thread::yield(); }
+    void pause() {
+        EP_START_EMU(yield);
+        std::this_thread::yield();
+        EP_ADD_EMU(EP_SPIN, yield);
+    }
 
     // Start a new wait, for loops that keep the same one
     void reset() {}

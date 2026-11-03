@@ -61,6 +61,8 @@ enum EmuProfileSlot {
     EP_JOIN2D_A, // Waiting for engine A's 2D thread to finish the frame at V-blank
     EP_JOIN2D_B, // Waiting for engine B's 2D thread to finish the frame at V-blank
     EP_DISPLAY, // Waiting for the display after a frame, when syncing to it
+    EP_SPIN, // All yielding waits for other threads on the emulator thread, within the other slots
+    EP_QUEUE2D, // Within those: waiting for room in a 2D thread's queue
     EP_COUNT
 };
 
@@ -101,12 +103,14 @@ struct EmuFrameRecord {
     uint32_t ticks[EP_COUNT]; // Time in each slot during the frame, in microseconds
     uint32_t counts[EC_COUNT]; // Counts during the frame
     uint32_t gpuFrames, gpuBuild, gpuDraw, wait3D; // Heartbeat values during the frame: 3D frames and their times
+    uint32_t ringLevel, ringLow; // The audio buffer's samples, and whether the emulator is catching up to fill it
+    uint32_t taskTime[64]; // Time in each scheduled task during the frame, in microseconds
 };
 namespace EmuProfile {
     static const int RECORDS = 256;
     extern EmuFrameRecord records[RECORDS];
     extern volatile uint32_t recordCount; // Records made so far; the latest is at (count - 1) % RECORDS
-    void recordFrame(uint32_t frame);
+    void recordFrame(uint32_t frame, uint32_t ringLevel, bool ringLow);
 
     // A log of compiled JIT blocks and resets, so the frame tracer can match samples in generated code to guest code
     // Each entry is a word with the type, CPU and opcode count, then the record count, guest address (bit 0 set for
