@@ -1073,10 +1073,10 @@ int logHeartbeat(int argc, void *argv) {
         auto per = [&](int slot, uint32_t count) { return count ? (v[slot] - last[slot]) / count : 0; };
         auto perTicks = [&](int slot, uint32_t count) { return uint32_t(OSTicksToMicroseconds(uint64_t(per(slot, count)))); };
         uint32_t uiFrames = v[HB_UI_FRAMES] - last[HB_UI_FRAMES];
-        fprintf(file, "   %.0f ms | ui fps %.1f, new frames %.1f, skipped %u, repeated %u: get frame %u, textures %u, draw %u, "
+        fprintf(file, "   %.0f ms | ui fps %.1f, new frames %.1f, skipped %u, repeated %u: get frame %u (convert %u), textures %u, draw %u, "
             "finish %u us\n", seconds * 1000, uiFrames / seconds, (v[HB_UI_NEW_FRAMES] - last[HB_UI_NEW_FRAMES]) / seconds,
             v[HB_UI_SKIPPED] - last[HB_UI_SKIPPED], v[HB_UI_REPEATS] - last[HB_UI_REPEATS],
-            per(HB_UI_GETFRAME_US, uiFrames), per(HB_UI_TEXTURE_US, uiFrames), per(HB_UI_DRAW_US, uiFrames),
+            per(HB_UI_GETFRAME_US, uiFrames), per(HB_UI_CONVERT_US, uiFrames), per(HB_UI_TEXTURE_US, uiFrames), per(HB_UI_DRAW_US, uiFrames),
             per(HB_UI_END_US, uiFrames));
         fprintf(file, "   fps %.1f | gpu frames %u: build %u (textures %u) lock %u draw %u convert %u us | "
             "emu waits gpu %u 2D %u | 2D waits 3D %u us | hi-res copy %u us\n", frames / seconds, gpuFrames, per(HB_GPU_BUILD_US, gpuFrames),

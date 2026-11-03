@@ -297,7 +297,10 @@ bool Gpu::getFrame(uint32_t *out, bool gbaCrop, uint32_t **hiRes3D, bool *top3D)
         }
         else if (hiRes3D) {
             // Draw to a native resolution buffer, with alpha cleared where pixels show 3D
+            // Claim the output's cache blocks without reading them from memory first, since they're fully overwritten
+            bool claim = !((uintptr_t)out & 31);
             for (int i = 0; i < 256 * 192 * 2; i++) {
+                if (claim && !(i & 7)) claimBlock(&out[i]);
                 uint32_t value = buffers.framebuffer[i];
                 out[i] = rgb6ToRgb8(value) & ((value & BIT(26)) ? 0x00FFFFFF : 0xFFFFFFFF);
             }

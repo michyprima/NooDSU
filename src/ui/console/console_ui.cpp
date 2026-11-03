@@ -367,7 +367,9 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         bool top3D = false;
         bool alternate = ghost && !compose && !composeGba; // Screens built on the GPU keep their last ones themselves
         uint32_t *out = (alternate && screenFrame == framebuffer) ? &framebuffer[256 * 192 * 4] : framebuffer;
+        HB_TIMER(hbConvert);
         bool newFrame = core->gpu.getFrame(out, gbaMode, hiRes3D ? &hiRes : nullptr, &top3D);
+        HB_ADD_US(HB_UI_CONVERT_US, hbConvert);
 #ifdef FRAME_LOG
         FrameLog::uiFrame(newFrame ? core->gpu.lastFrameId : 0);
 #endif
