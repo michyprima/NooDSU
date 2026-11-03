@@ -29,6 +29,7 @@ class HleBios;
 
 class Interpreter {
     friend class Core;
+    friend class Spu;
 public:
     friend class Jit;
     HleBios *bios = nullptr;

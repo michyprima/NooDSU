@@ -27,6 +27,8 @@
 #include <queue>
 #include <mutex>
 
+#include "../defines.h"
+
 class Core;
 
 class Spu {
@@ -46,7 +48,8 @@ public:
     uint32_t ringFill = 0; // Samples in the ring when output last read from it
 #endif
     void runGbaSample();
-    void runSample();
+    void runSamples();
+    void resetCycles();
     void gbaFifoTimer(int timer);
 
     uint8_t readGbaSoundCntL(int channel);
@@ -58,10 +61,10 @@ public:
     uint16_t readGbaSoundBias() { return gbaSoundBias; }
     uint8_t readGbaWaveRam(int index);
 
-    uint32_t readSoundCnt(int channel) { return soundCnt[channel]; }
+    uint32_t readSoundCnt(int channel) { syncSamples(); return soundCnt[channel]; }
     uint16_t readMainSoundCnt() { return mainSoundCnt; }
     uint16_t readSoundBias() { return soundBias; }
-    uint8_t readSndCapCnt(int channel) { return sndCapCnt[channel]; }
+    uint8_t readSndCapCnt(int channel) { syncSamples(); return sndCapCnt[channel]; }
     uint32_t readSndCapDad(int channel) { return sndCapDad[channel]; }
 
     void writeGbaSoundCntL(int channel, uint8_t value);
@@ -119,6 +122,13 @@ private:
     int8_t gbaSampleA = 0, gbaSampleB = 0;
 
     uint16_t enabled = 0;
+
+    // Samples are made in batches, since a scheduled task for each one keeps stopping the CPUs; a batch ends when its
+    // task runs, and anything that can see or change the sound registers makes the samples due before it first
+    uint32_t batchEnd = SPU_BATCH * 512 * 2;
+    uint32_t batchDone = 0;
+    void syncSamples();
+    void mixSample();
 
     static const int indexTable[8];
     static const int16_t adpcmTable[89];

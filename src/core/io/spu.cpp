@@ -56,6 +56,8 @@ Spu::~Spu() {
 
 void Spu::saveState(FILE *file) {
     // Write state data to the file
+    fwrite(&batchEnd, sizeof(batchEnd), 1, file);
+    fwrite(&batchDone, sizeof(batchDone), 1, file);
     fwrite(&gbaFrameSequencer, sizeof(gbaFrameSequencer), 1, file);
     fwrite(gbaSoundTimers, 4, sizeof(gbaSoundTimers) / 4, file);
     fwrite(gbaEnvelopes, 1, sizeof(gbaEnvelopes), file);
@@ -101,6 +103,8 @@ void Spu::saveState(FILE *file) {
 
 void Spu::loadState(FILE *file) {
     // Read state data from the file
+    fread(&batchEnd, sizeof(batchEnd), 1, file);
+    fread(&batchDone, sizeof(batchDone), 1, file);
     fread(&gbaFrameSequencer, sizeof(gbaFrameSequencer), 1, file);
     fread(gbaSoundTimers, 4, sizeof(gbaSoundTimers) / 4, file);
     fread(gbaEnvelopes, 1, sizeof(gbaEnvelopes), file);
@@ -482,13 +486,37 @@ void Spu::runGbaSample() {
     pushSample(sampleLeft, sampleRight);
 }
 
-void Spu::runSample() {
+void Spu::runSamples() {
 #ifdef PROFILE_EMU
     EP_START(spu);
     struct SpuTimer { uint32_t start; ~SpuTimer() { EP_ADD(EP_SPU, start); } } spuTimer = { spu };
 #endif
-    // Push a dummy sample if disabled and schedule the next one
-    core->schedule(NDS_SPU_SAMPLE, 512 * 2);
+    // Schedule the next batch of samples and finish this one
+    core->schedule(NDS_SPU_SAMPLE, SPU_BATCH * 512 * 2);
+    for (; batchDone < SPU_BATCH; batchDone++)
+        mixSample();
+    batchEnd = core->globalCycles + SPU_BATCH * 512 * 2;
+    batchDone = 0;
+}
+
+void Spu::syncSamples() {
+    // Make the samples due before the ARM7's current time, which is the only CPU with access to the sound registers
+    // A halted ARM7 keeps the time it stopped at, so anything reaching them then is at the current time
+    Interpreter &arm7 = core->interpreter[1];
+    uint32_t now = arm7.halted ? core->globalCycles : arm7.cycles;
+    if (now <= batchEnd - (SPU_BATCH - 1 - batchDone) * 512 * 2) return;
+    uint32_t due = (now > batchEnd) ? SPU_BATCH : (SPU_BATCH - 1 - (batchEnd - now) / (512 * 2));
+    for (; batchDone < due; batchDone++)
+        mixSample();
+}
+
+void Spu::resetCycles() {
+    // Adjust the batch's end for a global cycle reset
+    batchEnd -= std::min(core->globalCycles, batchEnd);
+}
+
+void Spu::mixSample() {
+    // Push a dummy sample if disabled
     if (!Settings::emulateAudio) return pushSample(0, 0);
 
     // Mix the sound channels
@@ -955,6 +983,7 @@ void Spu::writeGbaFifoB(uint32_t mask, uint32_t value) {
 }
 
 void Spu::writeSoundCnt(int channel, uint32_t mask, uint32_t value) {
+    syncSamples();
     // Prevent channels from starting if audio emulation is disabled
     if (!Settings::emulateAudio) value &= ~BIT(31);
     bool enable = (!(soundCnt[channel] & BIT(31)) && (value & mask & BIT(31)));
@@ -971,6 +1000,7 @@ void Spu::writeSoundCnt(int channel, uint32_t mask, uint32_t value) {
 }
 
 void Spu::writeSoundSad(int channel, uint32_t mask, uint32_t value) {
+    syncSamples();
     // Write to one of the SOUNDSAD registers
     mask &= 0x07FFFFFC;
     soundSad[channel] = (soundSad[channel] & ~mask) | (value & mask);
@@ -985,22 +1015,26 @@ void Spu::writeSoundSad(int channel, uint32_t mask, uint32_t value) {
 }
 
 void Spu::writeSoundTmr(int channel, uint16_t mask, uint16_t value) {
+    syncSamples();
     // Write to one of the SOUNDTMR registers
     soundTmr[channel] = (soundTmr[channel] & ~mask) | (value & mask);
 }
 
 void Spu::writeSoundPnt(int channel, uint16_t mask, uint16_t value) {
+    syncSamples();
     // Write to one of the SOUNDPNT registers
     soundPnt[channel] = (soundPnt[channel] & ~mask) | (value & mask);
 }
 
 void Spu::writeSoundLen(int channel, uint32_t mask, uint32_t value) {
+    syncSamples();
     // Write to one of the SOUNDLEN registers
     mask &= 0x003FFFFF;
     soundLen[channel] = (soundLen[channel] & ~mask) | (value & mask);
 }
 
 void Spu::writeMainSoundCnt(uint16_t mask, uint16_t value) {
+    syncSamples();
     // Write to the main SOUNDCNT register
     bool enable = (!(mainSoundCnt & BIT(15)) && (value & BIT(15)));
     mask &= 0xBF7F;
@@ -1020,12 +1054,14 @@ void Spu::writeMainSoundCnt(uint16_t mask, uint16_t value) {
 }
 
 void Spu::writeSoundBias(uint16_t mask, uint16_t value) {
+    syncSamples();
     // Write to the SOUNDBIAS register
     mask &= 0x03FF;
     soundBias = (soundBias & ~mask) | (value & mask);
 }
 
 void Spu::writeSndCapCnt(int channel, uint8_t value) {
+    syncSamples();
     // Start the capture if the enable bit changes from 0 to 1
     if (!(sndCapCnt[channel] & BIT(7)) && (value & BIT(7))) {
         sndCapCurrent[channel] = sndCapDad[channel];
@@ -1037,6 +1073,7 @@ void Spu::writeSndCapCnt(int channel, uint8_t value) {
 }
 
 void Spu::writeSndCapDad(int channel, uint32_t mask, uint32_t value) {
+    syncSamples();
     // Write to one of the SNDCAPDAD registers
     mask &= 0x07FFFFFC;
     sndCapDad[channel] = (sndCapDad[channel] & ~mask) | (value & mask);
@@ -1047,6 +1084,7 @@ void Spu::writeSndCapDad(int channel, uint32_t mask, uint32_t value) {
 }
 
 void Spu::writeSndCapLen(int channel, uint16_t mask, uint16_t value) {
+    syncSamples();
     // Write to one of the SNDCAPLEN registers
     sndCapLen[channel] = (sndCapLen[channel] & ~mask) | (value & mask);
 }

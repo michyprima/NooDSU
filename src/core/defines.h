@@ -27,6 +27,7 @@
 // Control how many cycles of 3D GPU commands are batched
 #define GPU3D_BATCH 256
 #define GPU3D_START 64
+#define SPU_BATCH 16
 
 // Print critical logs in red if enabled
 #if LOG_LEVEL > 0

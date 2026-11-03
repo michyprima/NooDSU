@@ -166,7 +166,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
     tasks[GPU3D_COMMANDS] = std::bind(&Gpu3D::runCommands, &gpu3D);
     tasks[ARM9_INTERRUPT] = std::bind(&Interpreter::interrupt, &interpreter[0]);
     tasks[ARM7_INTERRUPT] = std::bind(&Interpreter::interrupt, &interpreter[1]);
-    tasks[NDS_SPU_SAMPLE] = std::bind(&Spu::runSample, &spu);
+    tasks[NDS_SPU_SAMPLE] = std::bind(&Spu::runSamples, &spu);
     tasks[GBA_SPU_SAMPLE] = std::bind(&Spu::runGbaSample, &spu);
     tasks[TIMER9_OVERFLOW0] = std::bind(&Timers::overflow, &timers[0], 0);
     tasks[TIMER9_OVERFLOW1] = std::bind(&Timers::overflow, &timers[0], 1);
@@ -189,7 +189,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
     schedule(RESET_CYCLES, 0x7FFFFFFF);
     schedule(NDS_SCANLINE256, 256 * 6);
     schedule(NDS_SCANLINE355, 355 * 6);
-    schedule(NDS_SPU_SAMPLE, 512 * 2);
+    schedule(NDS_SPU_SAMPLE, SPU_BATCH * 512 * 2);
 
     // Initialize memory maps and anything else that needs it
     memory.updateMap9(0x00000000, 0xFFFFFFFF);
@@ -470,6 +470,7 @@ void Core::resetCycles() {
     for (int i = 0; i < 2; i++)
         interpreter[i].resetCycles(), timers[i].resetCycles();
     cartridgeNds.resetCycles();
+    spu.resetCycles();
     globalCycles -= globalCycles;
     schedule(RESET_CYCLES, 0x7FFFFFFF);
 }
