@@ -381,12 +381,13 @@ void Gpu3D::queueCommand(uint8_t command, uint32_t *params, int count) {
 
     // Add the command and its parameters; they're published at the end of the batch
     // Each cache block is claimed instead of being read from memory, since everything in it is new
+    uint32_t *words = queue, end = queueEnd;
     for (int i = 0; i <= count; i++) {
-        uint32_t index = (queueEnd + i) & (QUEUE_SIZE - 1);
-        if (!(index & 7)) claimBlock(&queue[index]);
-        queue[index] = i ? params[i - 1] : (command | (count << 8));
+        uint32_t index = (end + i) & (QUEUE_SIZE - 1);
+        if (!(index & 7)) claimBlock(&words[index]);
+        words[index] = i ? params[i - 1] : (command | (count << 8));
     }
-    queueEnd += count + 1;
+    queueEnd = end + count + 1;
     if (changesExecStat(command)) statSent++;
 }
 

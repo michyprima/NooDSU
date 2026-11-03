@@ -38,8 +38,10 @@ enum GXState {
     GX_HALTED
 };
 
+// The command is kept in a full word since writing bytes makes the compiler assume anything could have changed, which
+// costs a lot of reloading in loops that handle thousands of entries a frame
 struct Entry {
-    uint8_t command;
+    uint32_t command;
     uint32_t param;
 
     Entry() {}
@@ -54,28 +56,31 @@ public:
 
     size_t size() const { return count; }
     bool empty() const { return count == 0; }
-    Entry &front() { return data[head]; }
-    Entry &operator[](size_t i) { return data[(head + i) & (data.size() - 1)]; }
-    void pop_front() { head = (head + 1) & (data.size() - 1); count--; }
+    Entry &front() { return entries[head]; }
+    Entry &operator[](size_t i) { return entries[(head + i) & mask]; }
+    void pop_front() { head = (head + 1) & mask; count--; }
 
     void pop_params(uint32_t *params, size_t n) {
         // Take the parameters of the next n entries
-        size_t mask = data.size() - 1;
+        const Entry *from = entries;
+        size_t start = head, wrap = mask;
         for (size_t i = 0; i < n; i++)
-            params[i] = data[(head + i) & mask].param;
-        head = (head + n) & mask;
+            params[i] = from[(start + i) & wrap].param;
+        head = (start + n) & wrap;
         count -= n;
     }
     void clear() { head = count = 0; }
 
     void push_back(const Entry &entry) {
-        if (count == data.size()) grow();
-        data[(head + count++) & (data.size() - 1)] = entry;
+        if (count > mask) grow();
+        entries[(head + count) & mask] = entry;
+        count++;
     }
 
 private:
     std::vector<Entry> data = std::vector<Entry>(512);
-    size_t head = 0, count = 0;
+    Entry *entries = data.data();
+    size_t mask = data.size() - 1, head = 0, count = 0;
 
     void grow() {
         // Double the size of the buffer, keeping entries in order
@@ -83,6 +88,8 @@ private:
         for (size_t i = 0; i < count; i++)
             bigger[i] = (*this)[i];
         data.swap(bigger);
+        entries = data.data();
+        mask = data.size() - 1;
         head = 0;
     }
 };
