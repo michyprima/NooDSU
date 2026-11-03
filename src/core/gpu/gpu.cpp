@@ -997,6 +997,23 @@ bool Gpu::captureLine(uint32_t cnt, int line, const uint32_t *rawLine, bool dire
     return true;
 }
 
+void Gpu::enterGbaMode() {
+    // Stop the NDS 2D threads, since they're kept between frames but GBA mode has its own, and drop any frame in progress
+    stopThreads();
+    frameActive.store(false);
+    fastFrame = false;
+    drawing.store(0);
+    drawingB.store(0);
+    for (int i = 0; i < 2; i++)
+        core->gpu2D[i].setQueue(nullptr);
+
+    // Start a new frame if the scanline is past where GBA mode would ever start one
+    if (vCount >= 228) {
+        vCount = 0;
+        core->gpu2D[0].reloadRegisters();
+    }
+}
+
 void Gpu::stopThreads() {
     // Stop the 2D threads and wake them if they're sleeping, then wait for them to finish
     {

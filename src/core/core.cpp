@@ -446,6 +446,7 @@ void Core::enterGbaMode() {
     // Switch to GBA mode, where the JIT isn't used
     jit.enable(false);
     jit7.enable(false);
+    gpu.enterGbaMode();
     gbaMode = true;
     interpreter[0].halt(2);
     updateRun();

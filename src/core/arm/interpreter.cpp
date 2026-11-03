@@ -135,6 +135,10 @@ template <bool _arm7, int shift> void Interpreter::runCoreSingle(Core &core) {
         // Run a CPU until the next scheduled task
         EP_START(cpu);
         core.globalCycles = std::max(core.globalCycles, arm.cycles);
+
+        // The JIT leaves the pipeline empty if the ARM7 entered GBA mode while running compiled code
+        if (arm.pipelineStale) arm.refillPipeline();
+
         while (core.events[0].cycles > arm.cycles) {
             // Run compiled code if possible, falling back to the interpreter; the ARM7 only has it in NDS mode
             // Blocks leave the global cycles at the start of their last instruction, so catch up after

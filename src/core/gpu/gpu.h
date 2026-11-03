@@ -48,6 +48,7 @@ public:
     ~Gpu();
 
     void init();
+    void enterGbaMode();
     void saveState(FILE *file);
     void loadState(FILE *file);
 
