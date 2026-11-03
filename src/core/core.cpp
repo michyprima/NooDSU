@@ -42,6 +42,32 @@ uint64_t EmuProfile::pixelTicks[3][PX_COUNT];
 EmuFrameRecord EmuProfile::records[RECORDS];
 volatile uint32_t EmuProfile::recordCount = 0;
 
+Draw2DTimes EmuProfile::draw2D[2];
+uint32_t EmuProfile::frameStart = 0, EmuProfile::reachedMiddle = 0, EmuProfile::reachedEnd = 0;
+
+uint32_t EmuProfile::sinceFrameStart(uint32_t time) {
+    return OSTicksToMicroseconds(uint32_t(time - frameStart));
+}
+
+void EmuProfile::drawn2D(int engine, bool away, uint32_t start, uint32_t waited3D) {
+    // Add a finished scanline to its engine's times, leaving out time spent waiting for 3D
+    uint32_t end = OSGetSystemTick();
+    uint32_t total = OSTicksToMicroseconds(uint32_t(end - start));
+    uint32_t net = total - std::min(total, waited3D);
+    Draw2DTimes &times = draw2D[engine];
+    if (!times.firstEnd) {
+        times.firstStart = sinceFrameStart(start);
+        times.firstEnd = sinceFrameStart(end);
+    }
+    times.lastEnd = sinceFrameStart(end);
+    times.busy += net;
+    if (net > 150) {
+        times.longTime += net;
+        times.longLines++;
+    }
+    if (away) times.awayLines++;
+}
+
 void EmuProfile::recordFrame(uint32_t frame, uint32_t ringLevel, bool ringLow) {
     // Record what the emulator thread did since the last frame, from the differences in the totals
     static uint64_t lastTicks[EP_COUNT];
@@ -51,6 +77,10 @@ void EmuProfile::recordFrame(uint32_t frame, uint32_t ringLevel, bool ringLow) {
     OSTick time = OSGetSystemTick();
     EmuFrameRecord &record = records[recordCount % RECORDS];
     record.frame = frame;
+    record.draw2D[0] = draw2D[0];
+    record.draw2D[1] = draw2D[1];
+    record.reachedMiddle = reachedMiddle;
+    record.reachedEnd = reachedEnd;
     record.ringLevel = ringLevel;
     record.ringLow = ringLow;
     for (int i = 0; i < 64; i++) {

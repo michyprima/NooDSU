@@ -96,6 +96,15 @@ enum EmuCountSlot {
 };
 
 #if defined(PROFILE_EMU) && defined(HEARTBEAT)
+// When a 2D engine drew its frame in fast 2D mode, in microseconds since the frame started, and how long that took
+struct Draw2DTimes {
+    uint32_t firstStart, firstEnd, lastEnd; // When the first scanline started and ended, and when the last one ended
+    uint32_t busy; // Drawing scanlines, without waiting for 3D; this includes any time other threads took the core
+    uint32_t longTime, longLines; // Within that: scanlines over 150 microseconds, so likely interrupted, and their count
+    uint32_t awayLines; // Scanlines drawn by a thread other than the engine's own
+    uint32_t atMiddle; // Scanlines finished when the emulator reached scanline 96
+};
+
 // With both, the emulator records every frame's breakdown for the heartbeat log to list the slow ones
 struct EmuFrameRecord {
     uint32_t frame; // Emulated frame number
@@ -105,12 +114,19 @@ struct EmuFrameRecord {
     uint32_t gpuFrames, gpuBuild, gpuDraw, wait3D; // Heartbeat values during the frame: 3D frames and their times
     uint32_t ringLevel, ringLow; // The audio buffer's samples, and whether the emulator is catching up to fill it
     uint32_t taskTime[64]; // Time in each scheduled task during the frame, in microseconds
+    Draw2DTimes draw2D[2]; // How each 2D engine drew the frame
+    uint32_t reachedMiddle, reachedEnd; // When the emulator reached scanlines 96 and 192
 };
 namespace EmuProfile {
     static const int RECORDS = 256;
     extern EmuFrameRecord records[RECORDS];
     extern volatile uint32_t recordCount; // Records made so far; the latest is at (count - 1) % RECORDS
     void recordFrame(uint32_t frame, uint32_t ringLevel, bool ringLow);
+
+    extern Draw2DTimes draw2D[2];
+    extern uint32_t frameStart, reachedMiddle, reachedEnd;
+    uint32_t sinceFrameStart(uint32_t time);
+    void drawn2D(int engine, bool away, uint32_t start, uint32_t waited3D);
 
     // A log of compiled JIT blocks and resets, so the frame tracer can match samples in generated code to guest code
     // Each entry is a word with the type, CPU and opcode count, then the record count, guest address (bit 0 set for

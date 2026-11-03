@@ -549,6 +549,9 @@ void Gpu::scanline355() {
     // Move to the next scanline
     switch (++vCount) {
     case 192: // End of visible scanlines
+#if defined(PROFILE_EMU) && defined(HEARTBEAT)
+        EmuProfile::reachedEnd = EmuProfile::sinceFrameStart(OSGetSystemTick());
+#endif
         // In fast 2D mode, stop sending register writes and wait for the threads to finish the frame
         if (thread && fastFrame) {
             HB_TIMER(hbJoin);
@@ -677,7 +680,20 @@ void Gpu::scanline355() {
         dispStat[1] &= ~BIT(0);
         break;
 
+#if defined(PROFILE_EMU) && defined(HEARTBEAT)
+    case 96:
+        // Note how far the 2D threads got by the middle of the frame
+        EmuProfile::reachedMiddle = EmuProfile::sinceFrameStart(OSGetSystemTick());
+        EmuProfile::draw2D[0].atMiddle = linesDone[0].load();
+        EmuProfile::draw2D[1].atMiddle = linesDone[1].load();
+        break;
+#endif
+
     case 263: // End of frame
+#if defined(PROFILE_EMU) && defined(HEARTBEAT)
+        EmuProfile::frameStart = OSGetSystemTick();
+        EmuProfile::draw2D[0] = EmuProfile::draw2D[1] = {};
+#endif
         // Start the next frame
         vCount = 0;
         core->gpu2D[0].reloadRegisters();
@@ -880,9 +896,15 @@ bool Gpu::fastEntry(int engine) {
     // Draw the scanline with the display capture settings from its start, and capture it if needed
     // Captures that can't access VRAM directly off the emulator thread are skipped
     HB_INC(HB_2D_LINES);
+#if defined(PROFILE_EMU) && defined(HEARTBEAT)
+    uint32_t lineStart = OSGetSystemTick(), waitStart = Heartbeat::values[HB_3D_WAIT_US];
+#endif
     drawer->updateWindows(entry.value);
     drawer->drawScanline(entry.value, entry.mask);
     if (entry.index) captureLine(entry.mask, entry.value, drawer->getRawLine(), true);
+#if defined(PROFILE_EMU) && defined(HEARTBEAT)
+    EmuProfile::drawn2D(engine, OSGetCoreId() != (engine ? 2 : 0), lineStart, Heartbeat::values[HB_3D_WAIT_US] - waitStart);
+#endif
 #ifdef FAST2D_CHECK
     check("after");
 #endif
