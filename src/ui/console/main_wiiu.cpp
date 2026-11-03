@@ -1090,9 +1090,9 @@ int logHeartbeat(int argc, void *argv) {
             per(HB_GPU_MAIN_DONE_US, gpuFrames), per(HB_GPU_SUBMIT_US, gpuFrames), per(HB_GPU_DRAW_US, gpuFrames),
             per(HB_GPU_DRAWS, gpuFrames), per(HB_GPU_VERTICES, gpuFrames));
 #ifdef GPU_TIMELINE
-        fprintf(file, "   gpu passes per frame: multisampled %u, polygons %u, edges %u, fog %u, anti-alias %u, pack and copy %u us"
+        fprintf(file, "   gpu passes per frame: multisampled %u, polygons %u, crack marking %u, crack filling %u, edges %u, fog %u, anti-alias %u, pack and copy %u us"
             " | frames multisampled %u, high-res %u\n", per(HB_GPU_PASS_MSAA_US, gpuFrames), per(HB_GPU_PASS_POLY_US, gpuFrames),
-            per(HB_GPU_PASS_EDGE_US, gpuFrames), per(HB_GPU_PASS_FOG_US, gpuFrames), per(HB_GPU_PASS_AA_US, gpuFrames),
+            per(HB_GPU_PASS_MARK_US, gpuFrames), per(HB_GPU_PASS_FILL_US, gpuFrames), per(HB_GPU_PASS_EDGE_US, gpuFrames), per(HB_GPU_PASS_FOG_US, gpuFrames), per(HB_GPU_PASS_AA_US, gpuFrames),
             per(HB_GPU_PASS_PACK_US, gpuFrames), v[HB_GPU_MSAA_FRAMES] - last[HB_GPU_MSAA_FRAMES],
             v[HB_GPU_HIRES_FRAMES] - last[HB_GPU_HIRES_FRAMES]);
         fprintf(file, "   gpu polygon pass per frame: clear %u | draws by shader, us and vertices: color %u %u, modulate %u %u, "

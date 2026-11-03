@@ -78,6 +78,8 @@ enum HeartbeatSlot {
     HB_GPU_SUBMIT_US, // When everything was submitted
     HB_GPU_PASS_MSAA_US, // With GPU_TIMELINE, GPU time for each pass: multisampled polygons and resolving them
     HB_GPU_PASS_POLY_US, // Polygons, writing attributes too, or only them after a multisampled pass
+    HB_GPU_PASS_MARK_US, // Marking polygons' edges in the stencil, for filling cracks
+    HB_GPU_PASS_FILL_US, // Filling cracks
     HB_GPU_PASS_EDGE_US, // Edge marking
     HB_GPU_PASS_FOG_US, // Fog
     HB_GPU_PASS_AA_US, // The DS's anti-aliasing

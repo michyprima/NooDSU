@@ -4,6 +4,7 @@
 # Usage: ./build-wiiu-debug.sh <variant>...
 #   heartbeat    Progress counters and timings in heartbeat.log, 4 times a second
 #   timeline     Heartbeat, plus the GPU 3D renderer waiting for the GPU between parts of a frame to time each exactly
+#   nocrackfill  Heartbeat without the GPU 3D renderer filling cracks between polygons, to compare frame times
 #   capture      Hold L+R+Y (ZL+ZR+Y on the GamePad) to record 24 frames at each step of the pipeline to capture.bin
 #   statedebug   Heartbeat, plus snapshots of what decides whether the CPUs run in statelog.txt around state loads
 #   gpudump      Polygons, 3D layers and GPU renderer frames dumped every 60 frames, and frames drawn in software too
@@ -23,11 +24,12 @@ cd "$(dirname "$0")"
 export DEVKITPRO=${DEVKITPRO:-/opt/devkitpro} DEVKITPPC=${DEVKITPPC:-/opt/devkitpro/devkitPPC}
 BASE='-g -Ofast -fno-allow-store-data-races -flto -ffunction-sections -DESPRESSO -mcpu=750 -meabi -mhard-float $(INCLUDE) -D__WIIU__ -D__WUT__ -DENDIAN_BIG -DNO_FDOPEN -DLOG_LEVEL=0'
 
-[ $# -gt 0 ] || { sed -n '2,20p' "$0"; exit 1; }
+[ $# -gt 0 ] || { sed -n '2,21p' "$0"; exit 1; }
 for variant in "$@"; do
     case $variant in
         heartbeat) flags='-DHEARTBEAT'; name=noodsu-hb; title='NooDS U Heartbeat' ;;
         timeline) flags='-DHEARTBEAT -DGPU_TIMELINE'; name=noodsu-timeline; title='NooDS U GPU Timeline' ;;
+        nocrackfill) flags='-DHEARTBEAT -DGPU_NO_CRACK_FILL'; name=noodsu-nofill; title='NooDS U No Crack Fill' ;;
         capture) flags='-DFRAME_CAPTURE'; name=noodsu-capture; title='NooDS U Capture' ;;
         statedebug) flags='-DSTATE_DEBUG -DHEARTBEAT'; name=noodsu-statedebug; title='NooDS U State Debug' ;;
         gpudump) flags='-DGPU_DUMP'; name=noodsu-dump; title='NooDS U Dump' ;;
