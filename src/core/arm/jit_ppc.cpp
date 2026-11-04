@@ -673,6 +673,34 @@ void Jit::emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc) {
     uint32_t opc = (op >> 21) & 0xF;
     bool s = op & BIT(20);
     bool logical = (opc <= 1) || (opc >= 8 && opc <= 9) || opc >= 12;
+
+    // Without flags, moves and additions or subtractions of small values don't need their operands in r3 and r4
+    if (!s) {
+        uint32_t rd = (op >> 12) & 0xF;
+        if (op & BIT(25)) {
+            uint32_t shift = (op >> 7) & 0x1E;
+            uint32_t value = shift ? (((op & 0xFF) << (32 - shift)) | ((op & 0xFF) >> shift)) : (op & 0xFF);
+            if (opc == 0xD || ((opc == 0x2 || opc == 0x4) && value < 0x8000)) {
+                if (opc == 0xD) {
+                    e.loadConst(5, value);
+                }
+                else {
+                    readReg(e, 3, (op >> 16) & 0xF, pc);
+                    e.addi(5, 3, (opc == 0x4) ? value : -int32_t(value));
+                }
+                writeReg(e, 5, rd);
+                e.li(3, 1);
+                return;
+            }
+        }
+        else if (opc == 0xD) {
+            emitShift(e, op, pc, false);
+            writeReg(e, 4, rd);
+            e.li(3, 1);
+            return;
+        }
+    }
+
     if (opc != 13 && opc != 15)
         readReg(e, 3, (op >> 16) & 0xF, pc);
 
@@ -1020,6 +1048,36 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
     // Instructions in a run don't use it until the check at the end, so they leave stepping until then
     uint32_t op = block->instrs[i].opcode;
     if (!batched(block, i)) stepPc(e);
+
+    // Conditional branches go their own way straight after the condition, so neither path has to check where it went
+    if (!block->thumb && nativeKind(op, arm7) == NK_BRANCH && (op >> 28) != 0xE) {
+        bool run = i > 0 && batched(block, i - 1);
+        uint32_t target = (pc + ((int32_t)(op << 8) >> 6)) & ~0x3;
+        e.call(codeCond[op >> 28]);
+        uint32_t *skip = e.here();
+        e.bne(nullptr);
+
+        // Branch, with cycles that include any run before this
+        if (op & BIT(24)) {
+            e.loadConst(5, pc - 4);
+            writeReg(e, 5, 14);
+        }
+        e.loadConst(5, target + 4);
+        e.stw(5, offPc, R_ARM);
+        e.addi(3, R_BATCH, 3);
+        if (run) e.li(R_BATCH, 0);
+        e.call(codePost[0][0]);
+        block->links.push_back({ e.here(), target, nullptr });
+        e.b(codeDispatch);
+
+        // Continue to the next instruction
+        e.patchBc(skip);
+        e.addi(3, R_BATCH, 1);
+        if (run) e.li(R_BATCH, 0);
+        e.call(codePost[0][1]);
+        if (i + 1 == block->instrs.size()) e.stw(R_PC, offPc, R_ARM);
+        return;
+    }
     bool native = !block->thumb && emitNative(e, op, pc);
     bool memoryPc = !native || nativeJumps(nativeKind(op, arm7));
 
