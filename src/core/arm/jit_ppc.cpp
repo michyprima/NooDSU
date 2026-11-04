@@ -738,6 +738,105 @@ static bool nativeJumps(int kind) {
     return kind == NK_BRANCH || kind == NK_BRANCH_REG || kind == NK_BLOCK_PC;
 }
 
+static uint32_t thumbToArm(uint32_t op) {
+    // Get the ARM instruction that does the same as a THUMB instruction, for the same native code, or one that doesn't
+    // have any if there's none; the callers handle how the program counter and timing differ
+    const uint32_t none = 0xF0000000;
+    uint32_t rd = op & 0x7, rs = (op >> 3) & 0x7, rn = (op >> 6) & 0x7;
+    uint32_t r8 = (op >> 8) & 0x7, imm = op & 0xFF;
+    switch (op >> 11) {
+    case 0x00: case 0x01: case 0x02: // LSL/LSR/ASR by an immediate
+        return 0xE1B00000 | (rd << 12) | (((op >> 6) & 0x1F) << 7) | (((op >> 11) & 0x3) << 5) | rs;
+    case 0x03: // ADD/SUB with a register or a small immediate
+        return ((op & BIT(9)) ? 0xE0500000 : 0xE0900000) | ((op & BIT(10)) ? BIT(25) : 0) | (rs << 16) | (rd << 12) | rn;
+    case 0x04: return 0xE3B00000 | (r8 << 12) | imm; // MOV
+    case 0x05: return 0xE3500000 | (r8 << 16) | imm; // CMP
+    case 0x06: return 0xE2900000 | (r8 << 16) | (r8 << 12) | imm; // ADD
+    case 0x07: return 0xE2500000 | (r8 << 16) | (r8 << 12) | imm; // SUB
+    case 0x08:
+        if (!(op & BIT(10))) {
+            switch ((op >> 6) & 0xF) { // Data processing
+            case 0x0: return 0xE0100000 | (rd << 16) | (rd << 12) | rs; // AND
+            case 0x1: return 0xE0300000 | (rd << 16) | (rd << 12) | rs; // EOR
+            case 0x2: return 0xE1B00010 | (rd << 12) | (rs << 8) | rd; // LSL
+            case 0x3: return 0xE1B00030 | (rd << 12) | (rs << 8) | rd; // LSR
+            case 0x4: return 0xE1B00050 | (rd << 12) | (rs << 8) | rd; // ASR
+            case 0x5: return 0xE0B00000 | (rd << 16) | (rd << 12) | rs; // ADC
+            case 0x6: return 0xE0D00000 | (rd << 16) | (rd << 12) | rs; // SBC
+            case 0x7: return 0xE1B00070 | (rd << 12) | (rs << 8) | rd; // ROR
+            case 0x8: return 0xE1100000 | (rd << 16) | rs; // TST
+            case 0x9: return 0xE2700000 | (rs << 16) | (rd << 12); // NEG
+            case 0xA: return 0xE1500000 | (rd << 16) | rs; // CMP
+            case 0xB: return 0xE1700000 | (rd << 16) | rs; // CMN
+            case 0xC: return 0xE1900000 | (rd << 16) | (rd << 12) | rs; // ORR
+            case 0xD: return 0xE0100090 | (rd << 16) | (rd << 8) | rs; // MUL
+            case 0xE: return 0xE1D00000 | (rd << 16) | (rd << 12) | rs; // BIC
+            case 0xF: return 0xE1F00000 | (rd << 12) | rs; // MVN
+            }
+        }
+        else {
+            uint32_t high = ((op >> 4) & 0x8) | rd, rm = (op >> 3) & 0xF;
+            switch ((op >> 8) & 0x3) { // High registers
+            case 0x0: return 0xE0800000 | (high << 16) | (high << 12) | rm; // ADD
+            case 0x1: return 0xE1500000 | (high << 16) | rm; // CMP
+            case 0x2: return 0xE1A00000 | (high << 12) | rm; // MOV
+            }
+            return none;
+        }
+    case 0x09: return 0xE59F0000 | (r8 << 12) | (imm << 2); // LDR from the program counter
+    case 0x0A: case 0x0B: // Loads and stores at a register offset
+        switch ((op >> 9) & 0x7) {
+        case 0x0: return 0xE7800000 | (rs << 16) | (rd << 12) | rn; // STR
+        case 0x1: return 0xE18000B0 | (rs << 16) | (rd << 12) | rn; // STRH
+        case 0x2: return 0xE7C00000 | (rs << 16) | (rd << 12) | rn; // STRB
+        case 0x3: return 0xE19000D0 | (rs << 16) | (rd << 12) | rn; // LDRSB
+        case 0x4: return 0xE7900000 | (rs << 16) | (rd << 12) | rn; // LDR
+        case 0x5: return 0xE19000B0 | (rs << 16) | (rd << 12) | rn; // LDRH
+        case 0x6: return 0xE7D00000 | (rs << 16) | (rd << 12) | rn; // LDRB
+        default: return 0xE19000F0 | (rs << 16) | (rd << 12) | rn; // LDRSH
+        }
+    case 0x0C: return 0xE5800000 | (rs << 16) | (rd << 12) | (((op >> 6) & 0x1F) << 2); // STR
+    case 0x0D: return 0xE5900000 | (rs << 16) | (rd << 12) | (((op >> 6) & 0x1F) << 2); // LDR
+    case 0x0E: return 0xE5C00000 | (rs << 16) | (rd << 12) | ((op >> 6) & 0x1F); // STRB
+    case 0x0F: return 0xE5D00000 | (rs << 16) | (rd << 12) | ((op >> 6) & 0x1F); // LDRB
+    case 0x10: case 0x11: { // STRH/LDRH
+        uint32_t offset = (op >> 5) & 0x3E;
+        return ((op & BIT(11)) ? 0xE1D000B0 : 0xE1C000B0) | (rs << 16) | (rd << 12) | ((offset & 0xF0) << 4) | (offset & 0xF);
+    }
+    case 0x12: return 0xE58D0000 | (r8 << 12) | (imm << 2); // STR to the stack pointer
+    case 0x13: return 0xE59D0000 | (r8 << 12) | (imm << 2); // LDR from the stack pointer
+    case 0x14: return 0xE28F0F00 | (r8 << 12) | imm; // ADD Rd,PC,#i, which is rotated to make it a word offset
+    case 0x15: return 0xE28D0F00 | (r8 << 12) | imm; // ADD Rd,SP,#i
+    case 0x16: case 0x17:
+        if ((op & 0xFF00) == 0xB000) // ADD SP,#i
+            return ((op & BIT(7)) ? 0xE24DDF00 : 0xE28DDF00) | (op & 0x7F);
+        if ((op & 0xFE00) == 0xB400) // PUSH, with LR in place of bit 8
+            return 0xE92D0000 | imm | ((op & BIT(8)) ? BIT(14) : 0);
+        if ((op & 0xFE00) == 0xBC00) // POP, with PC in place of bit 8
+            return 0xE8BD0000 | imm | ((op & BIT(8)) ? BIT(15) : 0);
+        return none;
+    case 0x18: return 0xE8A00000 | (r8 << 16) | imm; // STMIA
+    case 0x19: return 0xE8B00000 | (r8 << 16) | imm; // LDMIA
+    }
+    return none;
+}
+
+static bool thumbBranch(uint32_t op, bool arm7) {
+    // Check if a THUMB instruction is one of the branches that has its own native code
+    // BX/BLX from the program counter and the ARM7's BLX are left to the interpreter
+    if ((op & 0xF000) == 0xD000) return (op & 0x0F00) < 0x0E00; // Conditional branches
+    if ((op & 0xF800) == 0xE000 || (op & 0xF000) == 0xF000) return true; // B, BL
+    if ((op & 0xF800) == 0xE800) return !arm7; // BLX label
+    if ((op & 0xFF00) == 0x4700) return ((op >> 3) & 0xF) != 15 && !(arm7 && (op & BIT(7))); // BX/BLX
+    return false;
+}
+
+uint32_t Jit::armOpcode(JitBlock *block, size_t i) {
+    // Get an instruction as ARM, which is what decides its native code
+    uint32_t op = block->instrs[i].opcode;
+    return block->thumb ? thumbToArm(op) : op;
+}
+
 bool Jit::emitNative(PpcEmitter &e, uint32_t op, uint32_t pc) {
     // Generate an ARM instruction as native code if possible, leaving its cycles in r3
     // Branches leave the program counter set in memory; other instructions leave it unchanged
@@ -879,8 +978,8 @@ void Jit::emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc) {
     if (opc < 8 || opc > 11)
         writeReg(e, 5, (op >> 12) & 0xF);
 
-    // Shifting by a register takes another cycle
-    e.li(3, (!(op & BIT(25)) && (op & BIT(4))) ? 2 : 1);
+    // Shifting by a register takes another cycle, except in THUMB
+    e.li(3, (!thumbCode && !(op & BIT(25)) && (op & BIT(4))) ? 2 : 1);
 }
 
 void Jit::emitBranch(PpcEmitter &e, uint32_t op, uint32_t pc) {
@@ -1181,15 +1280,17 @@ void Jit::emitBranchReg(PpcEmitter &e, uint32_t op, uint32_t pc) {
 
 void Jit::emitJump(PpcEmitter &e, int rs, bool interwork) {
     // Jump to an address in a register, switching to THUMB if bit 0 is set, like BX and loads of the program counter
-    // Without interworking, like loads of the program counter on the ARM7, it stays in ARM mode
+    // Without interworking, like loads of the program counter on the ARM7, it stays in the same mode
+    // THUMB code switches to ARM if bit 0 is clear
     if (rs != 5) e.mr(5, rs);
     if (!interwork) {
-        e.rlwinm(8, 5, 0, 0, 29);
-        e.addi(8, 8, 4);
+        e.rlwinm(8, 5, 0, 0, thumbCode ? 30 : 29);
+        e.addi(8, 8, thumbCode ? 2 : 4);
         e.stw(8, offPc, R_ARM);
         return;
     }
     e.lwz(6, offCpsr, R_ARM);
+    if (thumbCode) e.rlwinm(6, 6, 0, 27, 25);
     e.rlwinm(7, 5, 5, 26, 26);
     e.or_(6, 6, 7);
     e.stw(6, offCpsr, R_ARM);
@@ -1207,6 +1308,48 @@ void Jit::emitJump(PpcEmitter &e, int rs, bool interwork) {
     e.addi(8, 8, 4);
     e.patchB(done);
     e.stw(8, offPc, R_ARM);
+}
+
+void Jit::emitThumbBranch(PpcEmitter &e, uint32_t op, uint32_t pc) {
+    // B, the two halves of BL and BLX, or BX and BLX with a register, leaving the cycles in r3
+    // The first half of BL only sets the link register, and the second half can be reached without it, so it adds to that
+    if ((op & 0xF800) == 0xE000) { // B
+        e.loadConst(5, pc + ((int32_t)(op << 21) >> 20) + 2);
+        e.stw(5, offPc, R_ARM);
+        e.li(3, 3);
+    }
+    else if ((op & 0xF800) == 0xF000) { // First half of BL/BLX
+        e.loadConst(5, pc + ((int32_t)(op << 21) >> 9));
+        writeReg(e, 5, 14);
+        e.li(3, 1);
+    }
+    else if ((op & 0xF000) == 0xF000 || (op & 0xF800) == 0xE800) { // Second half of BL/BLX
+        readReg(e, 5, 14, pc);
+        e.addi(5, 5, (op & 0x7FF) << 1);
+        e.loadConst(6, pc - 1);
+        writeReg(e, 6, 14);
+        if (op & BIT(12)) { // BL
+            emitJump(e, 5, false);
+        }
+        else { // BLX to ARM
+            e.lwz(6, offCpsr, R_ARM);
+            e.rlwinm(6, 6, 0, 27, 25);
+            e.stw(6, offCpsr, R_ARM);
+            e.rlwinm(8, 5, 0, 0, 29);
+            e.addi(8, 8, 4);
+            e.stw(8, offPc, R_ARM);
+        }
+        e.li(3, 3);
+    }
+    else { // BX/BLX with a register
+        readReg(e, 5, (op >> 3) & 0xF, pc);
+        if (op & BIT(7)) {
+            e.loadConst(6, pc - 1);
+            writeReg(e, 6, 14);
+        }
+        emitJump(e, 5, true);
+        e.li(3, 3);
+    }
 }
 
 static bool isPure(uint32_t op, bool thumb) {
@@ -1245,8 +1388,8 @@ bool Jit::batched(JitBlock *block, size_t i) {
     // Check if an instruction is in a run whose cycles are checked together, which is only done with fast timing
     // Runs are native ALU instructions and loads; stores always check, since they can halt the CPU, change code
     // or schedule something that has to happen straight away, and jumps end runs since they leave the block
-    if (!codeFast || testing || block->thumb || i >= block->instrs.size()) return false;
-    uint32_t op = block->instrs[i].opcode;
+    if (!codeFast || testing || i >= block->instrs.size()) return false;
+    uint32_t op = armOpcode(block, i);
     int kind = nativeKind(op, arm7);
     if (kind == NK_ALU || kind == NK_MULTIPLY || kind == NK_MISC) return true;
     return (kind == NK_TRANSFER || kind == NK_HALF || kind == NK_BLOCK) && (op & BIT(20));
@@ -1256,7 +1399,8 @@ bool Jit::endsRun(JitBlock *block, size_t i) {
     // Check if an instruction outside of a run can do the check for the run before it, instead of checking twice in a row
     // This is left out for the interpreter's handlers, which are the ones that use the time more than in passing
     if (i >= block->instrs.size() || batched(block, i)) return false;
-    return nativeKind(block->instrs[i].opcode, arm7) != NK_NONE;
+    if (block->thumb && thumbBranch(block->instrs[i].opcode, arm7)) return true;
+    return nativeKind(armOpcode(block, i), arm7) != NK_NONE;
 }
 
 void Jit::stepPc(PpcEmitter &e) {
@@ -1268,7 +1412,7 @@ void Jit::stepPc(PpcEmitter &e) {
 void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool &ok) {
     // Generate one instruction; the program counter register only holds its value after stepping
     // Instructions in a run don't use it until the check at the end, so they leave stepping until then
-    uint32_t op = block->instrs[i].opcode;
+    uint32_t raw = block->instrs[i].opcode, op = armOpcode(block, i);
     if (!batched(block, i)) stepPc(e);
 
     // Instructions with a condition in the middle of a run add the cycle a failed condition takes after the instruction,
@@ -1298,24 +1442,25 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
     }
 
     // Conditional branches go their own way straight after the condition, so neither path has to check where it went
-    if (!block->thumb && nativeKind(op, arm7) == NK_BRANCH && (op >> 28) != 0xE) {
+    bool thumbCond = block->thumb && (raw & 0xF000) == 0xD000 && thumbBranch(raw, arm7);
+    if (thumbCond || (!block->thumb && nativeKind(op, arm7) == NK_BRANCH && (op >> 28) != 0xE)) {
         bool run = i > 0 && batched(block, i - 1);
-        uint32_t target = (pc + ((int32_t)(op << 8) >> 6)) & ~0x3;
-        e.call(codeCond[op >> 28]);
+        uint32_t target = thumbCond ? (pc + ((int32_t)(int8_t)raw << 1)) : ((pc + ((int32_t)(op << 8) >> 6)) & ~0x3);
+        e.call(codeCond[thumbCond ? ((raw >> 8) & 0xF) : (op >> 28)]);
         uint32_t *skip = e.here();
         e.bne(nullptr);
 
         // Branch, with cycles that include any run before this
-        if (op & BIT(24)) {
+        if (!thumbCond && (op & BIT(24))) {
             e.loadConst(5, pc - 4);
             writeReg(e, 5, 14);
         }
-        e.loadConst(5, target + 4);
+        e.loadConst(5, target + (thumbCond ? 2 : 4));
         e.stw(5, offPc, R_ARM);
         e.addi(3, R_BATCH, 3);
         if (run) e.li(R_BATCH, 0);
         e.call(codePost[0][0]);
-        block->links.push_back({ e.here(), target, nullptr });
+        block->links.push_back({ e.here(), target | thumbCond, nullptr });
         e.b(codeDispatch);
 
         // Continue to the next instruction
@@ -1326,8 +1471,13 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
         if (i + 1 == block->instrs.size()) e.stw(R_PC, offPc, R_ARM);
         return;
     }
-    bool native = !block->thumb && emitNative(e, op, pc);
-    bool memoryPc = !native || nativeJumps(nativeKind(op, arm7));
+
+    // THUMB reads the program counter as word aligned for its offsets, and has its own branches
+    bool wordPc = block->thumb && ((raw >> 11) == 0x09 || (raw >> 11) == 0x14);
+    bool branch = block->thumb && thumbBranch(raw, arm7);
+    if (branch) emitThumbBranch(e, raw, pc);
+    bool native = branch || emitNative(e, op, wordPc ? (pc & ~0x3) : pc);
+    bool memoryPc = !native || (branch ? (raw & 0xF800) != 0xF000 : nativeJumps(nativeKind(op, arm7)));
 
     if (!native) {
         // Call the interpreter handler, with the program counter stored for it to read
@@ -1338,7 +1488,7 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
             return;
         }
         e.stw(R_PC, offPc, R_ARM);
-        uint32_t cond = op >> 28;
+        uint32_t cond = raw >> 28;
         uint32_t *skip = nullptr;
         if (!block->thumb && cond < 0xE) {
             e.call(codeCond[cond]);
@@ -1348,7 +1498,7 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
         e.stw(R_CYCLES, 0, R_GLOBAL);
         e.stw(R_CYCLES, offCycles, R_ARM);
         e.mr(3, R_ARM);
-        e.loadConst(4, op);
+        e.loadConst(4, raw);
         e.call((!block->thumb && cond == 0xF) ? reserved : handler);
         e.call(codeRefresh);
         if (skip) {
@@ -1383,8 +1533,13 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
     // Then check for jumps, which leave the program counter in memory different from the register
     // Branches to known addresses jump through a site that's linked to the target block once it exists
     stepPc(e);
-    e.call(codePost[!isPure(op, block->thumb)][!memoryPc]);
-    if (native && nativeKind(op, arm7) == NK_BRANCH) {
+    e.call(codePost[!isPure(raw, block->thumb)][!memoryPc]);
+    if (block->thumb && (raw & 0xF800) == 0xE000) {
+        // Unconditional branches jump straight to their target like ARM ones
+        block->links.push_back({ e.here(), (pc + ((int32_t)(raw << 21) >> 20)) | 1, nullptr });
+        e.b(codeDispatch);
+    }
+    else if (!block->thumb && native && nativeKind(op, arm7) == NK_BRANCH) {
         uint32_t *same = nullptr;
         if ((op >> 28) != 0xE) {
             e.lwz(4, offPc, R_ARM);
@@ -1397,7 +1552,7 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
         e.b(codeDispatch);
         if (same) e.patchBc(same);
     }
-    else if (i + 1 < block->instrs.size() && mayJump(op, block->thumb)) {
+    else if (i + 1 < block->instrs.size() && mayJump(raw, block->thumb)) {
         e.lwz(4, offPc, R_ARM);
         e.cmplw(4, R_PC);
         uint32_t *same = e.here();
@@ -1431,6 +1586,7 @@ void *Jit::generate(JitBlock *block) {
     block->entries.clear();
     block->entriesBehind.clear();
     pcBehind = 0;
+    thumbCode = block->thumb;
     block->links.clear();
     bool ok = true;
     JS_START(emitStart);
