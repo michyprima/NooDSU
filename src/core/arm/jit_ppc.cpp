@@ -975,6 +975,13 @@ bool Jit::batched(JitBlock *block, size_t i) {
     return (kind == NK_TRANSFER || kind == NK_HALF || kind == NK_BLOCK) && (op & BIT(20));
 }
 
+bool Jit::endsRun(JitBlock *block, size_t i) {
+    // Check if an instruction outside of a run can do the check for the run before it, instead of checking twice in a row
+    // This is left out for the interpreter's handlers, which are the ones that use the time more than in passing
+    if (i >= block->instrs.size() || batched(block, i)) return false;
+    return nativeKind(block->instrs[i].opcode, arm7) != NK_NONE;
+}
+
 void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool &ok) {
     // Generate one instruction; the program counter register already holds its value
     uint32_t op = block->instrs[i].opcode;
@@ -1010,13 +1017,15 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
     }
 
     // With fast timing, runs of native ALU instructions and loads add up their cycles and only check whether to stop
-    // after the last one, so events can happen a few instructions late and loads can see the time a little behind;
-    // jumps into the middle of a run still count the cycles of what they run
-    if (batched(block, i)) {
-        if (batched(block, i + 1)) {
-            e.add(R_BATCH, R_BATCH, 3);
-            return;
-        }
+    // after the last one, or after the native instruction that follows it, so events can happen a few instructions late
+    // and loads and stores can see the time a little behind; jumps into the middle of a run still count the cycles of
+    // what they run
+    bool inRun = batched(block, i);
+    if (inRun && (batched(block, i + 1) || endsRun(block, i + 1))) {
+        e.add(R_BATCH, R_BATCH, 3);
+        return;
+    }
+    if (inRun || (i > 0 && batched(block, i - 1) && endsRun(block, i))) {
         e.add(3, 3, R_BATCH);
         e.li(R_BATCH, 0);
     }

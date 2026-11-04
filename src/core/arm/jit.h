@@ -188,6 +188,7 @@ private:
     void emitStubs(PpcEmitter &e);
     bool emitNative(PpcEmitter &e, uint32_t op, uint32_t pc);
     bool batched(JitBlock *block, size_t i);
+    bool endsRun(JitBlock *block, size_t i);
     void emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool &ok);
     void emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitBranch(PpcEmitter &e, uint32_t op, uint32_t pc);
