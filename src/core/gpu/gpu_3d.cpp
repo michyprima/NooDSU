@@ -18,6 +18,7 @@
     along with NooDS U. If not, see <https://www.gnu.org/licenses/>.
 */
 
+#include <algorithm>
 #include <cstring>
 #include "../core.h"
 #include "../emu_profile.h"
@@ -382,10 +383,13 @@ void Gpu3D::queueCommand(uint8_t command, uint32_t *params, int count) {
     // Add the command and its parameters; they're published at the end of the batch
     // Each cache block is claimed instead of being read from memory, since everything in it is new
     uint32_t *words = queue, end = queueEnd;
-    for (int i = 0; i <= count; i++) {
-        uint32_t index = (end + i) & (QUEUE_SIZE - 1);
+    uint32_t index = end & (QUEUE_SIZE - 1);
+    if (!(index & 7)) claimBlock(&words[index]);
+    words[index] = command | (count << 8);
+    for (int i = 0; i < count; i++) {
+        index = (end + 1 + i) & (QUEUE_SIZE - 1);
         if (!(index & 7)) claimBlock(&words[index]);
-        words[index] = i ? params[i - 1] : (command | (count << 8));
+        words[index] = params[i];
     }
     queueEnd = end + count + 1;
     if (changesExecStat(command)) statSent++;
@@ -602,22 +606,27 @@ void Gpu3D::runCommands() {
         worker ? stopWorker() : startWorker();
 
     // Run a batch of geometry commands
-    uint32_t cycles = 0;
+    // The FIFO's state is kept in local variables, since otherwise it's read again after every store
+    Entry *entries = fifo.entries;
+    size_t mask = fifo.mask, head = fifo.head, size = fifo.count;
+    uint32_t pipe = pipeSize, cycles = 0;
     while (cycles < GPU3D_BATCH) {
         // Fetch the next geometry command
-        Entry entry = fifo.front();
+        Entry entry = entries[head];
         int count = paramCounts[entry.command];
         uint32_t params[32];
 
         // Fetch the command's parameters; commands without any still take up an entry
         if (count > 1) {
-            fifo.pop_params(params, count);
+            for (int i = 0; i < count; i++)
+                params[i] = entries[(head + i) & mask].param;
         }
         else {
             count = 1;
             params[0] = entry.param;
-            fifo.pop_front();
         }
+        head = (head + count) & mask;
+        size -= count;
 
         // Apply the parts of the command that the FIFO handles, and then execute it, on the worker if running
         // Most commands don't involve the FIFO's state, so they skip checking for the ones that do
@@ -628,14 +637,17 @@ void Gpu3D::runCommands() {
         // On hardware, FIFO entries are moved into a pipe before being executed
         // The pipe can hold 4 entries, and is refilled when it runs half empty (2 entries)
         // As long as there are enough entries, set the pipe size to 3 or 4 depending on when it would refill
-        pipeSize = 4 - ((pipeSize + count) & 1);
-        if (pipeSize > fifo.size()) pipeSize = fifo.size();
+        pipe = 4 - ((pipe + count) & 1);
+        if (pipe > size) pipe = size;
 
         // End a batch early if the engine halted or there aren't enough parameters
         cycles += 2;
-        if (state == GX_HALTED || fifo.empty() || fifo.size() < paramCounts[fifo.front().command])
+        if (state == GX_HALTED || size == 0 || size < paramCounts[entries[head].command])
             break;
     }
+    fifo.head = head;
+    fifo.count = size;
+    pipeSize = pipe;
 
     // Let the worker see the batch's commands
     if (worker) publishQueue(false);
@@ -1628,17 +1640,8 @@ void Gpu3D::vecTestCmd(uint32_t param) {
     vecResult[2] = ((int16_t)(vector.z << 3)) >> 3;
 }
 
-FORCE_INLINE void Gpu3D::queueEntry(Entry entry) {
-    // Add an entry to the FIFO, leaving the FIFO status to be updated after a batch of entries
-    // No time passes and nothing else runs between entries of a batch, so the result is the same as updating each time
-    // Data moves directly into the pipe if the FIFO is empty and the pipe isn't full
-    if (fifo.size() - pipeSize == 0 && pipeSize < 4) {
-        pipeSize++;
-        gxStat |= BIT(27); // Commands executing
-    }
-    fifo.push_back(entry);
-
-    switch (entry.command) {
+void Gpu3D::trackEntry(uint8_t command) {
+    switch (command) {
     case 0x11: case 0x12: // MTX_PUSH, MTX_POP
         // Track queued matrix commands and set the busy bit until they finish
         matrixQueue++;
@@ -1651,6 +1654,18 @@ FORCE_INLINE void Gpu3D::queueEntry(Entry entry) {
         gxStat |= BIT(0);
         break;
     }
+}
+
+FORCE_INLINE void Gpu3D::queueEntry(Entry entry) {
+    // Add an entry to the FIFO, leaving the FIFO status to be updated after a batch of entries
+    // No time passes and nothing else runs between entries of a batch, so the result is the same as updating each time
+    // Data moves directly into the pipe if the FIFO is empty and the pipe isn't full
+    if (fifo.size() - pipeSize == 0 && pipeSize < 4) {
+        pipeSize++;
+        gxStat |= BIT(27); // Commands executing
+    }
+    fifo.push_back(entry);
+    trackEntry(entry.command);
 }
 
 void Gpu3D::finishEntries(size_t oldSize) {
@@ -1685,46 +1700,77 @@ void Gpu3D::addEntry(Entry entry) {
     finishEntries(oldSize);
 }
 
-FORCE_INLINE void Gpu3D::queueGxFifo(uint32_t value) {
-    // Add entries for a word written to GXFIFO, without updating the FIFO status
-    if (gxFifo == 0) {
-        // Read new packed commands
-        gxFifo = value;
-    }
-    else {
-        // Add a command parameter
-        queueEntry(Entry(gxFifo, value));
-        gxFifoCount++;
+void Gpu3D::queueGxFifo(const uint8_t *data, int count) {
+    // Add entries for little-endian words written to GXFIFO, without updating the FIFO status; there must be room for them
+    // The FIFO's state is kept in local variables, since otherwise it's read again after every store
+    Entry *entries = fifo.entries;
+    size_t mask = fifo.mask, tail = fifo.head + fifo.count, size = fifo.count;
+    uint32_t pipe = pipeSize, packed = gxFifo;
+    uint8_t received = gxFifoCount;
 
-        // Move to the next command once all parameters have been sent
-        if (gxFifoCount == paramCounts[gxFifo & 0xFF]) {
-            gxFifo >>= 8;
-            gxFifoCount = 0;
+    auto add = [&](uint8_t command, uint32_t param) __attribute__((always_inline)) {
+        // Data moves directly into the pipe if the FIFO is empty and the pipe isn't full
+        if (size == pipe && pipe < 4) {
+            pipe++;
+            gxStat |= BIT(27); // Commands executing
+        }
+        entries[tail++ & mask] = Entry(command, param);
+        size++;
+        if (command >= 0x11 && (command <= 0x12 || command >= 0x70)) trackEntry(command);
+    };
+
+    for (int i = 0; i < count; i++) {
+        uint32_t value = readLsb<uint32_t>(&data[i * 4]);
+        if (packed == 0) {
+            // Read new packed commands
+            packed = value;
+        }
+        else {
+            // Add a command parameter
+            add(packed, value);
+
+            // Move to the next command once all parameters have been sent
+            if (++received == paramCounts[packed & 0xFF]) {
+                packed >>= 8;
+                received = 0;
+            }
+        }
+
+        // Add entries for commands with no parameters
+        while (packed != 0 && paramCounts[packed & 0xFF] == 0) {
+            add(packed, 0);
+            packed >>= 8;
         }
     }
 
-    // Add entries for commands with no parameters
-    while (gxFifo != 0 && paramCounts[gxFifo & 0xFF] == 0) {
-        queueEntry(Entry(gxFifo, 0));
-        gxFifo >>= 8;
-    }
+    fifo.count = size;
+    pipeSize = pipe;
+    gxFifo = packed;
+    gxFifoCount = received;
 }
 
 void Gpu3D::writeGxFifo(uint32_t mask, uint32_t value) {
     // Write a word to GXFIFO
-    EP_START(fifoStart);
-    size_t oldSize = fifo.size();
-    queueGxFifo(value & mask);
-    finishEntries(oldSize);
-    EP_ADD(EP_GXFIFO, fifoStart);
+    uint8_t data[4];
+    writeLsb<uint32_t>(data, value & mask);
+    writeGxFifo(data, 1);
 }
 
 void Gpu3D::writeGxFifo(const uint8_t *data, int count) {
     // Write a batch of little-endian words to GXFIFO, as a DMA transfer does, updating the FIFO status once at the end
     EP_START(fifoStart);
     size_t oldSize = fifo.size();
-    for (int i = 0; i < count; i++)
-        queueGxFifo(readLsb<uint32_t>(&data[i * 4]));
+    while (count > 0) {
+        // A word adds at most 4 entries, so make room for a run of words first
+        int run = std::min<size_t>(count, (fifo.mask + 1 - fifo.size()) / 4);
+        if (run == 0) {
+            fifo.grow();
+            continue;
+        }
+        queueGxFifo(data, run);
+        data += run * 4;
+        count -= run;
+    }
     finishEntries(oldSize);
     EP_ADD(EP_GXFIFO, fifoStart);
 }

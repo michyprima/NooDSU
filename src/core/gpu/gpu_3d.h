@@ -51,6 +51,8 @@ struct Entry {
 // A ring buffer FIFO of geometry entries, which grows in the rare case that it fills up
 // This avoids the overhead of a deque for every command that's sent
 class EntryFifo {
+    friend class Gpu3D;
+
 public:
     typedef Entry value_type;
 
@@ -360,8 +362,9 @@ private:
     void posTestCmd(uint32_t *params);
     void vecTestCmd(uint32_t param);
 
+    void trackEntry(uint8_t command);
     void queueEntry(Entry entry);
     void finishEntries(size_t oldSize);
     void addEntry(Entry entry);
-    void queueGxFifo(uint32_t value);
+    void queueGxFifo(const uint8_t *data, int count);
 };
