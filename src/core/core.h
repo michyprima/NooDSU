@@ -213,7 +213,7 @@ public:
 
     // With fast CPU timing, the ARM9 can run up to this many cycles ahead of the ARM7 before it catches up
     // Longer slices let both CPUs run more instructions at a time; tasks still bring the ARM7 up to date
-    static const uint32_t FAST_SLICE = 256;
+    static const uint32_t FAST_SLICE = 1024;
     uint32_t sliceLimit = 0;
 
     // Compiled ARM7 code stops before reaching this, which is just before the ARM9 is due
