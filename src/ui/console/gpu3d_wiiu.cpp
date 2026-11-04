@@ -147,12 +147,15 @@ private:
         GX2Texture *texture;
         uint64_t hash;
         uint32_t frame;
+        uint32_t mapChanges; // Texture mapping changes when its data was last checked
     };
     std::unordered_map<uint64_t, CachedTexture> textures;
     std::vector<uint32_t> decoded;
     std::vector<GX2Texture*> updated;
     std::vector<GpuDraw> draws;
     uint32_t frameCount = 0;
+    uint64_t lastTextureKey = 0; // The last texture polygons used this frame; no key is 0, since textures have a format
+    GX2Texture *lastTexture = nullptr;
 
     std::mutex mutex;
     std::condition_variable cond;
@@ -163,6 +166,7 @@ private:
     void run();
     void renderFrame(Gpu3DRenderer *renderer);
     GX2Texture *getTexture(Gpu3DRenderer *renderer, _Polygon *polygon);
+    GX2Texture *lookUpTexture(Gpu3DRenderer *renderer, _Polygon *polygon, uint64_t key);
     void freeTextures();
 };
 
@@ -478,12 +482,26 @@ GX2Texture *Gpu3DWiiU::getTexture(Gpu3DRenderer *renderer, _Polygon *polygon) {
     uint64_t key = polygon->textureAddr | (uint64_t(polygon->paletteAddr) << 19) |
         (uint64_t(__builtin_ctz(polygon->sizeS) - 3) << 36) | (uint64_t(__builtin_ctz(polygon->sizeT) - 3) << 39) |
         (uint64_t(polygon->textureFmt) << 42) | (uint64_t(polygon->transparent0) << 45);
+
+    // Polygons in a row often share a texture, so the lookup is only needed when it changes
+    if (key != lastTextureKey) {
+        lastTexture = lookUpTexture(renderer, polygon, key);
+        lastTextureKey = key;
+    }
+    return lastTexture;
+}
+
+GX2Texture *Gpu3DWiiU::lookUpTexture(Gpu3DRenderer *renderer, _Polygon *polygon, uint64_t key) {
     CachedTexture &cached = textures[key];
     if (cached.texture && cached.frame == frameCount) return cached.texture;
 
-    // Check the texture once per frame, keeping the decoded copy if its data hasn't changed
-    uint64_t hash = renderer->hashTexture(polygon);
+    // Check the texture once per frame, which only takes hashing its data if the texture mappings changed, and keep the
+    // decoded copy if the data is the same; the count is read first, so a change during this gets checked next frame
     cached.frame = frameCount;
+    uint32_t mapChanges = renderer->getCore()->memory.textureMapChanges;
+    if (cached.texture && cached.mapChanges == mapChanges) return cached.texture;
+    cached.mapChanges = mapChanges;
+    uint64_t hash = renderer->hashTexture(polygon);
     if (cached.texture && cached.hash == hash) return cached.texture;
     cached.hash = hash;
 
@@ -539,6 +557,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
     HB_SET(HB_GPU_DISP3DCNT, disp3DCnt);
     HB_TIMER(hbBuild);
     frameCount++;
+    lastTextureKey = 0;
 
     // High-res frames are drawn at twice the size, with vertices already at that scale, in the same buffers
     int shift = renderer->getResShift();

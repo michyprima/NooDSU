@@ -61,6 +61,7 @@ public:
     uint8_t *engBExtPal[5] = {};
     uint8_t *tex3D[4] = {};
     uint8_t *pal3D[6] = {};
+    volatile uint32_t textureMapChanges = 0; // Counts when 3D texture data might have changed, which needs a remap
 
     Memory(Core *core);
     ~Memory();

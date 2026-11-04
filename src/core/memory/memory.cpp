@@ -482,6 +482,9 @@ void Memory::updateVram(bool all) {
             before9[n] = (slots9[i][j].count == 1) ? slots9[i][j].mappings[0] : nullptr;
     for (int i = 0; i < 2; i++)
         before7[i] = (vram7[i].count == 1) ? vram7[i].mappings[0] : nullptr;
+    uint8_t *beforeTex[4], *beforePal[6];
+    memcpy(beforeTex, tex3D, sizeof(tex3D));
+    memcpy(beforePal, pal3D, sizeof(pal3D));
 
     // Clear the previous VRAM mappings
     memset(engABg, 0, sizeof(engABg));
@@ -776,6 +779,11 @@ void Memory::updateVram(bool all) {
         }
     }
     core->gpu.invalidate3D();
+
+    // Banks can't be written while they're mapped for 3D, so texture data stays the same until these mappings change
+    // Loading a state replaces the data without necessarily changing them
+    if (all || memcmp(beforeTex, tex3D, sizeof(tex3D)) || memcmp(beforePal, pal3D, sizeof(pal3D)))
+        textureMapChanges = textureMapChanges + 1;
 }
 
 template <typename T> T Memory::readFallback(bool arm7, uint32_t address) {
