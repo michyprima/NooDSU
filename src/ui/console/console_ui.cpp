@@ -33,6 +33,7 @@
 #include <coreinit/core.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
+#include <coreinit/userconfig.h>
 
 // The emulator runs on its own thread, bound to the core that can run generated code
 static OSThread *emuThread = nullptr;
@@ -156,6 +157,7 @@ static void debugFrameEnd(Core *core) {
 int ConsoleUI::showFpsCounter = 0;
 int ConsoleUI::menuTheme = 0;
 int ConsoleUI::frameColor = 1;
+int ConsoleUI::gameLanguage = 0;
 void *ConsoleUI::frameTextures[2];
 int ConsoleUI::keyBinds[] = {};
 
@@ -277,6 +279,7 @@ void ConsoleUI::initialize(int width, int height, std::string root, std::string 
         Setting("showFpsCounter", &showFpsCounter, false),
         Setting("menuTheme", &menuTheme, false),
         Setting("screenFrame", &frameColor, false),
+        Setting("gameLanguage", &gameLanguage, false),
         Setting("defaultFolder", &defaultFolder, true),
         Setting("keyA", &keyBinds[INPUT_A], false),
         Setting("keyB", &keyBinds[INPUT_B], false),
@@ -1304,6 +1307,10 @@ void ConsoleUI::settingsMenu() {
     frame.insert(frame.end(), ScreenFrame::colorNames, ScreenFrame::colorNames + ScreenFrame::COLOR_COUNT);
     const std::vector<std::string> antiAlias = { "DS-Style", "Multisample", "Off" };
     const std::vector<std::string> romIn = { "Off", "On", "Streaming" };
+    const std::vector<std::string> directBoot = { "Off (broken)", "On" };
+    const std::vector<std::string> dsiMode = { "Off", "On (slow)" };
+    const std::vector<std::string> language = { "System Language", "Japanese", "English", "French", "German",
+        "Italian", "Spanish" };
     if (Settings::gpuAntiAlias >= (int)antiAlias.size()) Settings::gpuAntiAlias = 0;
 
     int index = 0;
@@ -1321,9 +1328,7 @@ void ConsoleUI::settingsMenu() {
         };
 
         header("General Settings");
-        add("Direct Boot", Settings::directBoot, toggle);
         add("Keep ROM in RAM", Settings::romInRam, romIn);
-        add("DSi Mode", Settings::dsiMode, toggle);
         add("JIT", Settings::jit, toggle);
         add("Fast CPU Timing", Settings::fastTiming, toggle);
         add("FPS Limiter", Settings::fpsLimiter, toggle);
@@ -1331,6 +1336,7 @@ void ConsoleUI::settingsMenu() {
         add("Show FPS Counter", showFpsCounter, toggle);
         add("Menu Theme", menuTheme, theme);
         add("Screen Frame", frameColor, frame);
+        add("Game Language", gameLanguage, language);
 
         header("Graphics Settings");
         add("GPU 3D Renderer", Settings::hardware3D, toggle);
@@ -1355,6 +1361,10 @@ void ConsoleUI::settingsMenu() {
         add("Aspect Ratio", ScreenLayout::aspectRatio, aspect);
         add("Integer Scale", ScreenLayout::integerScale, toggle);
         add("GBA Crop", ScreenLayout::gbaCrop, toggle);
+
+        header("Experimental");
+        add("Direct Boot", Settings::directBoot, directBoot);
+        add("DSi Mode", Settings::dsiMode, dsiMode);
 
         header("About");
         settings.push_back(MenuItem("About NooDS U"));
@@ -1872,7 +1882,24 @@ void ConsoleUI::jitSelfTest() {
 }
 #endif
 
+static Language systemLanguage() {
+    // Read the Wii U's language, which numbers the ones shared with the DS the same way
+    alignas(0x40) uint32_t value = LG_ENGLISH;
+    alignas(0x40) UCSysConfig config = { "cafe.language", 0x777, UC_DATATYPE_UNSIGNED_INT, 0, sizeof(value), &value };
+    UCHandle handle = UCOpen();
+    if (handle >= 0) {
+        if (UCReadSysConfig(handle, 1, &config) != 0) value = LG_ENGLISH;
+        UCClose(handle);
+    }
+
+    // Fall back to English for languages the DS doesn't have
+    return (value <= LG_SPANISH) ? Language(value) : LG_ENGLISH;
+}
+
 bool ConsoleUI::createCore() {
+    // Choose the language for games to see
+    Spi::setLanguage(gameLanguage ? Language(gameLanguage - 1) : systemLanguage());
+
     try {
         // Let a new core reuse ROMs that are already in memory, instead of reading them from file again
         if (core) {

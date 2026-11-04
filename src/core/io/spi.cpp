@@ -85,6 +85,17 @@ bool Spi::loadFirmware() {
             firmware[0x2B] = crc >> 8;
         }
 
+        // Set the language specified by the frontend in both copies of the user settings
+        // A copy that already fails its CRC is left alone, so that it doesn't start looking valid
+        for (uint32_t addr = firmSize - 0x200; firmSize >= 0x200 && addr < firmSize; addr += 0x100) {
+            if (crc16(0xFFFF, &firmware[addr], 0x70) != U8TO16(firmware, addr + 0x72))
+                continue;
+            firmware[addr + 0x64] = (firmware[addr + 0x64] & ~0x7) | language;
+            uint16_t crc = crc16(0xFFFF, &firmware[addr], 0x70);
+            firmware[addr + 0x72] = crc >> 0;
+            firmware[addr + 0x73] = crc >> 8;
+        }
+
         // Check if the firmware is from the correct system based on its size
         return core->dsiMode ? (firmSize <= 0x20000) : (firmSize > 0x20000);
     }

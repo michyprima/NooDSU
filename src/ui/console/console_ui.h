@@ -102,6 +102,7 @@ public:
     static int showFpsCounter;
     static int menuTheme;
     static int frameColor; // The screen frame's color, or 0 for none
+    static int gameLanguage; // The language games see, or 0 for the system's
     static int keyBinds[INPUT_MAX];
 
     // Data that is defined per-platform
