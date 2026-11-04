@@ -530,7 +530,7 @@ FORCE_INLINE int Interpreter::rscs(uint32_t opcode, uint32_t op2) { // RSCS Rd,R
     uint32_t *op0 = registers[(opcode >> 12) & 0xF];
     uint32_t op1 = *registers[(opcode >> 16) & 0xF] + (((opcode & 0x20F0010) == 0x00F0010) << 2);
     *op0 = op2 - op1 - 1 + ((cpsr & BIT(29)) >> 29);
-    cpsr = (cpsr & ~0xC0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&
+    cpsr = (cpsr & ~0xF0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&
         (op1 != -1 || (cpsr & BIT(29)))) << 29) | (((op1 ^ op2) & ~(*op0 ^ op1) & BIT(31)) >> 3);
 
     // Handle pipelining and mode switching
