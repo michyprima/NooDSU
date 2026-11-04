@@ -1771,6 +1771,13 @@ void ConsoleUI::jitSelfTest() {
     Core &a = *cores[0], &b = *cores[1];
     std::string mode;
 
+    // Note the start in the results file, so a test that never finished can be told apart from an old result
+    std::string resultsPath = Settings::basePath + "/jittest.txt";
+    if (FILE *file = fopen(resultsPath.c_str(), "a")) {
+        fprintf(file, "Started %s\n", ndsPath.c_str());
+        fclose(file);
+    }
+
     // Compare CPU and scheduler state every time the cores stop, and the screens of every drawn frame
     static uint32_t frameA[256 * 192 * 8], frameB[256 * 192 * 8];
     const int targetFrames = 15000;
@@ -1854,6 +1861,10 @@ void ConsoleUI::jitSelfTest() {
     char times[128];
     snprintf(times, sizeof(times), "\n\nInterpreter: %.1f s\nJIT: %.1f s (%.0f%% of the interpreter's time)",
         timeA, timeB, timeA > 0 ? timeB * 100 / timeA : 0);
+    if (FILE *file = fopen(resultsPath.c_str(), "a")) {
+        fprintf(file, "%s, %ld frames: %s%s\n\n", mode.c_str(), frames.load(), result.c_str(), times);
+        fclose(file);
+    }
     delete cores[1];
     delete cores[0];
     restore();
