@@ -825,11 +825,20 @@ void Jit::emitTransfer(PpcEmitter &e, uint32_t op, uint32_t pc) {
         if (rn == 15) {
             e.loadConst(5, up ? (pc + offset) : (pc - offset));
         }
+        else if (!writeback) {
+            readReg(e, 5, rn, pc);
+            if (offset) e.addi(5, 5, up ? offset : -offset);
+        }
         else {
             readReg(e, 3, rn, pc);
             e.addi(9, 3, up ? offset : -offset);
             e.mr(5, pre ? 9 : 3);
         }
+    }
+    else if (!writeback) {
+        emitShift(e, op, pc, false);
+        readReg(e, 3, rn, pc);
+        up ? e.add(5, 3, 4) : e.subf(5, 4, 3);
     }
     else {
         emitShift(e, op, pc, false);
@@ -900,6 +909,7 @@ void Jit::emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc) {
     int32_t first = up ? (pre ? 4 : 0) : (pre ? -count * 4 : -count * 4 + 4);
     int32_t end = up ? count * 4 : -count * 4;
     readReg(e, R_TMP1, rn, pc);
+    e.rlwinm(R_TMP2, R_TMP1, 0, 0, 29);
 
     // Loads write back first, since the base isn't loaded; stores write back last, storing the old base
     if (load && writeback) {
@@ -909,9 +919,8 @@ void Jit::emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc) {
     int32_t offset = first;
     for (int i = 0; i < 16; i++) {
         if (!(list & BIT(i))) continue;
-        e.addi(5, R_TMP1, offset);
+        e.addi(5, R_TMP2, offset);
         offset += 4;
-        e.rlwinm(5, 5, 0, 0, 29);
         if (load) {
             e.call(codeMemory[0]);
             if (i == 15) emitJump(e, 8, !arm7);
@@ -1048,6 +1057,25 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
     // Instructions in a run don't use it until the check at the end, so they leave stepping until then
     uint32_t op = block->instrs[i].opcode;
     if (!batched(block, i)) stepPc(e);
+
+    // Instructions with a condition in the middle of a run add the cycle a failed condition takes after the instruction,
+    // which adds the rest of its cycles, so both ways through can share the end
+    if (batched(block, i) && (op >> 28) != 0xE && (batched(block, i + 1) || endsRun(block, i + 1))) {
+        e.call(codeCond[op >> 28]);
+        uint32_t *skip = e.here();
+        e.bne(nullptr);
+        emitNative(e, (op & 0x0FFFFFFF) | 0xE0000000, pc);
+        uint32_t *last = e.here() - 1;
+        if ((*last & 0xFFFF0000) == 0x38600000 && (*last & 0xFFFF) > 0) {
+            *last = (14 << 26) | (R_BATCH << 21) | (R_BATCH << 16) | ((*last & 0xFFFF) - 1);
+            if ((*last & 0xFFFF) == 0) e.ptr--;
+            e.patchBc(skip);
+            e.addi(R_BATCH, R_BATCH, 1);
+            return;
+        }
+        ok = false;
+        return;
+    }
 
     // Conditional branches go their own way straight after the condition, so neither path has to check where it went
     if (!block->thumb && nativeKind(op, arm7) == NK_BRANCH && (op >> 28) != 0xE) {
