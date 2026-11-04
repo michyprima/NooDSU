@@ -1009,9 +1009,17 @@ bool Jit::endsRun(JitBlock *block, size_t i) {
     return nativeKind(block->instrs[i].opcode, arm7) != NK_NONE;
 }
 
+void Jit::stepPc(PpcEmitter &e) {
+    // Bring the program counter register up to the current instruction, which is only needed before something uses it
+    if (pcBehind) e.addi(R_PC, R_PC, pcBehind);
+    pcBehind = 0;
+}
+
 void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool &ok) {
-    // Generate one instruction; the program counter register already holds its value
+    // Generate one instruction; the program counter register only holds its value after stepping
+    // Instructions in a run don't use it until the check at the end, so they leave stepping until then
     uint32_t op = block->instrs[i].opcode;
+    if (!batched(block, i)) stepPc(e);
     bool native = !block->thumb && emitNative(e, op, pc);
     bool memoryPc = !native || nativeJumps(nativeKind(op, arm7));
 
@@ -1052,7 +1060,12 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
     // what they run
     bool inRun = batched(block, i);
     if (inRun && (batched(block, i + 1) || endsRun(block, i + 1))) {
-        e.add(R_BATCH, R_BATCH, 3);
+        // Instructions without a condition end by setting their cycles, so add them directly in place of that
+        uint32_t *last = e.here() - 1;
+        if ((op >> 28) == 0xE && (*last & 0xFFFF0000) == 0x38600000)
+            *last = (14 << 26) | (R_BATCH << 21) | (R_BATCH << 16) | (*last & 0xFFFF);
+        else
+            e.add(R_BATCH, R_BATCH, 3);
         return;
     }
     if (inRun || (i > 0 && batched(block, i - 1) && endsRun(block, i))) {
@@ -1063,6 +1076,7 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
     // Count cycles and check whether to stop; the program counter is stored first if it's only in the register
     // Then check for jumps, which leave the program counter in memory different from the register
     // Branches to known addresses jump through a site that's linked to the target block once it exists
+    stepPc(e);
     e.call(codePost[!isPure(op, block->thumb)][!memoryPc]);
     if (native && nativeKind(op, arm7) == NK_BRANCH) {
         uint32_t *same = nullptr;
@@ -1102,19 +1116,22 @@ void *Jit::generate(JitBlock *block) {
     if (OSGetCoreId() != codeCore || !OSSwitchSecCodeGenMode(CODEGEN_RW_)) return nullptr;
     JS_ADD(JS_SWITCH_RW, writableStart);
 
-    // Set the program counter register at the start, then step it before each instruction
+    // Set the program counter register at the start, then step it as instructions need it
     // Record where each instruction starts after stepping, so other blocks can jump into the middle
     PpcEmitter e(codePtr);
     uint32_t step = block->thumb ? 2 : 4;
     uint32_t pc = block->address + step * 2;
     e.loadConst(R_PC, pc);
     block->entries.clear();
+    block->entriesBehind.clear();
+    pcBehind = 0;
     block->links.clear();
     bool ok = true;
     JS_START(emitStart);
     for (size_t i = 0; i < block->instrs.size() && ok; i++, pc += step) {
-        if (i > 0) e.addi(R_PC, R_PC, step);
+        if (i > 0) pcBehind += step;
         block->entries.push_back((uint8_t*)e.here() - codePtr);
+        block->entriesBehind.push_back(pcBehind);
         emitInstr(e, block, i, pc, ok);
     }
 
@@ -1151,7 +1168,7 @@ void *Jit::generateEntry(JitBlock *host, size_t index) {
     if (OSGetCoreId() != codeCore || !OSSwitchSecCodeGenMode(CODEGEN_RW_)) return nullptr;
     JS_ADD(JS_SWITCH_RW, writableStart);
     PpcEmitter e(codePtr);
-    e.loadConst(R_PC, host->address + (index + 2) * (host->thumb ? 2 : 4));
+    e.loadConst(R_PC, host->address + (index + 2) * (host->thumb ? 2 : 4) - host->entriesBehind[index]);
     e.b((uint8_t*)host->code + host->entries[index]);
     uint8_t *code = codePtr;
     size_t size = (uint8_t*)e.here() - code;
