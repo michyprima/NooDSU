@@ -1338,7 +1338,8 @@ int Interpreter::negDpT(uint16_t opcode) { // NEG Rd,Rs
     uint32_t *op0 = registers[opcode & 0x7];
     uint32_t op2 = *registers[(opcode >> 3) & 0x7];
     *op0 = -op2;
-    cpsr = (cpsr & ~0xF0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((*op0 <= 0) << 29);
+    cpsr = (cpsr & ~0xF0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((*op0 <= 0) << 29) |
+        ((op2 & *op0 & BIT(31)) >> 3);
     return 1;
 }
 
