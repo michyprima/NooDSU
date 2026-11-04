@@ -66,6 +66,9 @@ struct JitBlock {
     std::vector<uint32_t> entries; // Offsets in the code where each instruction starts
     std::vector<JitLink> links; // Jumps from this block's code to other blocks
     std::vector<std::pair<JitBlock*, uint32_t*>> incoming; // Linked jumps to this block, and their blocks
+
+    static void *operator new(size_t size);
+    static void operator delete(void *block);
 };
 
 // A direct-mapped cache of recently run blocks by guest address, for jumping between blocks quickly

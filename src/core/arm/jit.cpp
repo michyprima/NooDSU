@@ -18,11 +18,37 @@
     along with NooDS U. If not, see <https://www.gnu.org/licenses/>.
 */
 
+#include <cstdlib>
 #include <cstring>
+#include <new>
 #include <coreinit/core.h>
 
 #include "../core.h"
 #include "../emu_profile.h"
+
+// Blocks are allocated in groups and reused, since allocating one at a time can stall a frame while a game is running
+// They're only allocated and deleted by one thread at a time, so this doesn't need a lock
+static const size_t BLOCK_GROUP = 256;
+static void *spareBlocks = nullptr;
+
+void *JitBlock::operator new(size_t size) {
+    if (!spareBlocks) {
+        uint8_t *group = (uint8_t*)malloc(size * BLOCK_GROUP);
+        if (!group) throw std::bad_alloc();
+        for (size_t i = 0; i < BLOCK_GROUP; i++) {
+            *(void**)(group + i * size) = spareBlocks;
+            spareBlocks = group + i * size;
+        }
+    }
+    void *block = spareBlocks;
+    spareBlocks = *(void**)block;
+    return block;
+}
+
+void JitBlock::operator delete(void *block) {
+    *(void**)block = spareBlocks;
+    spareBlocks = block;
+}
 
 // The most instructions to put in one block, to limit how much is recompiled when code changes
 static const int MAX_INSTRS = 64;
