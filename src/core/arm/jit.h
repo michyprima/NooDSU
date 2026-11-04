@@ -111,6 +111,7 @@ public:
     bool isNative() { return codeArea != nullptr; }
     bool hasCode() { return codePages != 0; }
     bool isCodePage(uint8_t *host);
+    bool lineHasCode(uint8_t *host);
     bool writeCode(uint8_t *host, int size);
     void mapChanged(uint32_t start);
 

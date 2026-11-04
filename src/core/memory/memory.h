@@ -51,6 +51,10 @@ public:
     uint8_t *jitPages9B[0x2000] = {};
     uint8_t *jitPages7[0x2000] = {};
 
+    // Recently written lines in pages with compiled code that have none themselves, by host address
+    static const int CLEAN_LINES = 64;
+    uintptr_t cleanLines[CLEAN_LINES] = {};
+
     uint8_t palette[0x800] = {}; // 2KB palette
     uint8_t oam[0x800] = {}; // 2KB OAM
     uint8_t *engAExtPal[5] = {};
@@ -71,6 +75,7 @@ public:
 
     void updateMap9(uint32_t start, uint32_t end, bool tcm = false);
     void updateMap7(uint32_t start, uint32_t end);
+    void forgetCleanLines();
     void updateVram(bool all = false);
 
     template <typename T> T read(bool arm7, uint32_t address, bool tcm = true);

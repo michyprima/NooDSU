@@ -238,6 +238,7 @@ public:
         bool code7 = jit7.writeCode(host, size);
         return code9 || code7;
     }
+    bool jitLineHasCode(uint8_t *host) { return jit.lineHasCode(host) || jit7.lineHasCode(host); }
     void schedule(SchedTask task, uint32_t cycles);
     void enterGbaMode();
     void endFrame();

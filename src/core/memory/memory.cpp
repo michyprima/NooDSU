@@ -905,9 +905,18 @@ template <typename T> bool Memory::writeJit(bool arm7, uint32_t address, T value
     // Let the JITs drop overwritten code, and map the page back once it has none left
     EP_INC(EC_JIT_WRITES);
     uint8_t *data = &base[address & (0x1000 - sizeof(T))];
-    if (!core->jitWriteCode(data, sizeof(T))) {
-        writeMap[address >> 12] = base;
-        if (saved) *saved = nullptr;
+
+    // Data sharing a page with code gets written a lot, so skip the JITs for lines they've said have no code
+    uintptr_t line = uintptr_t(data) >> 5;
+    uintptr_t &clean = cleanLines[line & (CLEAN_LINES - 1)];
+    if (clean != line) {
+        if (!core->jitWriteCode(data, sizeof(T))) {
+            writeMap[address >> 12] = base;
+            if (saved) *saved = nullptr;
+        }
+        else if (!core->jitLineHasCode(data)) {
+            clean = line;
+        }
     }
     writeLsb<T>(data, value);
     return true;
@@ -916,6 +925,11 @@ template <typename T> bool Memory::writeJit(bool arm7, uint32_t address, T value
 uint8_t **Memory::jitPages(uint8_t **writeMap) {
     // Get where a write map's pages that were unmapped for compiled code point
     return (writeMap == writeMap7) ? jitPages7 : (writeMap == writeMap9A) ? jitPages9A : jitPages9B;
+}
+
+void Memory::forgetCleanLines() {
+    // New code might be in any line, so check them all again
+    memset(cleanLines, 0, sizeof(cleanLines));
 }
 
 void Memory::unmapJit(uint8_t **writeMap, uint32_t index) {

@@ -165,6 +165,16 @@ bool Jit::isCodePage(uint8_t *host) {
     return page >= 0 && !pages[page].blocks.empty();
 }
 
+bool Jit::lineHasCode(uint8_t *host) {
+    // Check if any of the 32-byte line around a host address is compiled code
+    int page = pageIndex(host);
+    if (page < 0) return false;
+    uint32_t start = (uintptr_t(host) & 0xFE0) >> 1;
+    for (uint32_t i = start; i < start + 16; i++)
+        if (pages[page].covered[i]) return true;
+    return false;
+}
+
 bool Jit::endsBlock(uint32_t op, bool thumb) {
     // Check if an instruction always changes the program counter or CPU state, so nothing after it can run
     // Conditional branches don't end blocks, since execution continues if they aren't taken
@@ -257,6 +267,7 @@ JitBlock *Jit::compile(uint32_t address, bool thumb, uint8_t *host, int index) {
             if (count == 0xFF) p.saturated = true;
             else count++;
         }
+        core->memory.forgetCleanLines();
     }
 
     // Generate host code for the block if a backend is available
