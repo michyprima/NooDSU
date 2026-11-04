@@ -865,8 +865,8 @@ void Jit::emitHalf(PpcEmitter &e, uint32_t op, uint32_t pc) {
             e.loadConst(5, up ? (pc + offset) : (pc - offset));
         }
         else {
-            readReg(e, 3, rn, pc);
-            e.addi(5, 3, up ? offset : -offset);
+            readReg(e, 5, rn, pc);
+            if (offset) e.addi(5, 5, up ? offset : -offset);
         }
     }
     else {
