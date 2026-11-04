@@ -148,6 +148,7 @@ private:
     // Generated code, starting with shared entry, exit, dispatch and per-instruction routines
     uint8_t *codeArea = nullptr, *codeStart = nullptr, *codePtr = nullptr, *codeEnd = nullptr;
     void *codeEnter = nullptr, *codeExit = nullptr, *codeDispatch = nullptr;
+    void *codeRefresh = nullptr;
     void *codePost[2][2] = {}, *codeSlowPost[2] = {}; // Indexed by impure, then by storing the program counter
     void *codeCond[14] = {}, *codeFlags[5] = {}, *codeMemory[6] = {};
     int offPc = 0, offCpsr = 0, offCycles = 0, offEventCycles = 0, offUsr = 0, offRegs = 0;

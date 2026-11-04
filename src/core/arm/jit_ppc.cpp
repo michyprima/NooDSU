@@ -32,6 +32,7 @@
 
 // Registers that hold state while generated code runs; they're saved by the entry code
 enum PpcReg {
+    R_NEXT = 19, // Global cycles when something else needs to run, from the limit and the next scheduled event
     R_BATCH = 20, // Cycles of a batch of instructions that share one check, zero outside of one
     R_TMP2 = 21, // Values kept across memory accesses
     R_TMP1 = 22,
@@ -40,7 +41,7 @@ enum PpcReg {
     R_PC = 25, // Program counter of the current instruction, which is only stored when needed
     R_CACHE = 26, // Block cache, with the code changed flag before it
     R_EVENTS = 27, // Scheduler event vector
-    R_LAST = 28, // Global cycles at the start of the last instruction
+    R_CYCLES = 28, // Global cycles, which are only written to memory before calling into the emulator
     R_LIMIT = 29, // Pointer to the cycle limit, normally the ARM7's cycles
     R_GLOBAL = 30, // Pointer to the global cycles
     R_ARM = 31 // ARM9 interpreter
@@ -258,11 +259,30 @@ void Jit::initCodegen() {
 }
 
 void Jit::emitStubs(PpcEmitter &e) {
+    // Refresh: load the global cycles and when to stop next, after anything that could have changed them
+    // This only changes r4 and r5, so a return value in r3 or a loaded value in r8 stays intact
+    codeRefresh = e.here();
+    e.lwz(R_CYCLES, 0, R_GLOBAL);
+    e.lwz(4, 0, R_LIMIT);
+    e.addi(4, 4, 1);
+    e.lwz(5, 0, R_EVENTS);
+    e.lwz(R_NEXT, offEventCycles, 5);
+    e.cmpwi(4, 0); // A limit of the highest value can't be passed
+    uint32_t *refreshed1 = e.here();
+    e.beq(nullptr);
+    e.cmplw(4, R_NEXT);
+    uint32_t *refreshed2 = e.here();
+    e.bge(nullptr);
+    e.mr(R_NEXT, 4);
+    e.patchBc(refreshed1);
+    e.patchBc(refreshed2);
+    e.blr();
+
     // Exit: restore saved registers and return to the caller
     codeExit = e.here();
     e.lwz(0, 84, 1);
     e.mtlr(0);
-    e.lmw(R_BATCH, 24, 1);
+    e.lmw(R_NEXT, 20, 1);
     e.addi(1, 1, 80);
     e.blr();
 
@@ -272,7 +292,7 @@ void Jit::emitStubs(PpcEmitter &e) {
     e.stwu(1, -80, 1);
     e.mflr(0);
     e.stw(0, 84, 1);
-    e.stmw(R_BATCH, 24, 1);
+    e.stmw(R_NEXT, 20, 1);
     e.li(R_BATCH, 0);
     e.mr(R_ARM, 3);
     e.mr(R_EVENTS, 4);
@@ -281,21 +301,26 @@ void Jit::emitStubs(PpcEmitter &e) {
     e.mr(R_CACHE, 8);
     e.loadConst(R_RMAP, addrReadMap);
     e.loadConst(R_WMAP, addrWriteMap);
+    e.call(codeRefresh);
     e.mtctr(6);
     e.bctr();
 
     // When the next instruction can't run straight away, call the interleave helper, which runs the ARM7
     // like the interpreter would and says whether to continue; it needs a stack frame to keep the return address
     // The first version stores the program counter first, for instructions that don't set it themselves
+    // The CPU's cycles are from the new value in r3, while the global cycles are still from the start of the instruction
     codeSlowPost[1] = e.here();
     e.stw(R_PC, offPc, R_ARM);
     codeSlowPost[0] = e.here();
+    e.stw(3, offCycles, R_ARM);
+    e.stw(R_CYCLES, 0, R_GLOBAL);
     e.stwu(1, -16, 1);
     e.mflr(0);
     e.stw(0, 20, 1);
     e.loadConst(3, (uint32_t)(uintptr_t)this);
     e.mr(4, R_LIMIT);
     e.call((void*)&Jit::interleaveCall);
+    e.call(codeRefresh);
     e.lwz(0, 20, 1);
     e.mtlr(0);
     e.addi(1, 1, 16);
@@ -303,30 +328,21 @@ void Jit::emitStubs(PpcEmitter &e) {
     e.beq(codeExit);
     e.blr();
 
-    // After an instruction, with its cycles in r3: update the CPU's cycles, doubled for the half-speed ARM7, then
-    // continue if nothing else needs to run first; the global cycles are only advanced here, since the helper
-    // expects them at the start of the last instruction; impure versions also check if code changed, since the
-    // block might be stale
+    // After an instruction, with its cycles in r3: add them, doubled for the half-speed ARM7, then continue if nothing
+    // else needs to run first; impure versions also check if code changed, since the block might be stale
     for (int store = 0; store < 2; store++) {
         for (int impure = 0; impure < 2; impure++) {
             codePost[impure][store] = e.here();
             if (arm7) e.add(3, 3, 3);
-            e.lwz(R_LAST, 0, R_GLOBAL);
-            e.add(3, 3, R_LAST);
-            e.stw(3, offCycles, R_ARM);
+            e.add(3, 3, R_CYCLES);
             if (impure) {
                 e.lwz(4, -int(sizeof(JitCacheEntry)), R_CACHE);
                 e.cmpwi(4, 0);
                 e.bne(codeSlowPost[store]);
             }
-            e.lwz(4, 0, R_LIMIT);
-            e.cmplw(3, 4);
-            e.bgt(codeSlowPost[store]);
-            e.lwz(4, 0, R_EVENTS);
-            e.lwz(4, offEventCycles, 4);
-            e.cmplw(3, 4);
+            e.cmplw(3, R_NEXT);
             e.bge(codeSlowPost[store]);
-            e.stw(3, 0, R_GLOBAL);
+            e.mr(R_CYCLES, 3);
             e.blr();
         }
     }
@@ -355,6 +371,8 @@ void Jit::emitStubs(PpcEmitter &e) {
     e.bctr();
     e.patchBc(miss1);
     e.patchBc(miss2);
+    e.stw(R_CYCLES, 0, R_GLOBAL);
+    e.stw(R_CYCLES, offCycles, R_ARM);
     e.b(codeExit);
 
     // Conditions: set cr0 to equal if an ARM condition passes, from the interpreter's lookup table
@@ -456,12 +474,15 @@ void Jit::emitStubs(PpcEmitter &e) {
         e.stwu(1, -16, 1);
         e.mflr(0);
         e.stw(0, 20, 1);
+        e.stw(R_CYCLES, 0, R_GLOBAL);
+        e.stw(R_CYCLES, offCycles, R_ARM);
         e.loadConst(3, addrMemory);
         e.mr(4, 5);
         if (!load) e.mr(5, 8);
         if (load) e.call((size == 4) ? addrLoad32 : (size == 1) ? addrLoad8 : addrLoad16);
         else e.call((size == 4) ? addrStore32 : (size == 1) ? addrStore8 : addrStore16);
         if (load) e.mr(8, 3);
+        e.call(codeRefresh);
         e.lwz(0, 20, 1);
         e.mtlr(0);
         e.addi(1, 1, 16);
@@ -1004,9 +1025,12 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
             skip = e.here();
             e.bne(nullptr);
         }
+        e.stw(R_CYCLES, 0, R_GLOBAL);
+        e.stw(R_CYCLES, offCycles, R_ARM);
         e.mr(3, R_ARM);
         e.loadConst(4, op);
         e.call((!block->thumb && cond == 0xF) ? reserved : handler);
+        e.call(codeRefresh);
         if (skip) {
             uint32_t *done = e.here();
             e.b(nullptr);
