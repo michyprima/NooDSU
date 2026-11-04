@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+# Changes a copy of the core so it builds on a Mac, with generated code going to the test instead of being run
+# Usage: patch.py <copy of src/core> [mutation number], where a mutation plants a bug the tests should catch
+import os, re, sys
+
+root = sys.argv[1]
+mutation = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+
+def edit(path, *changes):
+    path = root + '/' + path
+    text = open(path).read()
+    for old, new in changes:
+        assert old in text, old
+        text = text.replace(old, new)
+    open(path, 'w').write(text)
+
+edit('arm/interpreter.h', ('private:', 'public:'))
+edit('arm/jit.cpp', ('#include <cstdlib>', '#include <algorithm>\n#include <vector>\n#include <cstdlib>'))
+edit('defines.h', ('__asm__ volatile("dcbz 0, %0" :: "r"(data) : "memory");', ''))
+edit('gpu/gpu.cpp',
+    ('malloc_usable_size', 'malloc_size'), ('__os_snprintf', 'snprintf'),
+    ('(uint32_t)drawer->getFramebuffer()', '(uint32_t)(uintptr_t)drawer->getFramebuffer()'),
+    ('(uint32_t)fastTargets[engine]', '(uint32_t)(uintptr_t)fastTargets[engine]'), ('(uint32_t)drawer,', '(uint32_t)(uintptr_t)drawer,'))
+text = open(root + '/gpu/gpu.cpp').read()
+open(root + '/gpu/gpu.cpp', 'w').write('#include <malloc/malloc.h>\n' + text)
+edit('gpu/gpu_3d_renderer.cpp', ('asm volatile("dcbz 0, %0" :: "r"(block) : "memory");', ';'))
+
+# Clang assumes the shift by 32 in this loop never happens, so it would give different timing to GCC's build
+edit('arm/interpreter_alu.cpp', ('(op2 < (-1 << (m << 3)) || op2 >= (1 << (m << 3))) && m < 4',
+    'm < 4 && (op2 < (-1 << (m << 3)) || op2 >= (1 << (m << 3)))'), ('(op3 < (-1 << (m << 3)) || op3 >= (1 << (m << 3))) && m < 4',
+    'm < 4 && (op3 < (-1 << (m << 3)) || op3 >= (1 << (m << 3)))'))
+
+# C++ functions called from generated code become fixed addresses that the test watches
+path = root + '/arm/jit_ppc.cpp'
+text = open(path).read()
+text = re.sub(r'static_assert\(sizeof\(JitCacheEntry\) == 16[^\n]*\n', '', text)
+text = text.replace('return (parts.ptr & 1 || parts.adj) ? nullptr : (void*)parts.ptr;', 'return (void*)(uintptr_t)0x3F1000;')
+text = text.replace('e.call((void*)&Jit::interleaveCall);', 'e.call((void*)(uintptr_t)0x3F2000);')
+text = text.replace('    emitStubs(e);\n    codeStart =', '    rigOverride(*this);\n    emitStubs(e);\n    codeStart =')
+text = text.replace('#include "../core.h"', '#define private public\n#include "../core.h"\n#undef private\nvoid rigOverride(Jit &jit);', 1)
+
+# Bugs that should be caught, by which suite they're aimed at
+MUTATIONS = [
+    ('e.addi(8, 8, thumbCode ? 2 : 4);', 'e.addi(8, 8, 4);'), # 1: POP PC on the ARM7
+    ('wordPc ? (pc & ~0x3) : pc', 'pc'), # 2: LDR from the PC isn't aligned
+    ('if (thumbCode) e.rlwinm(6, 6, 0, 27, 25);\n', ''), # 3: BX doesn't go back to ARM
+    ('(!thumbCode && !(op & BIT(25))', '(!(op & BIT(25))'), # 4: THUMB register shifts take 2 cycles
+    ('case 0xE: return 0xE1D00000', 'case 0xE: return 0xE1900000'), # 5: BIC is ORR
+    ('case 0x9: return 0xE2700000 | (rs << 16) | (rd << 12);', 'case 0x9: return 0xE2600000 | (rs << 16) | (rd << 12);'), # 6: NEG sets no flags
+    ('        e.call(codeRefresh);\n        e.lwz(0, 20, 1);\n        e.mtlr(0);\n        e.addi(1, 1, 16);\n        e.blr();\n    }\n}', '        e.lwz(0, 20, 1);\n        e.mtlr(0);\n        e.addi(1, 1, 16);\n        e.blr();\n    }\n}'), # 7: memory slow path doesn't refresh
+    ('        if (load) e.mr(8, 3);\n', ''), # 8: memory slow path loses a loaded value
+    ('e.loadConst(R_PC, host->address + (index + 2) * (host->thumb ? 2 : 4) - host->entriesBehind[index]);', 'e.loadConst(R_PC, host->address + (index + 2) * (host->thumb ? 2 : 4));'), # 9: mid-block entry has the wrong PC
+    ('block->links.push_back({ e.here(), target | thumbCond, nullptr });', 'block->links.push_back({ e.here(), target, nullptr });'), # 10: THUMB branch links to ARM
+    ('    e.stw(3, offCycles, R_ARM);\n    e.stw(R_CYCLES, 0, R_GLOBAL);\n', '    e.stw(3, offCycles, R_ARM);\n'), # 11: a stop doesn't save the time
+    ('    stepPc(e);\n    e.call(codePost[!isPure(raw', '    e.call(codePost[!isPure(raw'), # 12: the PC is stale at a check
+    ('e.add(3, 3, R_BATCH);\n        e.li(R_BATCH, 0);', 'e.li(R_BATCH, 0);'), # 13: a run's cycles are lost
+    ('    e.lwz(R_CYCLES, 0, R_GLOBAL);\n    e.lwz(4, 0, R_LIMIT);', '    e.lwz(4, 0, R_LIMIT);'), # 14: refresh doesn't reload the time
+    ('e.rlwinm(R_TMP2, R_TMP1, 0, 0, 29);', 'e.mr(R_TMP2, R_TMP1);'), # 15: LDM/STM bases aren't aligned in the slow path
+    ('case 0x7: // RSC\n            if (arith) e.subfe(5, 3, 4);', 'case 0x7: // RSC\n            if (arith) e.subfe(5, 4, 3);'), # 16: RSCS has its operands swapped
+    ('e.call(codeFlags[(opc == 0x4 || opc == 0x5 || opc == 0xB) ? 2 : (opc == 0x3 || opc == 0x7) ? 4 : 3]);', 'e.call(codeFlags[(opc == 0x4 || opc == 0xB) ? 2 : (opc == 0x3 || opc == 0x7) ? 4 : 3]);'), # 17: ADCS has SBCS flags
+    ('if (i + 1 == block->instrs.size()) e.stw(R_PC, offPc, R_ARM);\n        return;', 'return;'), # 18: a block ending in a conditional branch loses the PC
+    ('block->links.push_back({ e.here(), (pc + ((int32_t)(raw << 21) >> 20)) | 1, nullptr });', 'block->links.push_back({ e.here(), (pc + ((int32_t)(raw << 21) >> 20)), nullptr });'), # 19: THUMB B links to ARM
+    ('uint32_t *last = e.here() - 1;\n        if ((*last & 0xFFFF0000) == 0x38600000 && (*last & 0xFFFF) > 0) {\n            *last = (14 << 26) | (R_BATCH << 21) | (R_BATCH << 16) | ((*last & 0xFFFF) - 1);', 'uint32_t *last = e.here() - 1;\n        if ((*last & 0xFFFF0000) == 0x38600000 && (*last & 0xFFFF) > 0) {\n            *last = (14 << 26) | (R_BATCH << 21) | (R_BATCH << 16) | (*last & 0xFFFF);'), # 20: folded conditions count a cycle too many
+    ('e.call((!block->thumb && cond == 0xF) ? reserved : handler);\n        e.call(codeRefresh);\n', 'e.call((!block->thumb && cond == 0xF) ? reserved : handler);\n'), # 21: handlers don't refresh
+    ('        e.stw(R_CYCLES, 0, R_GLOBAL);\n        e.stw(R_CYCLES, offCycles, R_ARM);\n        e.mr(3, R_ARM);\n', '        e.mr(3, R_ARM);\n'), # 22: handlers don't see the time
+    ('    if (block->thumb && (raw & 0xF800) == 0xE000) {\n        // Unconditional branches jump straight to their target like ARM ones\n        block->links.push_back({ e.here(), (pc + ((int32_t)(raw << 21) >> 20)) | 1, nullptr });\n        e.b(codeDispatch);\n    }\n    else if', '    if'), # 23: THUMB B doesn't link
+]
+if mutation:
+    old, new = MUTATIONS[mutation - 1]
+    assert old in text, old
+    text = text.replace(old, new)
+text += open(os.path.dirname(os.path.abspath(__file__)) + '/rig.inc').read()
+open(path, 'w').write(text)
