@@ -184,8 +184,8 @@ private:
     void *codeRefresh = nullptr;
     uint32_t pcBehind = 0; // How far the program counter register will be behind at this point in a block being generated
     void *codePost[2][2] = {}, *codeSlowPost[2] = {}; // Indexed by impure, then by storing the program counter
-    void *codeCond[14] = {}, *codeFlags[5] = {}, *codeMemory[6] = {}, *codeShift[4] = {}, *codeMultiplyCycles = nullptr;
-    int offPc = 0, offCpsr = 0, offCycles = 0, offEventCycles = 0, offUsr = 0, offRegs = 0;
+    void *codeCond[14] = {}, *codeFlags[5] = {}, *codeMemory[6] = {}, *codeShift[4] = {}, *codeShiftCarry[4] = {}, *codeMultiplyCycles = nullptr;
+    int offPc = 0, offCpsr = 0, offSpsr = 0, offCycles = 0, offEventCycles = 0, offUsr = 0, offRegs = 0;
     uint32_t codeCore = 0;
     bool codeFailed = false;
     bool codeFast = false; // Whether code was generated for fast timing, which checks cycles less often

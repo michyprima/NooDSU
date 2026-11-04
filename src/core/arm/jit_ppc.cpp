@@ -245,6 +245,7 @@ void Jit::initCodegen() {
     Interpreter &arm = core->interpreter[arm7];
     offPc = (uint8_t*)&arm.registersUsr[15] - (uint8_t*)&arm;
     offCpsr = (uint8_t*)&arm.cpsr - (uint8_t*)&arm;
+    offSpsr = (uint8_t*)&arm.spsr - (uint8_t*)&arm;
     offCycles = (uint8_t*)&arm.cycles - (uint8_t*)&arm;
     offEventCycles = offsetof(SchedEvent, cycles);
     offUsr = (uint8_t*)&arm.registersUsr[0] - (uint8_t*)&arm;
@@ -468,6 +469,59 @@ void Jit::emitStubs(PpcEmitter &e) {
         e.blr();
     }
 
+    // The same with the shifter carry in r7, which is the current carry if the shift is 0
+    for (int type = 0; type < 4; type++) {
+        codeShiftCarry[type] = e.here();
+        e.rlwinm(6, 6, 0, 24, 31);
+        e.cmpwi(6, 0);
+        uint32_t *shifted = e.here();
+        e.bne(nullptr);
+        e.lwz(7, offCpsr, R_ARM);
+        e.rlwinm(7, 7, 3, 31, 31);
+        e.blr();
+        e.patchBc(shifted);
+
+        // Rotates keep every bit, using the amount modulo 32
+        if (type == 3) {
+            e.addi(8, 6, -1);
+            e.rlwinm(8, 8, 0, 27, 31);
+            e.srw(7, 4, 8);
+            e.rlwinm(7, 7, 0, 31, 31);
+            e.subfic(6, 6, 32);
+            e.rlwnm(4, 4, 6, 0, 31);
+            e.blr();
+            continue;
+        }
+
+        // Host shifts use 6 bits of the amount, so a shift of 32 works, leaving only larger ones to handle apart
+        e.li(7, 32);
+        e.cmplw(6, 7);
+        uint32_t *large = e.here();
+        e.bgt(nullptr);
+        if (type == 0) {
+            e.subfic(8, 6, 32);
+            e.srw(7, 4, 8);
+            e.slw(4, 4, 6);
+        }
+        else {
+            e.addi(8, 6, -1);
+            (type == 1) ? e.srw(7, 4, 8) : e.sraw(7, 4, 8);
+            (type == 1) ? e.srw(4, 4, 6) : e.sraw(4, 4, 6);
+        }
+        e.rlwinm(7, 7, 0, 31, 31);
+        e.blr();
+        e.patchBc(large);
+        if (type == 2) {
+            e.srawi(4, 4, 31);
+            e.rlwinm(7, 4, 0, 31, 31);
+        }
+        else {
+            e.li(4, 0);
+            e.li(7, 0);
+        }
+        e.blr();
+    }
+
     // The ARM7's multiply timing in r6 from the signed value of r4: 1 to 4, for how many bytes the value needs
     codeMultiplyCycles = e.here();
     e.srawi(6, 4, 31);
@@ -620,7 +674,7 @@ enum NativeKind {
     NK_BLOCK_PC, // LDM that loads the program counter, like a function return
     NK_SWAP, // SWP/SWPB
     NK_MULTIPLY, // MUL/MLA and long multiplies
-    NK_MISC // CLZ and MRS from CPSR
+    NK_MISC // CLZ and MRS
 };
 
 static int nativeKind(uint32_t op, bool arm7) {
@@ -646,16 +700,16 @@ static int nativeKind(uint32_t op, bool arm7) {
                 return (rd == 15 || rn == 15 || rm == 15 || rs == 15) ? NK_NONE : NK_MULTIPLY;
             if (!arm7 && (op & 0x0FFF0FF0) == 0x016F0F10) // CLZ
                 return (rd == 15 || rm == 15) ? NK_NONE : NK_MISC;
-            if ((op & 0x0E000090) == 0x00000010) { // Data processing shifted by a register, without flags
+            if ((op & 0x0E000090) == 0x00000010) { // Data processing shifted by a register
                 uint32_t opc = (op >> 21) & 0xF;
-                if ((op & BIT(20)) || (opc >= 8 && opc <= 11)) return NK_NONE;
+                if (!(op & BIT(20)) && opc >= 8 && opc <= 11) return NK_NONE; // Compares and tests only set flags
                 return (rd == 15 || rn == 15 || rm == 15 || rs == 15) ? NK_NONE : NK_ALU;
             }
             return NK_NONE; // Other misc
         }
         uint32_t opc = (op >> 21) & 0xF;
         bool s = op & BIT(20);
-        if ((op & 0x0FFF0FFF) == 0x010F0000) return (rd == 15) ? NK_NONE : NK_MISC; // MRS from CPSR
+        if ((op & 0x0FBF0FFF) == 0x010F0000) return (rd == 15) ? NK_NONE : NK_MISC; // MRS
         if (opc >= 8 && opc <= 11) return s ? NK_ALU : NK_NONE; // Compares and tests, other encodings are misc
         return (rd == 15) ? NK_NONE : NK_ALU;
     }
@@ -773,7 +827,8 @@ void Jit::emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc) {
     else if (op & BIT(4)) {
         readReg(e, 4, op & 0xF, pc);
         readReg(e, 6, (op >> 8) & 0xF, pc);
-        e.call(codeShift[(op >> 5) & 0x3]);
+        carry = s && logical;
+        e.call(carry ? codeShiftCarry[(op >> 5) & 0x3] : codeShift[(op >> 5) & 0x3]);
     }
     else {
         carry = emitShift(e, op, pc, s && logical);
@@ -1013,12 +1068,22 @@ void Jit::emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc) {
 }
 
 void Jit::emitMisc(PpcEmitter &e, uint32_t op, uint32_t pc) {
-    // CLZ, or MRS from CPSR
+    // CLZ, or MRS, which leaves the register alone if the current mode has no SPSR
     if (op & BIT(4)) {
         readReg(e, 3, op & 0xF, pc);
         e.cntlzw(5, 3);
         writeReg(e, 5, (op >> 12) & 0xF);
         e.li(3, 1);
+    }
+    else if (op & BIT(22)) {
+        e.lwz(5, offSpsr, R_ARM);
+        e.cmpwi(5, 0);
+        uint32_t *none = e.here();
+        e.beq(nullptr);
+        e.lwz(5, 0, 5);
+        writeReg(e, 5, (op >> 12) & 0xF);
+        e.patchBc(none);
+        e.li(3, arm7 ? 1 : 2);
     }
     else {
         e.lwz(5, offCpsr, R_ARM);
