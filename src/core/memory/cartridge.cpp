@@ -1112,7 +1112,7 @@ void CartridgeNds::writeAuxSpiData(bool cpu, uint8_t value) {
                 }
                 else {
                     // On writes 5+, read data from the save and send it back
-                    auxSpiData[cpu] = (auxAddress[cpu] < saveSize) ? save[auxAddress[cpu]] : 0;
+                    auxSpiData[cpu] = (auxAddress[cpu] < saveSize) ? save[auxAddress[cpu]] : 0xFF;
                     auxAddress[cpu]++;
                 }
                 break;
@@ -1125,6 +1125,17 @@ void CartridgeNds::writeAuxSpiData(bool cpu, uint8_t value) {
                 }
                 else {
                     // On writes 5+, write data to the save
+                    // Commands don't reveal the FLASH size, so grow the save if a game writes past the end of it
+                    if (auxAddress[cpu] >= saveSize) {
+                        for (int size: { 0x80000, 0x100000, 0x800000 }) {
+                            if (auxAddress[cpu] < size) {
+                                LOG_INFO("Detected FLASH %dKB save type\n", size / 0x400);
+                                resizeSave(size, false);
+                                break;
+                            }
+                        }
+                    }
+
                     if (auxAddress[cpu] < saveSize) {
                         mutex.lock();
                         save[auxAddress[cpu]] = value;
