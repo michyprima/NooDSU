@@ -1174,6 +1174,20 @@ int logHeartbeat(int argc, void *argv) {
         lastRecord = count;
         FrameTrace::write((std::string(WHBGetSdCardMountPath()) + "/wiiu/apps/noodsu/trace.bin").c_str());
 #endif
+#ifdef JIT_SPLIT
+        // Show the total time in each step of compiling blocks so far
+        fprintf(file, "   jit split: blocks %u, bytes %u | total %llu, protect %llu, switch rw %llu, emit %llu, link %llu, "
+            "flush %llu, switch rx %llu, invalidate %llu | new %llu, reuse %llu, decode %llu, retire %llu, track %llu, "
+            "generate %llu us\n", jitSplitBlocks, jitSplitBytes,
+            OSTicksToMicroseconds(jitSplit[JS_TOTAL]), OSTicksToMicroseconds(jitSplit[JS_PROTECT]),
+            OSTicksToMicroseconds(jitSplit[JS_SWITCH_RW]), OSTicksToMicroseconds(jitSplit[JS_EMIT]),
+            OSTicksToMicroseconds(jitSplit[JS_LINK]), OSTicksToMicroseconds(jitSplit[JS_FLUSH]),
+            OSTicksToMicroseconds(jitSplit[JS_SWITCH_RX]), OSTicksToMicroseconds(jitSplit[JS_INVALIDATE]),
+            OSTicksToMicroseconds(jitSplit[JS_NEW]), OSTicksToMicroseconds(jitSplit[JS_REUSE]),
+            OSTicksToMicroseconds(jitSplit[JS_DECODE]),
+            OSTicksToMicroseconds(jitSplit[JS_RETIRE]), OSTicksToMicroseconds(jitSplit[JS_TRACK]),
+            OSTicksToMicroseconds(jitSplit[JS_GENERATE]));
+#endif
         // Show the heap use, to spot leaks
         struct mallinfo info = mallinfo();
         fprintf(file, "   memory: heap %u KB, used %u KB, free %u KB | gpu textures %u, %u KB\n", info.arena >> 10,

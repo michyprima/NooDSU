@@ -24,6 +24,35 @@
 #include <unordered_map>
 #include <vector>
 
+// How long each step of compiling a block takes, for builds made with JIT_SPLIT
+#ifdef JIT_SPLIT
+#include <coreinit/time.h>
+enum JitSplitSlot {
+    JS_TOTAL, // Compiling a block, including everything below and decoding it
+    JS_NEW, // Allocating the block
+    JS_REUSE, // Looking for a block to reuse code from, and generating an entry point into it
+    JS_DECODE, // Decoding instructions
+    JS_RETIRE, // Replacing a block already at this position
+    JS_TRACK, // Tracking the block in its page, other than unmapping it
+    JS_GENERATE, // Generating and finishing host code, including the steps below
+    JS_PROTECT, // Unmapping pages that got their first code from the write maps
+    JS_SWITCH_RW, // Making the codegen area writable
+    JS_EMIT, // Generating host code
+    JS_LINK, // Linking the block with others
+    JS_FLUSH, // Flushing the code from the data cache
+    JS_SWITCH_RX, // Making the codegen area executable again
+    JS_INVALIDATE, // Invalidating the instruction cache
+    JS_COUNT
+};
+extern uint64_t jitSplit[JS_COUNT];
+extern uint32_t jitSplitBlocks, jitSplitBytes;
+#define JS_START(name) uint32_t name = OSGetSystemTick()
+#define JS_ADD(slot, name) jitSplit[slot] += uint32_t(OSGetSystemTick() - name)
+#else
+#define JS_START(name)
+#define JS_ADD(slot, name)
+#endif
+
 class Core;
 class Interpreter;
 class PpcEmitter;

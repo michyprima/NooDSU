@@ -53,6 +53,11 @@ void JitBlock::operator delete(void *block) {
 // The most instructions to put in one block, to limit how much is recompiled when code changes
 static const int MAX_INSTRS = 64;
 
+#ifdef JIT_SPLIT
+uint64_t jitSplit[JS_COUNT];
+uint32_t jitSplitBlocks, jitSplitBytes;
+#endif
+
 #ifdef JIT_LOG
 #include <cstdarg>
 #include <coreinit/thread.h>
@@ -228,7 +233,9 @@ bool Jit::endsBlock(uint32_t op, bool thumb) {
 }
 
 JitBlock *Jit::compile(uint32_t address, bool thumb, uint8_t *host, int index) {
+    JS_START(newStart);
     JitBlock *block = new JitBlock();
+    JS_ADD(JS_NEW, newStart);
     block->address = address;
     block->thumb = thumb;
     block->start = host;
@@ -238,6 +245,7 @@ JitBlock *Jit::compile(uint32_t address, bool thumb, uint8_t *host, int index) {
     // Its instructions are the same, so only a small entry point is needed instead of another copy
     int page = pageIndex(host);
     uint32_t step = thumb ? 2 : 4;
+    JS_START(reuseStart);
     for (size_t i = 0; page >= 0 && i < pages[page].blocks.size(); i++) {
         JitBlock *other = pages[page].blocks[i];
         if (other->thumb != thumb || !other->code || host <= other->start || host >= other->end) continue;
@@ -251,9 +259,11 @@ JitBlock *Jit::compile(uint32_t address, bool thumb, uint8_t *host, int index) {
             break;
         }
     }
+    JS_ADD(JS_REUSE, reuseStart);
 
     // Otherwise decode instructions until one that ends the block, the end of the page, or the size limit
     // The page is the guest's, since host memory isn't page aligned and the next guest page can be somewhere else
+    JS_START(decodeStart);
     uint8_t *pageEnd = host + (0x1000 - (address & 0xFFF));
     uint8_t *ptr = host;
     while (!block->code && ptr < pageEnd && block->instrs.size() < MAX_INSTRS) {
@@ -272,10 +282,14 @@ JitBlock *Jit::compile(uint32_t address, bool thumb, uint8_t *host, int index) {
         if (endsBlock(instr.opcode, thumb)) break;
     }
     if (!block->code) block->end = ptr;
+    JS_ADD(JS_DECODE, decodeStart);
 
     // Replace any block already at this position
+    JS_START(retireStart);
     if (table[index]) retire(table[index]);
     table[index] = block;
+    JS_ADD(JS_RETIRE, retireStart);
+    JS_START(trackStart);
 
     // Track the block in its page, unmapping the page for writes if it's the first code there
     if (page >= 0) {
@@ -283,7 +297,9 @@ JitBlock *Jit::compile(uint32_t address, bool thumb, uint8_t *host, int index) {
         if (p.blocks.empty()) {
             p.blocks.push_back(block);
             p.overwrites = 0;
+            JS_START(protectStart);
             protect(page);
+            JS_ADD(JS_PROTECT, protectStart);
         }
         else {
             p.blocks.push_back(block);
@@ -296,8 +312,12 @@ JitBlock *Jit::compile(uint32_t address, bool thumb, uint8_t *host, int index) {
         core->memory.forgetCleanLines();
     }
 
+    JS_ADD(JS_TRACK, trackStart);
+
     // Generate host code for the block if a backend is available
+    JS_START(generateStart);
     if (!block->code) block->code = generate(block);
+    JS_ADD(JS_GENERATE, generateStart);
     return block;
 }
 
@@ -523,7 +543,12 @@ bool Jit::run(const uint32_t *limit) {
 #if defined(PROFILE_EMU) && defined(HEARTBEAT)
         uint8_t *codeBefore = codePtr;
 #endif
+        JS_START(compileStart);
         block = compile(address, thumb, host, index);
+        JS_ADD(JS_TOTAL, compileStart);
+#ifdef JIT_SPLIT
+        jitSplitBlocks++;
+#endif
         EP_ADD(EP_COMPILE, comp);
         EP_INC(EC_JIT_COMPILED);
 #if defined(PROFILE_EMU) && defined(HEARTBEAT)

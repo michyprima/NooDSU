@@ -518,13 +518,19 @@ void Jit::applyUnlinks() {
 
 void Jit::finishCode(uint8_t *start, size_t size, const std::vector<uint32_t*> &patched) {
     // Write the code and any patched jumps to memory and make the area executable again
+    JS_START(flushStart);
     if (start) DCFlushRange(start, size);
     for (size_t i = 0; i < patched.size(); i++)
         DCFlushRange(patched[i], 4);
+    JS_ADD(JS_FLUSH, flushStart);
+    JS_START(switchStart);
     BOOL rx = OSSwitchSecCodeGenMode(CODEGEN_R_X);
+    JS_ADD(JS_SWITCH_RX, switchStart);
+    JS_START(invalidateStart);
     if (start) ICInvalidateRange(start, size);
     for (size_t i = 0; i < patched.size(); i++)
         ICInvalidateRange(patched[i], 4);
+    JS_ADD(JS_INVALIDATE, invalidateStart);
 #ifdef JIT_LOG
     static uint32_t count = 0;
     if (++count <= 200 || (count % 10000) == 0)
@@ -1092,7 +1098,9 @@ void *Jit::generate(JitBlock *block) {
     size_t maxSize = block->instrs.size() * MAX_INSTR_WORDS * 4 + 16;
     if (codePtr + maxSize > codeEnd) return nullptr;
     // The codegen area can only be touched from its core; blocks use the portable executor otherwise
+    JS_START(writableStart);
     if (OSGetCoreId() != codeCore || !OSSwitchSecCodeGenMode(CODEGEN_RW_)) return nullptr;
+    JS_ADD(JS_SWITCH_RW, writableStart);
 
     // Set the program counter register at the start, then step it before each instruction
     // Record where each instruction starts after stepping, so other blocks can jump into the middle
@@ -1103,6 +1111,7 @@ void *Jit::generate(JitBlock *block) {
     block->entries.clear();
     block->links.clear();
     bool ok = true;
+    JS_START(emitStart);
     for (size_t i = 0; i < block->instrs.size() && ok; i++, pc += step) {
         if (i > 0) e.addi(R_PC, R_PC, step);
         block->entries.push_back((uint8_t*)e.here() - codePtr);
@@ -1111,6 +1120,7 @@ void *Jit::generate(JitBlock *block) {
 
     // Continue to whatever block comes next
     e.b(codeDispatch);
+    JS_ADD(JS_EMIT, emitStart);
 
     // Link jumps between this block and others while the area is writable
     uint8_t *code = codePtr;
@@ -1118,7 +1128,12 @@ void *Jit::generate(JitBlock *block) {
     std::vector<uint32_t*> patched;
     if (ok) {
         block->code = code;
+        JS_START(linkStart);
         linkBlock(block, patched);
+        JS_ADD(JS_LINK, linkStart);
+#ifdef JIT_SPLIT
+        jitSplitBytes += size;
+#endif
     }
     else {
         block->links.clear();
@@ -1132,7 +1147,9 @@ void *Jit::generate(JitBlock *block) {
 void *Jit::generateEntry(JitBlock *host, size_t index) {
     // Generate a small entry point into the middle of another block's code, instead of compiling it again
     if (!codeArea || !host->code || index >= host->entries.size() || codePtr + 64 > codeEnd) return nullptr;
+    JS_START(writableStart);
     if (OSGetCoreId() != codeCore || !OSSwitchSecCodeGenMode(CODEGEN_RW_)) return nullptr;
+    JS_ADD(JS_SWITCH_RW, writableStart);
     PpcEmitter e(codePtr);
     e.loadConst(R_PC, host->address + (index + 2) * (host->thumb ? 2 : 4));
     e.b((uint8_t*)host->code + host->entries[index]);
