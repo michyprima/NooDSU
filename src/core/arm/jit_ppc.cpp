@@ -71,10 +71,15 @@ public:
     void cmpwi(int ra, int32_t si) { d(11, 0, ra, si); }
     void oris(int ra, int rs, uint32_t ui) { d(25, rs, ra, ui); }
     void subfic(int rt, int ra, int32_t si) { d(8, rt, ra, si); }
+    void addic(int rt, int ra, int32_t si) { d(12, rt, ra, si); }
     void andi_(int ra, int rs, uint32_t ui) { d(28, rs, ra, ui); }
 
     // X-form instructions
     void x(int rt, int ra, int rb, int xo) { emit((31 << 26) | (rt << 21) | (ra << 16) | (rb << 11) | (xo << 1)); }
+    void slw(int ra, int rs, int rb) { x(rs, ra, rb, 24); }
+    void srw(int ra, int rs, int rb) { x(rs, ra, rb, 536); }
+    void sraw(int ra, int rs, int rb) { x(rs, ra, rb, 792); }
+    void subfe(int rt, int ra, int rb) { x(rt, ra, rb, 136); } // rt = rb - ra - 1 + carry
     void mullw(int rt, int ra, int rb) { x(rt, ra, rb, 235); }
     void mulhw(int rt, int ra, int rb) { x(rt, ra, rb, 75); }
     void mulhwu(int rt, int ra, int rb) { x(rt, ra, rb, 11); }
@@ -442,6 +447,38 @@ void Jit::emitStubs(PpcEmitter &e) {
         e.blr();
     }
 
+    // Shifts of r4 by the low byte of r6, which is changed, for each type of shift
+    for (int type = 0; type < 4; type++) {
+        codeShift[type] = e.here();
+        if (type == 3) {
+            e.subfic(6, 6, 32);
+            e.rlwnm(4, 4, 6, 0, 31);
+            e.blr();
+            continue;
+        }
+        e.rlwinm(6, 6, 0, 24, 31);
+        e.li(7, 32);
+        e.cmplw(6, 7);
+        uint32_t *large = e.here();
+        e.bge(nullptr);
+        (type == 0) ? e.slw(4, 4, 6) : (type == 1) ? e.srw(4, 4, 6) : e.sraw(4, 4, 6);
+        e.blr();
+        e.patchBc(large);
+        (type == 2) ? e.srawi(4, 4, 31) : e.li(4, 0);
+        e.blr();
+    }
+
+    // The ARM7's multiply timing in r6 from the signed value of r4: 1 to 4, for how many bytes the value needs
+    codeMultiplyCycles = e.here();
+    e.srawi(6, 4, 31);
+    e.xor_(6, 4, 6);
+    e.ori(6, 6, 1);
+    e.cntlzw(6, 6);
+    e.subfic(6, 6, 32);
+    e.addi(6, 6, 7);
+    e.rlwinm(6, 6, 29, 3, 31);
+    e.blr();
+
     // Memory accesses at the address in r5, with the value in r8; mapped memory is accessed directly, and
     // anything else goes through the memory handlers, which also catch writes to compiled code
     // Types are word, byte and halfword loads, then the same for stores
@@ -582,7 +619,8 @@ enum NativeKind {
     NK_BLOCK, // LDM/STM
     NK_BLOCK_PC, // LDM that loads the program counter, like a function return
     NK_SWAP, // SWP/SWPB
-    NK_MULTIPLY // Multiplies without flags on the ARM9, whose timing doesn't depend on the operands
+    NK_MULTIPLY, // MUL/MLA and long multiplies
+    NK_MISC // CLZ and MRS from CPSR
 };
 
 static int nativeKind(uint32_t op, bool arm7) {
@@ -603,16 +641,22 @@ static int nativeKind(uint32_t op, bool arm7) {
                 if (!(op & BIT(20)) && (op & 0x60) != 0x20) return NK_NONE; // LDRD/STRD
                 return NK_HALF;
             }
-            if (!arm7 && ((op & 0x0FD000F0) == 0x00000090 || (op & 0x0F9000F0) == 0x00800090)) {
-                uint32_t rs = (op >> 8) & 0xF;
+            uint32_t rs = (op >> 8) & 0xF;
+            if ((op & 0x0FC000F0) == 0x00000090 || (op & 0x0F8000F0) == 0x00800090)
                 return (rd == 15 || rn == 15 || rm == 15 || rs == 15) ? NK_NONE : NK_MULTIPLY;
+            if (!arm7 && (op & 0x0FFF0FF0) == 0x016F0F10) // CLZ
+                return (rd == 15 || rm == 15) ? NK_NONE : NK_MISC;
+            if ((op & 0x0E000090) == 0x00000010) { // Data processing shifted by a register, without flags
+                uint32_t opc = (op >> 21) & 0xF;
+                if ((op & BIT(20)) || (opc >= 8 && opc <= 11)) return NK_NONE;
+                return (rd == 15 || rn == 15 || rm == 15 || rs == 15) ? NK_NONE : NK_ALU;
             }
-            return NK_NONE; // Shifts by register, other multiplies and misc
+            return NK_NONE; // Other misc
         }
         uint32_t opc = (op >> 21) & 0xF;
         bool s = op & BIT(20);
+        if ((op & 0x0FFF0FFF) == 0x010F0000) return (rd == 15) ? NK_NONE : NK_MISC; // MRS from CPSR
         if (opc >= 8 && opc <= 11) return s ? NK_ALU : NK_NONE; // Compares and tests, other encodings are misc
-        if (opc >= 5 && opc <= 7 && s) return NK_NONE; // Flag-setting ADC/SBC/RSC
         return (rd == 15) ? NK_NONE : NK_ALU;
     }
     if ((op & 0x0E000000) == 0x0A000000) // B/BL
@@ -663,6 +707,7 @@ bool Jit::emitNative(PpcEmitter &e, uint32_t op, uint32_t pc) {
         case NK_BLOCK: case NK_BLOCK_PC: emitBlock(e, op, pc); break;
         case NK_SWAP: emitSwap(e, op, pc); break;
         case NK_MULTIPLY: emitMultiply(e, op, pc); break;
+        case NK_MISC: emitMisc(e, op, pc); break;
     }
 
     if (skip) {
@@ -702,7 +747,7 @@ void Jit::emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc) {
                 return;
             }
         }
-        else if (opc == 0xD) {
+        else if (opc == 0xD && !(op & BIT(4))) {
             emitShift(e, op, pc, false);
             writeReg(e, 4, rd);
             e.li(3, 1);
@@ -725,27 +770,42 @@ void Jit::emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc) {
             carry = true;
         }
     }
+    else if (op & BIT(4)) {
+        readReg(e, 4, op & 0xF, pc);
+        readReg(e, 6, (op >> 8) & 0xF, pc);
+        e.call(codeShift[(op >> 5) & 0x3]);
+    }
     else {
         carry = emitShift(e, op, pc, s && logical);
     }
 
-    // Get the carry flag for operations that use it
+    // Get the carry flag for operations that use it, in the host's carry if flags are also set
+    bool arith = s && !logical;
     if (opc >= 5 && opc <= 7) {
         e.lwz(6, offCpsr, R_ARM);
         e.rlwinm(6, 6, 3, 31, 31);
+        if (arith) e.addic(6, 6, -1);
     }
 
     // Do the operation, with carry out for flag-setting arithmetic
-    bool arith = s && !logical;
     switch (opc) {
         case 0x0: case 0x8: e.and_(5, 3, 4); break; // AND/TST
         case 0x1: case 0x9: e.xor_(5, 3, 4); break; // EOR/TEQ
         case 0x2: case 0xA: arith ? e.subfc(5, 4, 3) : e.subf(5, 4, 3); break; // SUB/CMP
         case 0x3: arith ? e.subfc(5, 3, 4) : e.subf(5, 3, 4); break; // RSB
         case 0x4: case 0xB: arith ? e.addc(5, 3, 4) : e.add(5, 3, 4); break; // ADD/CMN
-        case 0x5: e.add(5, 3, 4); e.add(5, 5, 6); break; // ADC
-        case 0x6: e.subf(5, 4, 3); e.add(5, 5, 6); e.addi(5, 5, -1); break; // SBC
-        case 0x7: e.subf(5, 3, 4); e.add(5, 5, 6); e.addi(5, 5, -1); break; // RSC
+        case 0x5: // ADC
+            if (arith) e.adde(5, 3, 4);
+            else { e.add(5, 3, 4); e.add(5, 5, 6); }
+            break;
+        case 0x6: // SBC
+            if (arith) e.subfe(5, 4, 3);
+            else { e.subf(5, 4, 3); e.add(5, 5, 6); e.addi(5, 5, -1); }
+            break;
+        case 0x7: // RSC
+            if (arith) e.subfe(5, 3, 4);
+            else { e.subf(5, 3, 4); e.add(5, 5, 6); e.addi(5, 5, -1); }
+            break;
         case 0xC: e.or_(5, 3, 4); break; // ORR
         case 0xD: e.mr(5, 4); break; // MOV
         case 0xE: e.andc(5, 3, 4); break; // BIC
@@ -757,13 +817,15 @@ void Jit::emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc) {
         if (logical)
             e.call(codeFlags[carry]);
         else
-            e.call(codeFlags[(opc == 0x4 || opc == 0xB) ? 2 : (opc == 0x3) ? 4 : 3]);
+            e.call(codeFlags[(opc == 0x4 || opc == 0x5 || opc == 0xB) ? 2 : (opc == 0x3 || opc == 0x7) ? 4 : 3]);
     }
 
     // Store the result unless it's a compare or test
     if (opc < 8 || opc > 11)
         writeReg(e, 5, (op >> 12) & 0xF);
-    e.li(3, 1);
+
+    // Shifting by a register takes another cycle
+    e.li(3, (!(op & BIT(25)) && (op & BIT(4))) ? 2 : 1);
 }
 
 void Jit::emitBranch(PpcEmitter &e, uint32_t op, uint32_t pc) {
@@ -950,10 +1012,26 @@ void Jit::emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc) {
         e.li(3, count + (arm7 ? (load ? 2 : 1) : (count < 2)));
 }
 
+void Jit::emitMisc(PpcEmitter &e, uint32_t op, uint32_t pc) {
+    // CLZ, or MRS from CPSR
+    if (op & BIT(4)) {
+        readReg(e, 3, op & 0xF, pc);
+        e.cntlzw(5, 3);
+        writeReg(e, 5, (op >> 12) & 0xF);
+        e.li(3, 1);
+    }
+    else {
+        e.lwz(5, offCpsr, R_ARM);
+        writeReg(e, 5, (op >> 12) & 0xF);
+        e.li(3, arm7 ? 1 : 2);
+    }
+}
+
 void Jit::emitMultiply(PpcEmitter &e, uint32_t op, uint32_t pc) {
-    // Multiply on the ARM9, with an optional accumulate
+    // Multiply, with an optional accumulate and flags; only N and Z change
+    // Timing is fixed on the ARM9, and depends on the value in r4 on the ARM7
     uint32_t high = (op >> 16) & 0xF, low = (op >> 12) & 0xF;
-    bool accumulate = op & BIT(21);
+    bool accumulate = op & BIT(21), flags = op & BIT(20);
     readReg(e, 3, op & 0xF, pc);
     readReg(e, 4, (op >> 8) & 0xF, pc);
     e.mullw(5, 3, 4);
@@ -963,7 +1041,14 @@ void Jit::emitMultiply(PpcEmitter &e, uint32_t op, uint32_t pc) {
             e.add(5, 5, 6);
         }
         writeReg(e, 5, high);
-        e.li(3, 2);
+        if (flags) e.call(codeFlags[0]);
+        if (arm7) {
+            e.call(codeMultiplyCycles);
+            e.addi(3, 6, accumulate ? 2 : 1);
+        }
+        else {
+            e.li(3, flags ? 4 : 2);
+        }
         return;
     }
 
@@ -977,7 +1062,31 @@ void Jit::emitMultiply(PpcEmitter &e, uint32_t op, uint32_t pc) {
     }
     writeReg(e, 5, low);
     writeReg(e, 6, high);
-    e.li(3, 3);
+
+    // Flags are from all 64 bits
+    if (flags) {
+        e.or_(7, 5, 6);
+        e.cntlzw(7, 7);
+        e.rlwinm(7, 7, 25, 1, 1);
+        e.rlwinm(8, 6, 0, 0, 0);
+        e.or_(8, 8, 7);
+        e.lwz(9, offCpsr, R_ARM);
+        e.rlwinm(9, 9, 0, 2, 31);
+        e.or_(9, 9, 8);
+        e.stw(9, offCpsr, R_ARM);
+    }
+
+    // On the ARM7, the unsigned ones always take the longest, since the interpreter's timing check is always true for them
+    if (!arm7) {
+        e.li(3, flags ? 5 : 3);
+    }
+    else if (op & BIT(22)) {
+        e.call(codeMultiplyCycles);
+        e.addi(3, 6, accumulate ? 3 : 2);
+    }
+    else {
+        e.li(3, accumulate ? 7 : 6);
+    }
 }
 
 void Jit::emitSwap(PpcEmitter &e, uint32_t op, uint32_t pc) {
@@ -1074,7 +1183,7 @@ bool Jit::batched(JitBlock *block, size_t i) {
     if (!codeFast || testing || block->thumb || i >= block->instrs.size()) return false;
     uint32_t op = block->instrs[i].opcode;
     int kind = nativeKind(op, arm7);
-    if (kind == NK_ALU || kind == NK_MULTIPLY) return true;
+    if (kind == NK_ALU || kind == NK_MULTIPLY || kind == NK_MISC) return true;
     return (kind == NK_TRANSFER || kind == NK_HALF || kind == NK_BLOCK) && (op & BIT(20));
 }
 
@@ -1112,7 +1221,14 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
             e.addi(R_BATCH, R_BATCH, 1);
             return;
         }
-        ok = false;
+
+        // Otherwise, its cycles aren't known until it runs, so the ways through have to join after adding them
+        e.add(R_BATCH, R_BATCH, 3);
+        uint32_t *done = e.here();
+        e.b(nullptr);
+        e.patchBc(skip);
+        e.addi(R_BATCH, R_BATCH, 1);
+        e.patchB(done);
         return;
     }
 
