@@ -233,6 +233,7 @@ private:
     void emitHalf(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitSwap(PpcEmitter &e, uint32_t op, uint32_t pc);
+    void emitMultiply(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitBranchReg(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitJump(PpcEmitter &e, int rs, bool interwork);
     void readReg(PpcEmitter &e, int rt, int reg, uint32_t pc);

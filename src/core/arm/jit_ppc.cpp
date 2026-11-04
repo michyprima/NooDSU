@@ -75,6 +75,9 @@ public:
 
     // X-form instructions
     void x(int rt, int ra, int rb, int xo) { emit((31 << 26) | (rt << 21) | (ra << 16) | (rb << 11) | (xo << 1)); }
+    void mullw(int rt, int ra, int rb) { x(rt, ra, rb, 235); }
+    void mulhw(int rt, int ra, int rb) { x(rt, ra, rb, 75); }
+    void mulhwu(int rt, int ra, int rb) { x(rt, ra, rb, 11); }
     void add(int rt, int ra, int rb) { x(rt, ra, rb, 266); }
     void addc(int rt, int ra, int rb) { x(rt, ra, rb, 10); }
     void adde(int rt, int ra, int rb) { x(rt, ra, rb, 138); }
@@ -578,7 +581,8 @@ enum NativeKind {
     NK_HALF, // LDRH/STRH/LDRSB/LDRSH at an offset
     NK_BLOCK, // LDM/STM
     NK_BLOCK_PC, // LDM that loads the program counter, like a function return
-    NK_SWAP // SWP/SWPB
+    NK_SWAP, // SWP/SWPB
+    NK_MULTIPLY // Multiplies without flags on the ARM9, whose timing doesn't depend on the operands
 };
 
 static int nativeKind(uint32_t op, bool arm7) {
@@ -599,7 +603,11 @@ static int nativeKind(uint32_t op, bool arm7) {
                 if (!(op & BIT(20)) && (op & 0x60) != 0x20) return NK_NONE; // LDRD/STRD
                 return NK_HALF;
             }
-            return NK_NONE; // Shifts by register, multiplies and misc
+            if (!arm7 && ((op & 0x0FD000F0) == 0x00000090 || (op & 0x0F9000F0) == 0x00800090)) {
+                uint32_t rs = (op >> 8) & 0xF;
+                return (rd == 15 || rn == 15 || rm == 15 || rs == 15) ? NK_NONE : NK_MULTIPLY;
+            }
+            return NK_NONE; // Shifts by register, other multiplies and misc
         }
         uint32_t opc = (op >> 21) & 0xF;
         bool s = op & BIT(20);
@@ -654,6 +662,7 @@ bool Jit::emitNative(PpcEmitter &e, uint32_t op, uint32_t pc) {
         case NK_HALF: emitHalf(e, op, pc); break;
         case NK_BLOCK: case NK_BLOCK_PC: emitBlock(e, op, pc); break;
         case NK_SWAP: emitSwap(e, op, pc); break;
+        case NK_MULTIPLY: emitMultiply(e, op, pc); break;
     }
 
     if (skip) {
@@ -941,6 +950,36 @@ void Jit::emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc) {
         e.li(3, count + (arm7 ? (load ? 2 : 1) : (count < 2)));
 }
 
+void Jit::emitMultiply(PpcEmitter &e, uint32_t op, uint32_t pc) {
+    // Multiply on the ARM9, with an optional accumulate
+    uint32_t high = (op >> 16) & 0xF, low = (op >> 12) & 0xF;
+    bool accumulate = op & BIT(21);
+    readReg(e, 3, op & 0xF, pc);
+    readReg(e, 4, (op >> 8) & 0xF, pc);
+    e.mullw(5, 3, 4);
+    if (!(op & BIT(23))) {
+        if (accumulate) {
+            readReg(e, 6, low, pc);
+            e.add(5, 5, 6);
+        }
+        writeReg(e, 5, high);
+        e.li(3, 2);
+        return;
+    }
+
+    // Long multiplies also get the high half, which is signed or not, and write the low half first
+    (op & BIT(22)) ? e.mulhw(6, 3, 4) : e.mulhwu(6, 3, 4);
+    if (accumulate) {
+        readReg(e, 7, low, pc);
+        readReg(e, 8, high, pc);
+        e.addc(5, 5, 7);
+        e.adde(6, 6, 8);
+    }
+    writeReg(e, 5, low);
+    writeReg(e, 6, high);
+    e.li(3, 3);
+}
+
 void Jit::emitSwap(PpcEmitter &e, uint32_t op, uint32_t pc) {
     // Swap a word or byte, reading the source and address first since memory calls can change volatile registers
     bool byte = op & BIT(22);
@@ -1035,7 +1074,7 @@ bool Jit::batched(JitBlock *block, size_t i) {
     if (!codeFast || testing || block->thumb || i >= block->instrs.size()) return false;
     uint32_t op = block->instrs[i].opcode;
     int kind = nativeKind(op, arm7);
-    if (kind == NK_ALU) return true;
+    if (kind == NK_ALU || kind == NK_MULTIPLY) return true;
     return (kind == NK_TRANSFER || kind == NK_HALF || kind == NK_BLOCK) && (op & BIT(20));
 }
 
