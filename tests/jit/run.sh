@@ -17,7 +17,8 @@ uni=$(ls -d "$base"/venv/lib/python*/site-packages/unicorn)
 # Build from a changed copy of the core, only compiling what's different
 rm -rf "$build/new"; mkdir -p "$build/new"; cp -R "$here/../../src/core/" "$build/new/"
 python3 -I "$here/patch.py" "$build/new" "$mutation"
-rsync -rc --delete "$build/new/" "$build/src/"
+# A changed header can change what any file needs, so start over then
+if rsync -rci --delete "$build/new/" "$build/src/" | grep -q '\.h$'; then rm -f "$build"/obj/*.o; fi
 flags="-std=c++17 -O2 -w -I$here/shim -I$build/src -I$build/src/gpu -I$uni/include -DNO_FDOPEN"
 for f in $(cd "$build/src"; find . -name '*.cpp'); do
     o="$build/obj/$(echo "${f#./}" | tr '/' '_').o"
