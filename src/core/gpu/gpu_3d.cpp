@@ -655,7 +655,8 @@ void Gpu3D::runCommands() {
     // Update the FIFO status
     gxStat = (gxStat & ~0x01FF0000) | ((fifo.size() - pipeSize) << 16); // FIFO entries
     if (fifo.size() - pipeSize == 0) gxStat |= BIT(26); // FIFO empty
-    if (fifo.size() == 0) gxStat &= ~BIT(27); // Commands not executing
+    // The engine stays busy while it waits for a buffer swap, which games wait for to sync with V-blank
+    if (fifo.size() == 0 && state != GX_HALTED) gxStat &= ~BIT(27); // Commands not executing
 
     // If the FIFO becomes less than half full, trigger GXFIFO DMA transfers
     // If the FIFO is already less than half full when a DMA starts, it will automatically activate
@@ -756,6 +757,7 @@ void Gpu3D::swapBuffers() {
     }
     else {
         state = GX_IDLE;
+        if (fifo.size() == 0) gxStat &= ~BIT(27); // Commands not executing
     }
 }
 
