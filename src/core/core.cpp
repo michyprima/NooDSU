@@ -471,6 +471,7 @@ void Core::resetCycles() {
         interpreter[i].resetCycles(), timers[i].resetCycles();
     cartridgeNds.resetCycles();
     spu.resetCycles();
+    spi.resetCycles();
     globalCycles -= globalCycles;
     schedule(RESET_CYCLES, 0x7FFFFFFF);
 }

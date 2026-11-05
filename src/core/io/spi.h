@@ -20,6 +20,7 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
 #include <cstdio>
 #include <mutex>
 
@@ -52,7 +53,9 @@ public:
     void clearTouch();
 
     static void setLanguage(Language lang) { language = lang; }
-    void sendMicData(const int16_t* samples, size_t count, size_t rate);
+    void sendMicData(const int16_t *samples, size_t count, size_t rate);
+    void setMicBlow(bool blow) { micBlow.store(blow); }
+    void resetCycles();
 
     uint16_t readSpiCnt() { return spiCnt; }
     uint8_t readSpiData() { return spiData; }
@@ -67,10 +70,15 @@ private:
     uint8_t *firmware = nullptr;
     size_t firmSize = 0;
 
-    int16_t *micBuffer = nullptr;
-    size_t micBufSize = 0;
-    uint32_t micCycles = 0;
-    uint32_t micStep = 0;
+    static const uint32_t MIC_SIZE = 0x4000; // Samples in the microphone ring buffer, a power of 2
+    int16_t micBuffer[MIC_SIZE] = {};
+    uint32_t micWrite = 0; // Total samples sent, which wraps around the buffer
+    uint32_t micRead = 0; // Total samples played, kept behind micWrite
+    uint32_t micRate = 0;
+    uint32_t micCycles = 0; // When the sample at micRead started
+    uint32_t micStep = 0; // Cycles per sample
+    uint32_t micNoise = 1; // Noise generator state for blowing
+    std::atomic<bool> micBlow{false};
     uint16_t micSample = 0;
     std::mutex mutex;
 

@@ -45,6 +45,7 @@ enum MenuInputs {
     INPUT_FAST_HOLD,
     INPUT_FAST_TOGG,
     INPUT_SCRN_SWAP,
+    INPUT_MIC_BLOW,
     INPUT_MAX
 };
 
@@ -103,11 +104,13 @@ public:
     static int menuTheme;
     static int frameColor; // The screen frame's color, or 0 for none
     static int gameLanguage; // The language games see, or 0 for the system's
+    static int micInput; // Whether games hear the GamePad's microphone
     static int keyBinds[INPUT_MAX];
 
     // Data that is defined per-platform
     static uint32_t defaultKeys[INPUT_MAX];
     static const char *keyNames[32];
+    static const int micRate; // Microphone samples per second
 
     // Functions that are implemented per-platform
     static void startFrame(uint32_t color);
@@ -122,6 +125,8 @@ public:
         float w, float h, bool filter = true, int rotation = 0, uint32_t color = 0xFFFFFFFF);
     static uint32_t getInputHeld();
     static MenuTouch getInputTouch();
+    static size_t getMicSamples(int16_t *out, size_t max);
+    static void closeMic();
 
     static void drawRectangle(float x, float y, float w, float h, uint32_t color = 0xFFFFFFFF);
     static void drawString(std::string string, float x, float y,

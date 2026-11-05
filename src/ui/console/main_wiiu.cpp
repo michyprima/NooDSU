@@ -41,6 +41,7 @@
 #include <gx2/state.h>
 #include <gx2/swap.h>
 #include <gx2r/draw.h>
+#include <mic/mic.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
 #include <padscore/kpad.h>
@@ -160,7 +161,7 @@ uint32_t ConsoleUI::defaultKeys[] {
     VPAD_BUTTON_UP | VPAD_STICK_R_EMULATION_UP | VPAD_STICK_L_EMULATION_UP,
     VPAD_BUTTON_DOWN | VPAD_STICK_R_EMULATION_DOWN | VPAD_STICK_L_EMULATION_DOWN,
     VPAD_BUTTON_ZR, VPAD_BUTTON_ZL, VPAD_BUTTON_X, VPAD_BUTTON_Y,
-    VPAD_BUTTON_L | VPAD_BUTTON_R
+    VPAD_BUTTON_L | VPAD_BUTTON_R, 0, 0, 0, VPAD_BUTTON_STICK_L
 };
 
 const char *ConsoleUI::keyNames[] {
@@ -175,6 +176,7 @@ void releaseForeground() {
     // Stop the emulator, since threads on cores 0 and 1 are suspended in the background
     bool resume = ConsoleUI::running;
     ConsoleUI::stopCore();
+    ConsoleUI::closeMic();
 
     // Let the main thread release the foreground, and wait until it's back
     std::unique_lock<std::mutex> lock(procMutex);
@@ -837,6 +839,60 @@ MenuTouch ConsoleUI::getInputTouch() {
     return MenuTouch(touch.touched, touch.x, touch.y);
 }
 
+// The GamePad's microphone, which the system fills a ring buffer from
+const int ConsoleUI::micRate = 32000;
+const size_t MIC_SAMPLES = 0x2800; // The smallest ring buffer the system takes
+MICHandle micHandle = -1;
+MICWorkMemory micWork;
+int micRetry = 0; // Frames until opening it is tried again after failing
+
+size_t ConsoleUI::getMicSamples(int16_t *out, size_t max) {
+    // Open the microphone the first time it's needed, trying again every second if that fails
+    if (micHandle < 0) {
+        if (micRetry > 0) {
+            micRetry--;
+            return 0;
+        }
+        micRetry = 60;
+        if (!micWork.sampleBuffer) {
+            micWork.sampleMaxCount = MIC_SAMPLES;
+            micWork.sampleBuffer = MEMAllocFromDefaultHeapEx(MIC_SAMPLES * sizeof(int16_t), 0x40);
+            if (!micWork.sampleBuffer) return 0;
+        }
+        MICError error = MIC_ERROR_INIT;
+        micHandle = MICInit(MIC_INSTANCE_0, 0, &micWork, &error);
+        if (micHandle < 0 || error != MIC_ERROR_OK) {
+            micHandle = -1;
+            return 0;
+        }
+        if (MICOpen(micHandle) != MIC_ERROR_OK) {
+            closeMic();
+            return 0;
+        }
+    }
+
+    // Copy the samples recorded since the last call, closing the microphone if it stopped working
+    MICStatus status;
+    if (MICGetStatus(micHandle, &status) != MIC_ERROR_OK) {
+        closeMic();
+        return 0;
+    }
+    size_t count = std::min<size_t>(std::max(status.availableData, 0), max);
+    const int16_t *samples = (const int16_t*)micWork.sampleBuffer;
+    for (size_t i = 0; i < count; i++)
+        out[i] = samples[(status.bufferPos + i) % MIC_SAMPLES];
+    if (count) MICSetDataConsumed(micHandle, count);
+    return count;
+}
+
+void ConsoleUI::closeMic() {
+    // Stop recording from the microphone if it's open
+    if (micHandle < 0) return;
+    MICClose(micHandle);
+    MICUninit(micHandle);
+    micHandle = -1;
+}
+
 void outputAudio(void *data, uint8_t *buffer, int length) {
     // Refill the audio buffer as a callback
     ConsoleUI::fillAudioBuffer((uint32_t*)buffer, length / sizeof(uint32_t), 32768);
@@ -970,6 +1026,7 @@ int runUi(int argc, void *argv) {
 
     // Run the emulator until it exits
     ConsoleUI::mainLoop(nullptr, &gpLayout);
+    ConsoleUI::closeMic();
     return 0;
 }
 

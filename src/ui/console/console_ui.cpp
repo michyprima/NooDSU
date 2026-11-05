@@ -161,6 +161,7 @@ int ConsoleUI::showFpsCounter = 0;
 int ConsoleUI::menuTheme = 0;
 int ConsoleUI::frameColor = 1;
 int ConsoleUI::gameLanguage = 0;
+int ConsoleUI::micInput = 1;
 void *ConsoleUI::frameTextures[2];
 int ConsoleUI::keyBinds[] = {};
 
@@ -283,6 +284,7 @@ void ConsoleUI::initialize(int width, int height, std::string root, std::string 
         Setting("menuTheme", &menuTheme, false),
         Setting("screenFrame", &frameColor, false),
         Setting("gameLanguage", &gameLanguage, false),
+        Setting("micInput", &micInput, false),
         Setting("defaultFolder", &defaultFolder, true),
         Setting("keyA", &keyBinds[INPUT_A], false),
         Setting("keyB", &keyBinds[INPUT_B], false),
@@ -299,7 +301,8 @@ void ConsoleUI::initialize(int width, int height, std::string root, std::string 
         Setting("keyMenu", &keyBinds[INPUT_MENU], false),
         Setting("keyFastHold", &keyBinds[INPUT_FAST_HOLD], false),
         Setting("keyFastToggle", &keyBinds[INPUT_FAST_TOGG], false),
-        Setting("keyScreenSwap", &keyBinds[INPUT_SCRN_SWAP], false)
+        Setting("keyScreenSwap", &keyBinds[INPUT_SCRN_SWAP], false),
+        Setting("keyMicBlow", &keyBinds[INPUT_MIC_BLOW], false)
     };
 
     // Add the platform settings
@@ -719,6 +722,17 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
             // Release the touch screen press
             core->input.releaseScreen();
             core->spi.clearTouch();
+        }
+
+        // Send microphone input to the core, which hears noise instead while blowing is held
+        core->spi.setMicBlow(held & keyBinds[INPUT_MIC_BLOW]);
+        if (micInput) {
+            int16_t samples[1024];
+            while (size_t count = getMicSamples(samples, 1024))
+                core->spi.sendMicData(samples, count, micRate);
+        }
+        else {
+            closeMic();
         }
 
         // Finish drawing
@@ -1320,6 +1334,7 @@ void ConsoleUI::settingsMenu() {
     const std::vector<std::string> dsiMode = { "Off", "On (slow)" };
     const std::vector<std::string> language = { "System Language", "Japanese", "English", "French", "German",
         "Italian", "Spanish" };
+    const std::vector<std::string> mic = { "Off", "GamePad" };
     if (Settings::gpuAntiAlias >= (int)antiAlias.size()) Settings::gpuAntiAlias = 0;
 
     int index = 0;
@@ -1346,6 +1361,7 @@ void ConsoleUI::settingsMenu() {
         add("Menu Theme", menuTheme, theme);
         add("Screen Frame", frameColor, frame);
         add("Game Language", gameLanguage, language);
+        add("Microphone", micInput, mic);
 
         header("Graphics Settings");
         add("GPU 3D Renderer", Settings::hardware3D, toggle);
@@ -1446,7 +1462,7 @@ void ConsoleUI::controlsMenu() {
             "A Button", "B Button", "Select Button", "Start Button",
             "Right Button", "Left Button", "Up Button", "Down Button",
             "R Button", "L Button", "X Button", "Y Button", "Menu Button",
-            "Fast Forward Hold", "Fast Forward Toggle", "Screen Swap Toggle"
+            "Fast Forward Hold", "Fast Forward Toggle", "Screen Swap Toggle", "Blow into Mic"
         };
 
         // Build strings for the input bindings
@@ -1483,7 +1499,8 @@ void ConsoleUI::controlsMenu() {
             MenuItem(names[INPUT_MENU], bindings[INPUT_MENU]),
             MenuItem(names[INPUT_FAST_HOLD], bindings[INPUT_FAST_HOLD]),
             MenuItem(names[INPUT_FAST_TOGG], bindings[INPUT_FAST_TOGG]),
-            MenuItem(names[INPUT_SCRN_SWAP], bindings[INPUT_SCRN_SWAP])
+            MenuItem(names[INPUT_SCRN_SWAP], bindings[INPUT_SCRN_SWAP]),
+            MenuItem(names[INPUT_MIC_BLOW], bindings[INPUT_MIC_BLOW])
         };
 
         // Create the controls menu
