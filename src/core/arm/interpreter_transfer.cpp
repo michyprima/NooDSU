@@ -1141,8 +1141,9 @@ int Interpreter::mrsRc(uint32_t opcode) { // MRS Rd,CPSR
 
 int Interpreter::mrsRs(uint32_t opcode) { // MRS Rd,SPSR
     // Copy the saved status flags to a register
+    // In modes with none, a real DS reads the current ones, except the condition flags in the ARM9's system mode
     uint32_t *op0 = registers[(opcode >> 12) & 0xF];
-    if (spsr) *op0 = *spsr;
+    *op0 = spsr ? *spsr : ((arm7 || (cpsr & 0x1F) == 0x10) ? cpsr : (cpsr & 0xFF));
     return 2 - arm7;
 }
 

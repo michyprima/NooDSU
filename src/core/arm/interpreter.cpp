@@ -391,6 +391,13 @@ void Interpreter::setCpsr(uint32_t value, bool save) {
         core->schedule(SchedTask(ARM9_INTERRUPT + arm7), (arm7 && !core->gbaMode) + 1);
 }
 
+void Interpreter::restoreCpsr(uint32_t before) {
+    // Restore the status flags when an ALU instruction with flags writes the program counter
+    // In modes with no saved flags, a real ARM7 keeps them as they were before, and a real ARM9 clears the condition flags
+    if (spsr) setCpsr(*spsr);
+    else cpsr = arm7 ? before : (before & 0xFF);
+}
+
 int Interpreter::handleReserved(uint32_t opcode) {
     // The ARM9-exclusive BLX instruction uses the reserved condition code, so let it run
     if ((opcode & 0xE000000) == 0xA000000)

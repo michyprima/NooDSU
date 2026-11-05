@@ -415,6 +415,7 @@ FORCE_INLINE int Interpreter::mvn(uint32_t opcode, uint32_t op2) { // MVN Rd,op2
 }
 
 FORCE_INLINE int Interpreter::ands(uint32_t opcode, uint32_t op2) { // ANDS Rd,Rn,op2
+    uint32_t before = cpsr;
     // Bitwise and and set flags
     // When used as Rn when shifting by register, the program counter is read with +4
     uint32_t *op0 = registers[(opcode >> 12) & 0xF];
@@ -424,12 +425,13 @@ FORCE_INLINE int Interpreter::ands(uint32_t opcode, uint32_t op2) { // ANDS Rd,R
 
     // Handle pipelining and mode switching
     if (op0 != registers[15]) return 1;
-    if (spsr) setCpsr(*spsr);
+    restoreCpsr(before);
     flushPipeline();
     return 3;
 }
 
 FORCE_INLINE int Interpreter::eors(uint32_t opcode, uint32_t op2) { // EORS Rd,Rn,op2
+    uint32_t before = cpsr;
     // Bitwise exclusive or and set flags
     // When used as Rn when shifting by register, the program counter is read with +4
     uint32_t *op0 = registers[(opcode >> 12) & 0xF];
@@ -439,12 +441,13 @@ FORCE_INLINE int Interpreter::eors(uint32_t opcode, uint32_t op2) { // EORS Rd,R
 
     // Handle pipelining and mode switching
     if (op0 != registers[15]) return 1;
-    if (spsr) setCpsr(*spsr);
+    restoreCpsr(before);
     flushPipeline();
     return 3;
 }
 
 FORCE_INLINE int Interpreter::subs(uint32_t opcode, uint32_t op2) { // SUBS Rd,Rn,op2
+    uint32_t before = cpsr;
     // Subtraction and set flags
     // When used as Rn when shifting by register, the program counter is read with +4
     uint32_t *op0 = registers[(opcode >> 12) & 0xF];
@@ -455,12 +458,13 @@ FORCE_INLINE int Interpreter::subs(uint32_t opcode, uint32_t op2) { // SUBS Rd,R
 
     // Handle pipelining and mode switching
     if (op0 != registers[15]) return 1;
-    if (spsr) setCpsr(*spsr);
+    restoreCpsr(before);
     flushPipeline();
     return 3;
 }
 
 FORCE_INLINE int Interpreter::rsbs(uint32_t opcode, uint32_t op2) { // RSBS Rd,Rn,op2
+    uint32_t before = cpsr;
     // Reverse subtraction and set flags
     // When used as Rn when shifting by register, the program counter is read with +4
     uint32_t *op0 = registers[(opcode >> 12) & 0xF];
@@ -471,12 +475,13 @@ FORCE_INLINE int Interpreter::rsbs(uint32_t opcode, uint32_t op2) { // RSBS Rd,R
 
     // Handle pipelining and mode switching
     if (op0 != registers[15]) return 1;
-    if (spsr) setCpsr(*spsr);
+    restoreCpsr(before);
     flushPipeline();
     return 3;
 }
 
 FORCE_INLINE int Interpreter::adds(uint32_t opcode, uint32_t op2) { // ADDS Rd,Rn,op2
+    uint32_t before = cpsr;
     // Addition and set flags
     // When used as Rn when shifting by register, the program counter is read with +4
     uint32_t *op0 = registers[(opcode >> 12) & 0xF];
@@ -487,12 +492,13 @@ FORCE_INLINE int Interpreter::adds(uint32_t opcode, uint32_t op2) { // ADDS Rd,R
 
     // Handle pipelining and mode switching
     if (op0 != registers[15]) return 1;
-    if (spsr) setCpsr(*spsr);
+    restoreCpsr(before);
     flushPipeline();
     return 3;
 }
 
 FORCE_INLINE int Interpreter::adcs(uint32_t opcode, uint32_t op2) { // ADCS Rd,Rn,op2
+    uint32_t before = cpsr;
     // Addition with carry and set flags
     // When used as Rn when shifting by register, the program counter is read with +4
     uint32_t *op0 = registers[(opcode >> 12) & 0xF];
@@ -503,12 +509,13 @@ FORCE_INLINE int Interpreter::adcs(uint32_t opcode, uint32_t op2) { // ADCS Rd,R
 
     // Handle pipelining and mode switching
     if (op0 != registers[15]) return 1;
-    if (spsr) setCpsr(*spsr);
+    restoreCpsr(before);
     flushPipeline();
     return 3;
 }
 
 FORCE_INLINE int Interpreter::sbcs(uint32_t opcode, uint32_t op2) { // SBCS Rd,Rn,op2
+    uint32_t before = cpsr;
     // Subtraction with carry and set flags
     // When used as Rn when shifting by register, the program counter is read with +4
     uint32_t *op0 = registers[(opcode >> 12) & 0xF];
@@ -519,12 +526,13 @@ FORCE_INLINE int Interpreter::sbcs(uint32_t opcode, uint32_t op2) { // SBCS Rd,R
 
     // Handle pipelining and mode switching
     if (op0 != registers[15]) return 1;
-    if (spsr) setCpsr(*spsr);
+    restoreCpsr(before);
     flushPipeline();
     return 3;
 }
 
 FORCE_INLINE int Interpreter::rscs(uint32_t opcode, uint32_t op2) { // RSCS Rd,Rn,op2
+    uint32_t before = cpsr;
     // Reverse subtraction with carry and set flags
     // When used as Rn when shifting by register, the program counter is read with +4
     uint32_t *op0 = registers[(opcode >> 12) & 0xF];
@@ -535,12 +543,13 @@ FORCE_INLINE int Interpreter::rscs(uint32_t opcode, uint32_t op2) { // RSCS Rd,R
 
     // Handle pipelining and mode switching
     if (op0 != registers[15]) return 1;
-    if (spsr) setCpsr(*spsr);
+    restoreCpsr(before);
     flushPipeline();
     return 3;
 }
 
 FORCE_INLINE int Interpreter::orrs(uint32_t opcode, uint32_t op2) { // ORRS Rd,Rn,op2
+    uint32_t before = cpsr;
     // Bitwise or and set flags
     // When used as Rn when shifting by register, the program counter is read with +4
     uint32_t *op0 = registers[(opcode >> 12) & 0xF];
@@ -550,12 +559,13 @@ FORCE_INLINE int Interpreter::orrs(uint32_t opcode, uint32_t op2) { // ORRS Rd,R
 
     // Handle pipelining and mode switching
     if (op0 != registers[15]) return 1;
-    if (spsr) setCpsr(*spsr);
+    restoreCpsr(before);
     flushPipeline();
     return 3;
 }
 
 FORCE_INLINE int Interpreter::movs(uint32_t opcode, uint32_t op2) { // MOVS Rd,op2
+    uint32_t before = cpsr;
     // Move and set flags
     uint32_t *op0 = registers[(opcode >> 12) & 0xF];
     *op0 = op2;
@@ -563,12 +573,13 @@ FORCE_INLINE int Interpreter::movs(uint32_t opcode, uint32_t op2) { // MOVS Rd,o
 
     // Handle pipelining and mode switching
     if (op0 != registers[15]) return 1;
-    if (spsr) setCpsr(*spsr);
+    restoreCpsr(before);
     flushPipeline();
     return 3;
 }
 
 FORCE_INLINE int Interpreter::bics(uint32_t opcode, uint32_t op2) { // BICS Rd,Rn,op2
+    uint32_t before = cpsr;
     // Bit clear and set flags
     // When used as Rn when shifting by register, the program counter is read with +4
     uint32_t *op0 = registers[(opcode >> 12) & 0xF];
@@ -578,12 +589,13 @@ FORCE_INLINE int Interpreter::bics(uint32_t opcode, uint32_t op2) { // BICS Rd,R
 
     // Handle pipelining and mode switching
     if (op0 != registers[15]) return 1;
-    if (spsr) setCpsr(*spsr);
+    restoreCpsr(before);
     flushPipeline();
     return 3;
 }
 
 FORCE_INLINE int Interpreter::mvns(uint32_t opcode, uint32_t op2) { // MVNS Rd,op2
+    uint32_t before = cpsr;
     // Move negative and set flags
     uint32_t *op0 = registers[(opcode >> 12) & 0xF];
     *op0 = ~op2;
@@ -591,7 +603,7 @@ FORCE_INLINE int Interpreter::mvns(uint32_t opcode, uint32_t op2) { // MVNS Rd,o
 
     // Handle pipelining and mode switching
     if (op0 != registers[15]) return 1;
-    if (spsr) setCpsr(*spsr);
+    restoreCpsr(before);
     flushPipeline();
     return 3;
 }
