@@ -25,6 +25,7 @@
 #include <vector>
 
 class Core;
+class WifiAp;
 
 enum PacketType {
     LOC1_FRAME,
@@ -39,13 +40,14 @@ enum PacketType {
 class Wifi {
 public:
     Wifi(Core *core);
+    ~Wifi();
     void saveState(FILE *file);
     void loadState(FILE *file);
 
     void addConnection(Core *core);
     void remConnection(Core *core);
 
-    bool shouldSchedule() { return (!connections.empty() || wUsCountcnt) && !scheduled; }
+    bool shouldSchedule() { return (!connections.empty() || ap || wUsCountcnt) && !scheduled; }
     void scheduleInit();
     void countMs();
     void transmitPacket(PacketType type);
@@ -92,6 +94,7 @@ public:
     uint16_t readWBbRead() { return wBbRead; }
     uint16_t readWTxSeqno() { return wTxSeqno; }
     uint16_t readWRxbufRdData();
+    uint16_t readPort(uint32_t address);
 
     void writeWModeWep(uint16_t mask, uint16_t value);
     void writeWTxstatCnt(uint16_t mask, uint16_t value);
@@ -134,11 +137,14 @@ public:
     void writeWBbCnt(uint16_t mask, uint16_t value);
     void writeWBbWrite(uint16_t mask, uint16_t value);
     void writeWIrfSet(uint16_t mask, uint16_t value);
+    void writePort(uint32_t address, uint16_t mask, uint16_t value);
 
 private:
     Core *core;
     std::vector<Wifi*> connections;
-    std::vector<uint16_t*> packets;
+    std::vector<std::vector<uint8_t>> packets; // 802.11 frames from other cores, with their checksums
+    WifiAp *ap = nullptr;
+    std::vector<uint8_t> apPending; // A frame from the access point waiting for room in the receive buffer
     std::mutex mutex;
     bool scheduled = false;
 
@@ -191,6 +197,17 @@ private:
         0x0016, 0x0016, 0x162C, 0x0204, 0x0058
     };
 
+    uint16_t ports[0x800] = {}; // Registers without their own handling
+    uint32_t rfRegisters[0x40] = {};
+    uint16_t random = 1;
+    int channel = 0; // The channel the RF registers are set to, or 0 if unknown
+
     void sendInterrupt(int bit);
     void receivePackets();
+    void receiveFrame(const uint8_t *frame, size_t size);
+    void writeRxHalf(uint16_t &address, uint16_t value);
+    bool rxFits(size_t size);
+    void setRfStatus(int status);
+    void updatePower(int power);
+    void changeChannel();
 };

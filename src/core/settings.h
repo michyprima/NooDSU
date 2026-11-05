@@ -57,6 +57,7 @@ public:
     static int syncToDisplay;
     static int gpuAntiAlias;
     static int gpuOverlap;
+    static int wifi; // Whether games can connect to the internet through an emulated access point
 
     // The threaded settings only choose for the software renderer, since the GPU renderer's setup relies on the threads
     static bool threads2D() { return threaded2D || hardware3D; }
@@ -71,6 +72,8 @@ public:
     static std::string dsiFirmPath;
     static std::string dsiNandPath;
     static std::string sdImagePath;
+    static std::string wfcDns; // The DNS server games use, which sends Nintendo WFC's servers to a revival service
+    static const char *const defaultWfcDns; // WiiLink WFC's, whose login server accepts unpatched DS games
     static std::string basePath;
 
     static void add(std::vector<Setting> &settings);

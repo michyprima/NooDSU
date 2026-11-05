@@ -49,6 +49,8 @@ public:
 
     bool loadFirmware();
     void directBoot();
+    const uint8_t *getFirmware(size_t &size) { size = firmSize; return firmware; }
+    void writeWfcSettings();
 
     void setTouch(int x, int y);
     void clearTouch();
@@ -72,6 +74,10 @@ private:
     static std::u16string nickname; // Empty keeps the firmware's own
     uint8_t *firmware = nullptr;
     size_t firmSize = 0;
+    uint8_t firmStatus = 0; // The flash status register, with the write enable latch
+    bool apWritten = false; // Whether the access point settings were written since the chip was selected
+    uint8_t wfcCopy[0x300] = {}; // Access point settings waiting to be saved, copied under the mutex
+    bool wfcDirty = false;
 
     static const uint32_t MIC_SIZE = 0x4000; // Samples in the microphone ring buffer, a power of 2
     int16_t micBuffer[MIC_SIZE] = {};
@@ -94,4 +100,7 @@ private:
 
     static uint16_t crc16(uint32_t value, uint8_t *data, size_t size);
     static void writeNickname(uint8_t *settings);
+    size_t apOffset();
+    void loadWfcSettings();
+    void addAccessPoint();
 };

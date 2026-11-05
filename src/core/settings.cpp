@@ -45,6 +45,7 @@ int Settings::fast2D = 1;
 int Settings::syncToDisplay = 1;
 int Settings::gpuAntiAlias = 0;
 int Settings::gpuOverlap = 1;
+int Settings::wifi = 0;
 
 std::string Settings::gbaBiosPath = "gba_bios.bin";
 std::string Settings::ndsBios9Path = "bios9.bin";
@@ -55,6 +56,8 @@ std::string Settings::dsiBios7Path = "bios7i.bin";
 std::string Settings::dsiFirmPath = "firmwarei.bin";
 std::string Settings::dsiNandPath = "nand.bin";
 std::string Settings::sdImagePath = "sd.img";
+const char *const Settings::defaultWfcDns = "167.235.229.36";
+std::string Settings::wfcDns = defaultWfcDns;
 std::string Settings::basePath = ".";
 
 std::vector<Setting> Settings::settings = {
@@ -81,6 +84,7 @@ std::vector<Setting> Settings::settings = {
     Setting("syncToDisplay", &syncToDisplay, false),
     Setting("gpuAntiAlias", &gpuAntiAlias, false),
     Setting("gpuOverlap", &gpuOverlap, false),
+    Setting("wifi", &wifi, false),
     Setting("gbaBiosPath", &gbaBiosPath, true),
     Setting("ndsBios9Path", &ndsBios9Path, true),
     Setting("ndsBios7Path", &ndsBios7Path, true),
@@ -89,7 +93,8 @@ std::vector<Setting> Settings::settings = {
     Setting("dsiBios7Path", &dsiBios7Path, true),
     Setting("dsiFirmPath", &dsiFirmPath, true),
     Setting("dsiNandPath", &dsiNandPath, true),
-    Setting("sdImagePath", &sdImagePath, true)
+    Setting("sdImagePath", &sdImagePath, true),
+    Setting("wfcDns", &wfcDns, true)
 };
 
 void Settings::add(std::vector<Setting> &settings) {

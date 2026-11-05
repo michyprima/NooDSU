@@ -1536,6 +1536,14 @@ void ConsoleUI::settingsMenu() {
         header("Experimental");
         add("Direct Boot", Settings::directBoot, directBoot);
         add("DSi Mode", Settings::dsiMode, dsiMode);
+        add("Wi-Fi", Settings::wifi, toggle);
+        int dnsIndex = -1;
+        if (Settings::wifi) {
+            // The DNS server only matters with Wi-Fi on
+            dnsIndex = settings.size();
+            settings.push_back(MenuItem("DNS Server", Settings::wfcDns));
+            values.push_back({ nullptr, 0 });
+        }
 
         header("About");
         settings.push_back(MenuItem("About NooDS U"));
@@ -1556,6 +1564,22 @@ void ConsoleUI::settingsMenu() {
                 std::u16string text = nickname.empty() ? miiName : utf8To16(nickname);
                 if (editText(text, 10, cafeLanguage()))
                     nickname = (text.empty() || text == miiName) ? "" : utf16To8(text);
+            }
+            else if (index == dnsIndex) {
+                // Edit the DNS server's address with the number pad, keeping the old one if the new one isn't valid
+                // and going back to the default if left empty
+                std::u16string text = utf8To16(Settings::wfcDns);
+                if (editText(text, 15, cafeLanguage(), true)) {
+                    std::string address = utf16To8(text);
+                    unsigned int parts[4];
+                    char end;
+                    if (address.empty())
+                        Settings::wfcDns = Settings::defaultWfcDns;
+                    else if (sscanf(address.c_str(), "%u.%u.%u.%u%c", &parts[0], &parts[1], &parts[2], &parts[3],
+                            &end) == 4 && parts[0] < 256 && parts[1] < 256 && parts[2] < 256 && parts[3] < 256)
+                        Settings::wfcDns = std::to_string(parts[0]) + "." + std::to_string(parts[1]) + "." +
+                            std::to_string(parts[2]) + "." + std::to_string(parts[3]);
+                }
             }
             else {
                 aboutMenu();
@@ -1597,9 +1621,11 @@ void ConsoleUI::aboutMenu() {
         MenuItem("Built With", true),
         MenuItem("Wii U toolchain", "devkitPro and wut"),
         MenuItem("Audio", "SDL2"),
+        MenuItem("Wi-Fi Network", "libslirp (BSD license)"),
         MenuItem("References", true),
         MenuItem("GBATEK", "DS and GBA hardware"),
         MenuItem("melonDS Blog", "3D quirks"),
+        MenuItem("melonDS", "Wi-Fi access point"),
         MenuItem("DraStic BIOS", "DS HLE BIOS"),
         MenuItem("Cult of GBA BIOS", "GBA HLE BIOS"),
         MenuItem("Links", true),
@@ -2405,5 +2431,6 @@ void ConsoleUI::checkSave() {
         cond.wait_for(lock, std::chrono::seconds(3), [&]{ return !running; });
         core->cartridgeNds.writeSave();
         core->cartridgeGba.writeSave();
+        core->spi.writeWfcSettings();
     }
 }

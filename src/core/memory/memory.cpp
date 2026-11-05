@@ -1531,6 +1531,14 @@ template <typename T> T Memory::ioRead7(uint32_t address) {
             }
         }
 
+        // Read the rest of the WiFi registers as plain values
+        if (base >= 0x4800000 && base < 0x4801000) {
+            data = core->wifi.readPort(base & 0xFFE);
+            base &= 0x1;
+            size = 2;
+            goto next;
+        }
+
         // Handle unknown reads by returning nothing
         if (i == 0) {
             LOG_WARN("Unknown ARM7 I/O register read: 0x%X\n", address);
@@ -2295,6 +2303,14 @@ template <typename T> void Memory::ioWrite7(uint32_t address, T value) {
                 DEF_IO16(0x4004904, core->sdMmc.writeData32Blklen(IOWR_PARAMS)) // SD_DATA32_BLKLEN
                 DEF_IO32(0x400490C, core->sdMmc.writeData32Fifo(IOWR_PARAMS)) // SD_DATA32_FIFO
             }
+        }
+
+        // Write the rest of the WiFi registers as plain values
+        if (base >= 0x4800000 && base < 0x4801000) {
+            core->wifi.writePort(base & 0xFFE, mask << ((base & 0x1) * 8), data << ((base & 0x1) * 8));
+            base &= 0x1;
+            size = 2;
+            goto next;
         }
 
         // Handle unknown writes by doing nothing

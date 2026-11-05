@@ -925,7 +925,7 @@ static void drawKeyboard(bool tv) {
     else nn::swkbd::DrawDRC();
 }
 
-bool ConsoleUI::editText(std::u16string &text, int maxLength, int language) {
+bool ConsoleUI::editText(std::u16string &text, int maxLength, int language, bool numpad) {
     // Choose the keyboard's region from the console's, so it has the layouts the user is used to
     nn::swkbd::RegionType region = nn::swkbd::RegionType::Europe;
     int32_t mcp = MCP_Open();
@@ -950,6 +950,9 @@ bool ConsoleUI::editText(std::u16string &text, int maxLength, int language) {
         if (work) MEMFreeToDefaultHeap(work);
         return false;
     }
+    // Hold the file lock while the keyboard is open, since it reads its resources through its own file client and
+    // file access from several threads at once can stall the console
+    std::lock_guard<std::recursive_mutex> guard(fileLock());
     FSInit();
     FSAddClient(client, FS_ERROR_FLAG_NONE);
     nn::swkbd::CreateArg create;
@@ -964,14 +967,20 @@ bool ConsoleUI::editText(std::u16string &text, int maxLength, int language) {
         nn::swkbd::AppearArg appear;
         appear.keyboardArg.configArg.languageType = nn::swkbd::LanguageType(language);
         appear.keyboardArg.configArg.disableNewLine = true;
+        if (numpad) {
+            // Use the number pad, with a dot key for addresses
+            appear.keyboardArg.configArg.keyboardMode = nn::swkbd::KeyboardMode::Numpad;
+            appear.keyboardArg.configArg.numpadCharLeft = u'.';
+        }
         appear.inputFormArg.initialText = text.c_str();
         appear.inputFormArg.maxTextLength = maxLength;
         appear.inputFormArg.higlightInitialText = true;
         nn::swkbd::AppearInputForm(appear);
 
-        // Run the keyboard until a choice is made, then until it finishes hiding
+        // Run the keyboard until a choice is made, then until it finishes hiding, giving up on that after 2 seconds
         bool closing = false;
-        while (!closing || nn::swkbd::GetStateInputForm() != nn::swkbd::State::Hidden) {
+        int closingFrames = 0;
+        while (!closing || (nn::swkbd::GetStateInputForm() != nn::swkbd::State::Hidden && ++closingFrames < 120)) {
             // Pass it the controllers, with the GamePad's touch calibrated like the menus use it
             // Input is also scanned for the menus, so buttons still held from here aren't new presses there
             getInputPress();
@@ -1481,6 +1490,16 @@ static BOOL showCrash(OSContext *context, const char *type) {
         context->gpr[7], context->gpr[8], context->gpr[9], context->gpr[10]);
     OSFatal(message);
     return FALSE;
+}
+
+// Show failed assertions on an error screen too, since the C library's abort() leaves the console frozen with garbage
+// on the screen and no message
+extern "C" void __assert_func(const char *file, int line, const char *function, const char *expression) {
+    char message[512];
+    __os_snprintf(message, sizeof(message), "NooDS U assertion failed on core %u\n%s\nin %s\n%s:%d\n", OSGetCoreId(),
+        expression, function ? function : "?", file, line);
+    OSFatal(message);
+    while (true);
 }
 
 int main() {

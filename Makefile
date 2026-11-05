@@ -11,7 +11,9 @@ include $(DEVKITPRO)/wut/share/wut_rules
 
 NAME := noodsu
 BUILD := build-wiiu
-SRCS := src src/core src/core/arm src/core/gpu src/core/hle src/core/io src/core/memory src/ui src/ui/console
+SRCS := src src/core src/core/arm src/core/gpu src/core/hle src/core/io src/core/memory src/core/net src/ui src/ui/console
+SLIRP := src/core/net/libslirp
+SLIRPSRCS := $(SLIRP)/src $(SLIRP)/glib
 DATA := src/ui/console/images src/ui/console/shaders
 LIBS := -lwut -lSDL2
 INCS := $(PORTLIBS) $(WUT_ROOT)
@@ -19,6 +21,11 @@ INCS := $(PORTLIBS) $(WUT_ROOT)
 CXXFLAGS := -g -Ofast -fno-allow-store-data-races -flto -ffunction-sections $(MACHDEP) $(INCLUDE) \
     -D__WIIU__ -D__WUT__ -DENDIAN_BIG -DNO_FDOPEN -DLOG_LEVEL=0
 LDFLAGS = -g $(ARCH) $(RPXSPECS) -Wl,-Map,$(notdir $*.map)
+
+# libslirp is C, built with its own include folders so its header names can't clash with others; they're added even
+# when variant builds set CFLAGS
+CFLAGS := -g -O2 -ffunction-sections $(MACHDEP) -D__WIIU__ -D__WUT__ $(foreach dir,$(INCS),-I$(dir)/include)
+override CFLAGS += -DLIBSLIRP_STATIC_BUILD -DBUILDING_LIBSLIRP '-DG_LOG_DOMAIN="Slirp"' $(SLIRPINCLUDE) -include compat.h
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
 
@@ -30,13 +37,15 @@ export LD := $(CXX)
 export OUTPUT := $(CURDIR)/$(NAME)
 export DEPSDIR := $(CURDIR)/$(BUILD)
 export LIBPATHS := $(foreach dir,$(INCS),-L$(dir)/lib)
-export VPATH := $(foreach dir,$(SRCS),$(CURDIR)/$(dir)) $(foreach dir,$(DATA),$(CURDIR)/$(dir))
+export VPATH := $(foreach dir,$(SRCS) $(SLIRPSRCS),$(CURDIR)/$(dir)) $(foreach dir,$(DATA),$(CURDIR)/$(dir))
+export SLIRPINCLUDE := -I$(CURDIR)/$(SLIRP)/src -I$(CURDIR)/$(SLIRP)/glib -I$(CURDIR)/$(SLIRP)/wiiu
 export INCLUDE := $(foreach dir,$(SRCS),-I$(CURDIR)/$(dir)) $(foreach dir,$(INCS),-I$(dir)/include) -I$(CURDIR)/$(BUILD)
 
 CPPFILES := $(foreach dir,$(SRCS),$(notdir $(wildcard $(dir)/*.cpp)))
+CFILES := $(foreach dir,$(SLIRPSRCS),$(notdir $(wildcard $(dir)/*.c)))
 BMPFILES := $(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.bmp)))
 GSHFILES := $(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.gsh)))
-export OFILES := $(CPPFILES:.cpp=.o) $(BMPFILES:.bmp=.o) $(addsuffix .o,$(GSHFILES))
+export OFILES := $(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(BMPFILES:.bmp=.o) $(addsuffix .o,$(GSHFILES))
 
 .PHONY: $(BUILD)
 all: $(BUILD)

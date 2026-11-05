@@ -20,12 +20,15 @@
 #include <algorithm>
 #include <cstring>
 #include "../core.h"
+#include "../file_lock.h"
+#include "wifi_ap.h"
 
 Language Spi::language = LG_ENGLISH;
 std::u16string Spi::nickname;
 
 Spi::~Spi() {
-    // Free any dynamic memory
+    // Save any access point settings that are waiting, and free any dynamic memory
+    writeWfcSettings();
     if (firmware) delete[] firmware;
 }
 
@@ -111,6 +114,10 @@ bool Spi::loadFirmware() {
             firmware[addr + 0x73] = crc >> 8;
         }
 
+        // Apply saved Wi-Fi settings and the emulated access point
+        loadWfcSettings();
+        if (Settings::wifi) addAccessPoint();
+
         // Check if the firmware is from the correct system based on its size
         return core->dsiMode ? (firmSize <= 0x20000) : (firmSize > 0x20000);
     }
@@ -185,7 +192,92 @@ bool Spi::loadFirmware() {
         firmware[addr + 0x73] = crc >> 8;
     }
 
+    // Apply saved Wi-Fi settings and the emulated access point
+    loadWfcSettings();
+    if (Settings::wifi) addAccessPoint();
     return false;
+}
+
+size_t Spi::apOffset() {
+    // Get where the 3 access point settings are, right before the user settings, or 0 if that's out of range
+    size_t offset = (firmware[0x20] | (firmware[0x21] << 8)) * 8;
+    return (offset >= 0x400 && offset + 0x200 <= firmSize) ? offset - 0x400 : 0;
+}
+
+void Spi::loadWfcSettings() {
+    // Load the access point settings games saved, which are kept apart so a firmware dump is never changed
+    size_t offset = apOffset();
+    if (!offset) return;
+    std::lock_guard<std::recursive_mutex> guard(fileLock());
+    if (FILE *file = fopen((Settings::basePath + "/bios/wfcsettings.bin").c_str(), "rb")) {
+        uint8_t data[0x300];
+        if (fread(data, 1, sizeof(data), file) == sizeof(data))
+            memcpy(&firmware[offset], data, sizeof(data));
+        fclose(file);
+    }
+}
+
+void Spi::writeWfcSettings() {
+    // Save the access point settings games changed, which hold the Nintendo WFC user ID they create
+    // This runs on the thread that writes save files, so file access stays off the emulator's core
+    // The settings are copied under the mutex and written after, so the emulator never waits on the file
+    uint8_t data[sizeof(wfcCopy)];
+    mutex.lock();
+    bool dirty = wfcDirty;
+    if (dirty) memcpy(data, wfcCopy, sizeof(data));
+    wfcDirty = false;
+    mutex.unlock();
+    if (!dirty) return;
+
+    std::lock_guard<std::recursive_mutex> guard(fileLock());
+    if (FILE *file = fopen((Settings::basePath + "/bios/wfcsettings.bin").c_str(), "wb")) {
+        fwrite(data, 1, sizeof(data), file);
+        fclose(file);
+    }
+    else {
+        // Try again next time if the file couldn't be opened, unless newer settings came in meanwhile
+        mutex.lock();
+        if (!wfcDirty) {
+            memcpy(wfcCopy, data, sizeof(data));
+            wfcDirty = true;
+        }
+        mutex.unlock();
+    }
+}
+
+void Spi::addAccessPoint() {
+    // Set up an access point slot for the emulated access point, reusing one that's already set up for it, or
+    // else taking the first unused one, or the last one if they're all used
+    size_t offset = apOffset();
+    if (!offset) return;
+    int slot = -1;
+    for (int i = 0; i < 3 && slot < 0; i++)
+        if (!memcmp(&firmware[offset + i * 0x100 + 0x40], WifiAp::ssid, sizeof(WifiAp::ssid)))
+            slot = i;
+    for (int i = 0; i < 3 && slot < 0; i++)
+        if (firmware[offset + i * 0x100 + 0xE7] == 0xFF)
+            slot = i;
+    if (slot < 0) slot = 2;
+
+    // Keep everything in a slot already set up for it, like the WFC user ID, otherwise start it from scratch
+    uint8_t *ap = &firmware[offset + slot * 0x100];
+    if (memcmp(&ap[0x40], WifiAp::ssid, sizeof(WifiAp::ssid))) {
+        memset(ap, 0, 0x100);
+        memcpy(&ap[0x40], WifiAp::ssid, sizeof(WifiAp::ssid));
+        ap[0xEF] = 0x01; // Configured
+    }
+    // Get the IP address automatically, and use the DNS server from the settings, or else get it automatically too
+    memset(&ap[0xC0], 0, 0x11);
+    unsigned int dns[4];
+    if (sscanf(Settings::wfcDns.c_str(), "%u.%u.%u.%u", &dns[0], &dns[1], &dns[2], &dns[3]) == 4 &&
+            dns[0] < 256 && dns[1] < 256 && dns[2] < 256 && dns[3] < 256)
+        for (int i = 0; i < 4; i++)
+            ap[0xC8 + i] = dns[i];
+    ap[0xE6] = 0; // No WEP
+    ap[0xE7] = 0; // Normal connection
+    uint16_t crc = crc16(0, ap, 0xFE);
+    ap[0xFE] = crc >> 0;
+    ap[0xFF] = crc >> 8;
 }
 
 void Spi::directBoot() {
@@ -264,6 +356,12 @@ void Spi::writeSpiData(uint8_t value) {
         command = value;
         address = 0;
         spiData = 0;
+
+        // Set or clear the firmware's write enable latch, which commands without parameters do right away
+        if (((spiCnt & 0x0300) >> 8) == 1) {
+            if (command == 0x06) firmStatus |= BIT(1);
+            else if (command == 0x04) firmStatus &= ~BIT(1);
+        }
     }
     else {
         switch ((spiCnt & 0x0300) >> 8) { // Device
@@ -281,6 +379,56 @@ void Spi::writeSpiData(uint8_t value) {
                     // Increment the address
                     // 16-bit mode is bugged; the address is incremented accordingly, but only the lower 8 bits are sent
                     address += (spiCnt & BIT(10)) ? 2 : 1;
+                }
+                break;
+
+            case 0x0B: // Fast read data bytes
+                if (writeCount < 4) {
+                    // On writes 2-4, set the 3 byte address to read from
+                    address |= value << ((3 - writeCount) * 8);
+                }
+                else if (writeCount > 4) {
+                    // After a dummy byte, read data from the firmware and send it back
+                    spiData = (address < firmSize) ? firmware[address] : 0;
+                    address++;
+                }
+                break;
+
+            case 0x05: // Read status register
+                spiData = firmStatus;
+                break;
+
+            case 0x9F: // Read identification
+                spiData = (writeCount == 1) ? 0x20 : (writeCount == 2) ? 0x40 : (writeCount == 3) ? 0x12 : 0;
+                break;
+
+            case 0x0A: case 0x02: // Page write, page program
+                if (writeCount < 4) {
+                    // On writes 2-4, set the 3 byte address to write to
+                    address |= value << ((3 - writeCount) * 8);
+                }
+                else if ((firmStatus & BIT(1)) && address < firmSize) {
+                    // Write data to the firmware, where programming can only clear bits, wrapping within the page
+                    firmware[address] = (command == 0x0A) ? value : (firmware[address] & value);
+                    size_t offset = apOffset();
+                    if (offset && address >= offset && address < offset + 0x300)
+                        apWritten = true;
+                    address = (address & ~0xFF) | ((address + 1) & 0xFF);
+                }
+                break;
+
+            case 0xDB: case 0xD8: // Page erase, sector erase
+                if (writeCount < 4)
+                    address |= value << ((3 - writeCount) * 8);
+                if (writeCount == 3 && (firmStatus & BIT(1))) {
+                    // Fill the page or sector with ones once the address is set
+                    size_t size = (command == 0xDB) ? 0x100 : 0x10000;
+                    size_t start = address & ~(size - 1);
+                    if (start < firmSize)
+                        memset(&firmware[start], 0xFF, std::min(size, firmSize - start));
+                    size_t offset = apOffset();
+                    if (offset && start < offset + 0x300 && start + size > offset)
+                        apWritten = true;
                 }
                 break;
 
@@ -359,10 +507,25 @@ void Spi::writeSpiData(uint8_t value) {
     }
 
     // Keep track of the write count
-    if (spiCnt & BIT(11)) // Keep chip selected
+    if (spiCnt & BIT(11)) { // Keep chip selected
         writeCount++;
-    else // Deselect chip
+    }
+    else { // Deselect chip
+        // Finish writes to the firmware, clearing the write enable latch and saving any access point changes
+        if (((spiCnt & 0x0300) >> 8) == 1 && writeCount > 0 &&
+            (command == 0x0A || command == 0x02 || command == 0xDB || command == 0xD8)) {
+            firmStatus &= ~BIT(1);
+            if (apWritten) {
+                // Copy the access point settings to be saved
+                mutex.lock();
+                memcpy(wfcCopy, &firmware[apOffset()], sizeof(wfcCopy));
+                wfcDirty = true;
+                mutex.unlock();
+            }
+            apWritten = false;
+        }
         writeCount = 0;
+    }
 
     // Trigger a transfer finished IRQ if enabled
     if (spiCnt & BIT(14))

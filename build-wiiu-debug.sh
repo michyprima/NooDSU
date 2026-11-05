@@ -9,6 +9,7 @@
 #   statedebug   Heartbeat, plus snapshots of what decides whether the CPUs run in statelog.txt around state loads
 #   gpudump      Polygons, 3D layers and GPU renderer frames dumped every 60 frames, and frames drawn in software too
 #   threadprobe  Every thread's state on request over UDP, answered from each core, for freezes
+#   netlog       A line for every Wi-Fi network event broadcast to UDP port 4405, for Wi-Fi problems
 #   profile      Where the emulator thread spends its time, shown on screen
 #   jittest      Runs the JIT against the interpreter before starting a game
 #   romtest      Runs tests/rom's ROM with the interpreter and the JIT, timing them, with the results in romtest.txt
@@ -37,6 +38,7 @@ for variant in "$@"; do
         statedebug) flags='-DSTATE_DEBUG -DHEARTBEAT'; name=noodsu-statedebug; title='NooDS U State Debug' ;;
         gpudump) flags='-DGPU_DUMP'; name=noodsu-dump; title='NooDS U Dump' ;;
         threadprobe) flags='-DTHREAD_PROBE'; name=noodsu-probe; title='NooDS U Probe' ;;
+        netlog) flags='-DNET_LOG'; name=noodsu-netlog; title='NooDS U Net Log' ;;
         profile) flags='-DPROFILE_EMU'; name=noodsu-profile; title='NooDS U Profile' ;;
         jittest) flags='-DJIT_SELFTEST'; name=noodsu-jittest; title='NooDS U JIT Test' ;;
         romtest) flags='-DROM_TEST'; name=noodsu-romtest; title='NooDS U ROM Test' ;;

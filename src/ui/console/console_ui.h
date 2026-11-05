@@ -135,7 +135,7 @@ public:
     static size_t getMicSamples(int16_t *out, size_t max);
     static void closeMic();
     static std::u16string getMiiName(); // Empty if it can't be read
-    static bool editText(std::u16string &text, int maxLength, int language); // False if canceled
+    static bool editText(std::u16string &text, int maxLength, int language, bool numpad = false); // False if canceled
 
     static void drawRectangle(float x, float y, float w, float h, uint32_t color = 0xFFFFFFFF);
     static void drawString(std::string string, float x, float y,
