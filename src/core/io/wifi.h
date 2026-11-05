@@ -41,6 +41,7 @@ class Wifi {
 public:
     Wifi(Core *core);
     ~Wifi();
+    void stopNetwork();
     void saveState(FILE *file);
     void loadState(FILE *file);
 

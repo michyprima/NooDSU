@@ -1226,9 +1226,10 @@ int runUi(int argc, void *argv) {
     ConsoleUI::initialize(tvWidth, tvHeight, base, base + "/wiiu/apps/noodsu/");
     ConsoleUI::fileBrowser();
 
-    // Run the emulator until it exits
+    // Run the emulator until it exits, then close the game while the app still has the foreground
     ConsoleUI::mainLoop(nullptr, &gpLayout);
     ConsoleUI::closeMic();
+    ConsoleUI::closeCore();
     return 0;
 }
 
@@ -1547,6 +1548,8 @@ int main() {
             switch (ProcUIProcessMessages(true)) {
             case PROCUI_STATUS_EXITING:
                 // Exit, leaving the UI stopped if it's still running; save data was written when it stopped
+                // The network is stopped first, since the system waits on its thread and sockets otherwise
+                ConsoleUI::stopNetwork();
                 ProcUIShutdown();
                 return 0;
 

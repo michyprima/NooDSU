@@ -39,6 +39,13 @@ Wifi::~Wifi() {
     delete ap;
 }
 
+void Wifi::stopNetwork() {
+    // Remove the access point, ending its network thread and closing its sockets, while the emulator is stopped
+    delete ap;
+    ap = nullptr;
+    apPending.clear();
+}
+
 void Wifi::saveState(FILE *file) {
     // Write state data to the file
     fwrite(&scheduled, sizeof(scheduled), 1, file);

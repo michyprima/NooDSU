@@ -2350,6 +2350,20 @@ void ConsoleUI::startCore() {
     saveThread = new WorkerThread(WorkerThread::CORE_2, checkSave);
 }
 
+void ConsoleUI::closeCore() {
+    // Stop and delete the core before the app exits, so its threads end, its save data is written and its files and
+    // sockets are closed; the system can wait forever on what's left running otherwise
+    stopCore();
+    delete core;
+    core = nullptr;
+}
+
+void ConsoleUI::stopNetwork() {
+    // End the network thread of a stopped core, for exits where the rest of the core can't be deleted since threads
+    // on cores 0 and 1 are suspended in the background
+    if (core) core->wifi.stopNetwork();
+}
+
 void ConsoleUI::stopCore() {
     // Tell the threads to stop if running
     if (running) {

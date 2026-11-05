@@ -154,6 +154,8 @@ public:
     static bool fileBrowser();
     static void startCore();
     static void stopCore();
+    static void closeCore();
+    static void stopNetwork();
 
 private:
     static void *fileTextures[2];

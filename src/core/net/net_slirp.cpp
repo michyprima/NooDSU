@@ -210,7 +210,10 @@ void NetSlirp::run() {
     BOOL connected = FALSE;
     if (NNResult_IsFailure(ACIsApplicationConnected(&connected)) || !connected)
         ACConnect();
-    if (!running.load()) return;
+    if (!running.load()) {
+        ACFinalize();
+        return;
+    }
 #endif
     netLog("network connected\n");
 
@@ -294,8 +297,11 @@ void NetSlirp::run() {
         }
     }
 
-    // Clean up libslirp
+    // Clean up libslirp, closing its sockets, and release the network connection
     slirp_cleanup(slirp);
     for (Timer *timer : timers) delete timer;
     timers.clear();
+#ifdef __WIIU__
+    ACFinalize();
+#endif
 }
