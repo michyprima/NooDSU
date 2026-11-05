@@ -564,7 +564,7 @@ static State randomState(bool thumb, int mode) {
     s.spsr = interesting();
     s.usr[15] = 0;
     s.mode = mode;
-    s.cpsr = (mode == 0 ? 0x1F : mode == 1 ? 0x12 : 0x11) | (thumb ? 0x20 : 0) | (rnd(16) << 28) | (rnd(2) ? BIT(7) : 0);
+    s.cpsr = (mode == 0 ? (rnd(2) ? 0x1F : 0x10) : mode == 1 ? 0x12 : 0x11) | (thumb ? 0x20 : 0) | (rnd(16) << 28) | (rnd(2) ? BIT(7) : 0);
     return s;
 }
 
