@@ -673,7 +673,7 @@ enum NativeKind {
     NK_BRANCH, // B/BL
     NK_TRANSFER, // LDR/STR/LDRB/STRB
     NK_BRANCH_REG, // BX/BLX
-    NK_HALF, // LDRH/STRH/LDRSB/LDRSH at an offset
+    NK_HALF, // LDRH/STRH/LDRSB/LDRSH
     NK_BLOCK, // LDM/STM
     NK_BLOCK_PC, // LDM that loads the program counter, like a function return
     NK_SWAP, // SWP/SWPB
@@ -703,7 +703,8 @@ static int nativeKind(uint32_t op, bool arm7) {
             if ((op & 0x0FFFFFD0) == 0x012FFF10) // BX/BLX
                 return (rm == 15 || (arm7 && (op & BIT(5)))) ? NK_NONE : NK_BRANCH_REG;
             if ((op & 0x0E000090) == 0x00000090 && (op & 0x60)) { // Halfword and signed transfers
-                if ((op & 0x01200000) != 0x01000000 || rd == 15) return NK_NONE; // Only offsets without writeback
+                bool writeback = !(op & BIT(24)) || (op & BIT(21));
+                if (rd == 15 || (writeback && rn == 15)) return NK_NONE;
                 if (!(op & BIT(20)) && (op & 0x60) != 0x20) return NK_NONE; // LDRD/STRD
                 return NK_HALF;
             }
@@ -1101,27 +1102,36 @@ void Jit::emitTransfer(PpcEmitter &e, uint32_t op, uint32_t pc) {
 }
 
 void Jit::emitHalf(PpcEmitter &e, uint32_t op, uint32_t pc) {
-    // Halfword or signed load, or halfword store, at an offset without writeback
+    // Halfword or signed load, or halfword store, with any addressing mode
+    // Writeback happens before the memory access, as with words
     uint32_t rn = (op >> 16) & 0xF, rd = (op >> 12) & 0xF;
-    bool up = op & BIT(23), load = op & BIT(20);
+    bool pre = op & BIT(24), up = op & BIT(23), load = op & BIT(20);
+    bool writeback = !pre || (op & BIT(21));
     uint32_t type = (op >> 5) & 0x3; // 1 = halfword, 2 = signed byte, 3 = signed halfword
     if (op & BIT(22)) {
         uint32_t offset = ((op >> 4) & 0xF0) | (op & 0xF);
         if (rn == 15) {
             e.loadConst(5, up ? (pc + offset) : (pc - offset));
         }
-        else {
+        else if (!writeback) {
             readReg(e, 5, rn, pc);
             if (offset) e.addi(5, 5, up ? offset : -offset);
+        }
+        else {
+            readReg(e, 3, rn, pc);
+            e.addi(9, 3, up ? offset : -offset);
+            e.mr(5, pre ? 9 : 3);
         }
     }
     else {
         readReg(e, 3, rn, pc);
         readReg(e, 4, op & 0xF, pc);
-        up ? e.add(5, 3, 4) : e.subf(5, 4, 3);
+        up ? e.add(9, 3, 4) : e.subf(9, 4, 3);
+        e.mr(5, (pre || !writeback) ? 9 : 3);
     }
 
     if (load) {
+        if (writeback) writeReg(e, 9, rn);
         // The ARM7 rotates halfwords loaded from odd addresses, and shifts signed ones down, keeping the address
         // in a register that memory calls don't change
         if (arm7 && type != 2) e.mr(R_TMP1, 5);
@@ -1139,6 +1149,7 @@ void Jit::emitHalf(PpcEmitter &e, uint32_t op, uint32_t pc) {
     }
     else {
         readReg(e, 8, rd, pc);
+        if (writeback) writeReg(e, 9, rn);
         e.call(codeMemory[5]);
     }
     e.li(3, arm7 ? (load ? 3 : 2) : 1);
