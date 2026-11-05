@@ -974,6 +974,23 @@ void CartridgeNds::writeAuxSpiData(bool cpu, uint8_t value) {
                 resizeSave(0x80000, false);
                 break;
 
+            case 0x03: // EEPROM 0.5KB: Read from lower memory
+                // Only EEPROM 0.5KB has a 1 byte address, so a read that ends after it with 1 data byte must be from one
+                // Other types need more address bytes, so a read that short would get no data from them
+                if (auxWriteCount[cpu] == 2 && !(auxSpiCnt[cpu] & BIT(6))) {
+                    LOG_INFO("Detected EEPROM 0.5KB save type\n");
+                    resizeSave(0x200, false);
+                    break;
+                }
+                if (auxWriteCount[cpu] == 1)
+                    auxAddress[cpu] = value;
+                // Keep track of the write count
+                if (auxSpiCnt[cpu] & BIT(6)) // Keep chip selected
+                    auxWriteCount[cpu]++;
+                else // Deselect chip
+                    auxWriteCount[cpu] = 0;
+                return;
+
             default:
                 // Deselect chip
                 if (!(auxSpiCnt[cpu] & BIT(6)))
