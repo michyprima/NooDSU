@@ -780,6 +780,8 @@ private:
     int stmdbUW(uint32_t opcode);
     int ldmibUW(uint32_t opcode);
     int stmibUW(uint32_t opcode);
+    void writeCpsr(uint32_t opcode, uint32_t value);
+    void writeSpsr(uint32_t opcode, uint32_t value);
     int msrRc(uint32_t opcode);
     int msrRs(uint32_t opcode);
     int msrIc(uint32_t opcode);

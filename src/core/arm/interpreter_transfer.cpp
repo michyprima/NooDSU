@@ -1087,28 +1087,32 @@ int Interpreter::stmibUW(uint32_t opcode) { // STMIB Rn!, <Rlist>^
     return m + (arm7 || m < 2);
 }
 
-int Interpreter::msrRc(uint32_t opcode) { // MSR CPSR,Rm
-    // Write the first 8 bits of the status flags, unless in user mode
-    uint32_t op1 = *registers[opcode & 0xF];
+void Interpreter::writeCpsr(uint32_t opcode, uint32_t value) {
+    // Write the status flags that MSR selects, which are only the top and bottom bytes on a real DS
+    // User mode can only change the top byte, and the ARM7 doesn't have the Q flag
     if ((opcode & BIT(16)) && (cpsr & 0x1F) != 0x10)
-        setCpsr((cpsr & ~0xFF) | (op1 & 0xFF));
+        setCpsr((cpsr & ~0xFF) | (value & 0xFF));
+    if (opcode & BIT(19))
+        cpsr = (cpsr & 0x00FFFFFF) | (value & (arm7 ? 0xF0000000 : 0xF8000000));
+}
 
-    // Write the remaining 8-bit blocks of the status flags
-    for (int i = 1; i < 4; i++) {
-        if (opcode & BIT(16 + i))
-            cpsr = (cpsr & ~(0xFF << (i << 3))) | (op1 & (0xFF << (i << 3)));
-    }
+void Interpreter::writeSpsr(uint32_t opcode, uint32_t value) {
+    // Write the saved status flags that MSR selects, which have the same bits as the current ones
+    if (opcode & BIT(16))
+        *spsr = (*spsr & ~0xFF) | (value & 0xFF);
+    if (opcode & BIT(19))
+        *spsr = (*spsr & 0x00FFFFFF) | (value & (arm7 ? 0xF0000000 : 0xF8000000));
+}
+
+int Interpreter::msrRc(uint32_t opcode) { // MSR CPSR,Rm
+    writeCpsr(opcode, *registers[opcode & 0xF]);
     return 1;
 }
 
 int Interpreter::msrRs(uint32_t opcode) { // MSR SPSR,Rm
     // Write the saved status flags in 8-bit blocks
     if (!spsr) return 1;
-    uint32_t op1 = *registers[opcode & 0xF];
-    for (int i = 0; i < 4; i++) {
-        if (opcode & BIT(16 + i))
-            *spsr = (*spsr & ~(0xFF << (i << 3))) | (op1 & (0xFF << (i << 3)));
-    }
+    writeSpsr(opcode, *registers[opcode & 0xF]);
     return 1;
 }
 
@@ -1116,17 +1120,7 @@ int Interpreter::msrIc(uint32_t opcode) { // MSR CPSR,#i
     // Rotate the immediate value
     uint32_t value = opcode & 0xFF;
     uint8_t shift = (opcode >> 7) & 0x1E;
-    uint32_t op1 = (value << (32 - shift)) | (value >> shift);
-
-    // Write the first 8 bits of the status flags, unless in user mode
-    if ((opcode & BIT(16)) && (cpsr & 0x1F) != 0x10)
-        setCpsr((cpsr & ~0xFF) | (op1 & 0xFF));
-
-    // Write the remaining 8-bit blocks of the status flags
-    for (int i = 1; i < 4; i++) {
-        if (opcode & BIT(16 + i))
-            cpsr = (cpsr & ~(0xFF << (i << 3))) | (op1 & (0xFF << (i << 3)));
-    }
+    writeCpsr(opcode, (value << (32 - shift)) | (value >> shift));
     return 1;
 }
 
@@ -1135,13 +1129,7 @@ int Interpreter::msrIs(uint32_t opcode) { // MSR SPSR,#i
     if (!spsr) return 1;
     uint32_t value = opcode & 0xFF;
     uint8_t shift = (opcode >> 7) & 0x1E;
-    uint32_t op1 = (value << (32 - shift)) | (value >> shift);
-
-    // Write the saved status flags in 8-bit blocks
-    for (int i = 0; i < 4; i++) {
-        if (opcode & BIT(16 + i))
-            *spsr = (*spsr & ~(0xFF << (i << 3))) | (op1 & (0xFF << (i << 3)));
-    }
+    writeSpsr(opcode, (value << (32 - shift)) | (value >> shift));
     return 1;
 }
 
