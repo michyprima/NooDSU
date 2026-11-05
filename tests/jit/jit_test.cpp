@@ -36,7 +36,7 @@ bool rigMayJump(uint32_t op, bool thumb);
 bool rigKindJumps(int kind);
 
 enum { NK_NONE, NK_ALU, NK_BRANCH, NK_TRANSFER, NK_BRANCH_REG, NK_HALF, NK_BLOCK, NK_BLOCK_PC, NK_SWAP, NK_MULTIPLY, NK_MISC,
-    NK_COPROCESSOR, NK_MSR, NK_BLX, NK_THUMB_BRANCH = 100 };
+    NK_COPROCESSOR, NK_MSR, NK_BLX, NK_TRANSFER_PC, NK_ALU_PC, NK_THUMB_BRANCH = 100 };
 
 // Addresses in the emulator
 static const uint32_t ARM_STATE = 0x10000, CACHE_FLAG = 0x50000, CACHE = 0x50010, EVENTS = 0x70000, LIMIT = 0x71000,
@@ -341,6 +341,10 @@ static bool runOracle(Case &c, State &out, uint32_t &cycles, std::vector<Snapsho
         if (jumped || index == block->instrs.size()) {
             bool thumb = arm.cpsr & BIT(5);
             uint32_t next = jumped ? (arm.registersUsr[15] - (thumb ? 2 : 4)) : (address + step);
+            // A jump to the next instruction just carries on, since generated code sees the same program counter,
+            // except for branches, which always go through their links
+            if (next == address + step && thumb == block->thumb && index < block->instrs.size() && kind != NK_BRANCH &&
+                kind != NK_THUMB_BRANCH) continue;
             block = findBlock(c, next, thumb);
             index = 0;
         }
@@ -602,7 +606,7 @@ static bool fitAddress(uint32_t a, int kind, State &s, uint32_t pc, bool nearPag
         }
         bool up = a & BIT(23), pre = a & BIT(24);
         uint32_t offset;
-        if (kind == NK_TRANSFER) {
+        if (kind == NK_TRANSFER || kind == NK_TRANSFER_PC) {
             if (!(a & BIT(25))) {
                 offset = a & 0xFFF;
                 if (rn != 15) visible(s, rn) = base;
@@ -636,7 +640,7 @@ static bool fitAddress(uint32_t a, int kind, State &s, uint32_t pc, bool nearPag
 }
 
 static bool isMemoryKind(int kind) {
-    return kind == NK_TRANSFER || kind == NK_HALF || kind == NK_BLOCK || kind == NK_BLOCK_PC || kind == NK_SWAP;
+    return kind == NK_TRANSFER || kind == NK_TRANSFER_PC || kind == NK_HALF || kind == NK_BLOCK || kind == NK_BLOCK_PC || kind == NK_SWAP;
 }
 
 static const char *kindName(int kind) {
@@ -655,6 +659,8 @@ static const char *kindName(int kind) {
         case NK_COPROCESSOR: return "coprocessor";
         case NK_MSR: return "msr";
         case NK_BLX: return "blx";
+        case NK_TRANSFER_PC: return "transfer pc";
+        case NK_ALU_PC: return "alu pc";
         default: return "thumb branch";
     }
 }

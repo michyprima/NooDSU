@@ -681,7 +681,9 @@ enum NativeKind {
     NK_MISC, // CLZ and MRS
     NK_COPROCESSOR, // MCR that only changes the caches, and MRC of the DTCM base
     NK_MSR, // MSR to the SPSR
-    NK_BLX // BLX label
+    NK_BLX, // BLX label
+    NK_TRANSFER_PC, // LDR into the program counter
+    NK_ALU_PC // Data processing without flags into the program counter
 };
 
 static bool cacheControl(uint32_t op) {
@@ -692,7 +694,7 @@ static bool cacheControl(uint32_t op) {
 
 static int nativeKind(uint32_t op, bool arm7) {
     // Check which kind of native code an ARM instruction can be generated as, or NK_NONE
-    // Anything that writes the program counter, other than branches, is left to the interpreter
+    // Anything else that writes the program counter or changes the CPU's mode is left to the interpreter
     // The ARM7 leaves BLX to the interpreter, which ignores it, and stores with writeback of a listed base, which
     // store the new base unless it's first
     if ((op >> 28) == 0xF) return (!arm7 && (op & 0x0E000000) == 0x0A000000) ? NK_BLX : NK_NONE;
@@ -717,7 +719,8 @@ static int nativeKind(uint32_t op, bool arm7) {
             if ((op & 0x0E000090) == 0x00000010) { // Data processing shifted by a register
                 uint32_t opc = (op >> 21) & 0xF;
                 if (!(op & BIT(20)) && opc >= 8 && opc <= 11) return NK_NONE; // Compares and tests only set flags
-                return (rd == 15 || rn == 15 || rm == 15 || rs == 15) ? NK_NONE : NK_ALU;
+                if (rn == 15 || rm == 15 || rs == 15) return NK_NONE;
+                return (rd == 15) ? ((op & BIT(20)) ? NK_NONE : NK_ALU_PC) : NK_ALU;
             }
             return NK_NONE; // Other misc
         }
@@ -727,7 +730,7 @@ static int nativeKind(uint32_t op, bool arm7) {
         if (((op & 0x0FB000F0) == 0x01200000 || (op & 0x0FB00000) == 0x03200000) && (op & 0x00090000)) // MSR
             return (op & BIT(22)) ? NK_MSR : NK_NONE;
         if (opc >= 8 && opc <= 11) return s ? NK_ALU : NK_NONE; // Compares and tests, other encodings are misc
-        return (rd == 15) ? NK_NONE : NK_ALU;
+        return (rd == 15) ? (s ? NK_NONE : NK_ALU_PC) : NK_ALU;
     }
     if ((op & 0x0E000000) == 0x0A000000) // B/BL
         return NK_BRANCH;
@@ -740,7 +743,8 @@ static int nativeKind(uint32_t op, bool arm7) {
         if ((op & BIT(25)) && (op & BIT(4))) return NK_NONE; // Undefined
         bool writeback = !(op & BIT(24)) || (op & BIT(21));
         if (!(op & BIT(24)) && (op & BIT(21))) return NK_NONE; // LDRT/STRT
-        if (rd == 15 || (writeback && rn == 15)) return NK_NONE;
+        if (writeback && rn == 15) return NK_NONE;
+        if (rd == 15) return ((op & 0x00500000) == 0x00100000) ? NK_TRANSFER_PC : NK_NONE; // Only words loaded into it
         return NK_TRANSFER;
     }
     if ((op & 0x0E000000) == 0x08000000) { // LDM/STM
@@ -761,7 +765,7 @@ static uint32_t blxTarget(uint32_t op, uint32_t pc) {
 
 static bool nativeJumps(int kind) {
     // Check if a native instruction kind can change the program counter
-    return kind == NK_BRANCH || kind == NK_BRANCH_REG || kind == NK_BLOCK_PC || kind == NK_BLX;
+    return kind == NK_BRANCH || kind == NK_BRANCH_REG || kind == NK_BLOCK_PC || kind == NK_BLX || kind == NK_TRANSFER_PC || kind == NK_ALU_PC;
 }
 
 static uint32_t thumbToArm(uint32_t op) {
@@ -878,9 +882,9 @@ bool Jit::emitNative(PpcEmitter &e, uint32_t op, uint32_t pc) {
     }
 
     switch (kind) {
-        case NK_ALU: emitAlu(e, op, pc); break;
+        case NK_ALU: case NK_ALU_PC: emitAlu(e, op, pc); break;
         case NK_BRANCH: emitBranch(e, op, pc); break;
-        case NK_TRANSFER: emitTransfer(e, op, pc); break;
+        case NK_TRANSFER: case NK_TRANSFER_PC: emitTransfer(e, op, pc); break;
         case NK_BRANCH_REG: emitBranchReg(e, op, pc); break;
         case NK_HALF: emitHalf(e, op, pc); break;
         case NK_BLOCK: case NK_BLOCK_PC: emitBlock(e, op, pc); break;
@@ -910,9 +914,13 @@ void Jit::emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc) {
     bool s = op & BIT(20);
     bool logical = (opc <= 1) || (opc >= 8 && opc <= 9) || opc >= 12;
 
+    // Writing the program counter is a jump, without switching to or from THUMB, and takes 2 more cycles
+    uint32_t rd = (op >> 12) & 0xF;
+    bool jump = rd == 15 && !s;
+    auto store = [&](int rs) { jump ? emitJump(e, rs, false) : writeReg(e, rs, rd); };
+
     // Without flags, moves and additions or subtractions of small values don't need their operands in r3 and r4
     if (!s) {
-        uint32_t rd = (op >> 12) & 0xF;
         if (op & BIT(25)) {
             uint32_t shift = (op >> 7) & 0x1E;
             uint32_t value = shift ? (((op & 0xFF) << (32 - shift)) | ((op & 0xFF) >> shift)) : (op & 0xFF);
@@ -924,15 +932,15 @@ void Jit::emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc) {
                     readReg(e, 3, (op >> 16) & 0xF, pc);
                     e.addi(5, 3, (opc == 0x4) ? value : -int32_t(value));
                 }
-                writeReg(e, 5, rd);
-                e.li(3, 1);
+                store(5);
+                e.li(3, jump ? 3 : 1);
                 return;
             }
         }
         else if (opc == 0xD && !(op & BIT(4))) {
             emitShift(e, op, pc, false);
-            writeReg(e, 4, rd);
-            e.li(3, 1);
+            store(4);
+            e.li(3, jump ? 3 : 1);
             return;
         }
     }
@@ -1005,10 +1013,10 @@ void Jit::emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc) {
 
     // Store the result unless it's a compare or test
     if (opc < 8 || opc > 11)
-        writeReg(e, 5, (op >> 12) & 0xF);
+        store(5);
 
     // Shifting by a register takes another cycle, except in THUMB
-    e.li(3, (!thumbCode && !(op & BIT(25)) && (op & BIT(4))) ? 2 : 1);
+    e.li(3, ((!thumbCode && !(op & BIT(25)) && (op & BIT(4))) ? 2 : 1) + (jump ? 2 : 0));
 }
 
 void Jit::emitBranch(PpcEmitter &e, uint32_t op, uint32_t pc) {
@@ -1116,6 +1124,11 @@ void Jit::emitTransfer(PpcEmitter &e, uint32_t op, uint32_t pc) {
     if (!load) readReg(e, 8, rd, pc);
     if (writeback) writeReg(e, 9, rn);
     e.call(codeMemory[(load ? 0 : 3) + byte]);
+    if (load && rd == 15) {
+        emitJump(e, 8, !arm7);
+        e.li(3, 5);
+        return;
+    }
     if (load) writeReg(e, 8, rd);
     e.li(3, arm7 ? (load ? 3 : 2) : 1);
 }
