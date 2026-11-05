@@ -537,6 +537,17 @@ void Jit::emitStubs(PpcEmitter &e) {
     e.rlwinm(6, 6, 29, 3, 31);
     e.blr();
 
+    // Set the sticky Q flag if the sum in r5 of r6 and r7 overflowed
+    codeOverflowQ = e.here();
+    e.xor_(8, 5, 6);
+    e.xor_(9, 5, 7);
+    e.and_(8, 8, 9);
+    e.rlwinm(8, 8, 28, 4, 4);
+    e.lwz(9, offCpsr, R_ARM);
+    e.or_(9, 9, 8);
+    e.stw(9, offCpsr, R_ARM);
+    e.blr();
+
     // Memory accesses at the address in r5, with the value in r8; mapped memory is accessed directly, and
     // anything else goes through the memory handlers, which also catch writes to compiled code
     // Types are word, byte and halfword loads, then the same for stores
@@ -683,7 +694,8 @@ enum NativeKind {
     NK_MSR, // MSR to the SPSR
     NK_BLX, // BLX label
     NK_TRANSFER_PC, // LDR into the program counter
-    NK_ALU_PC // Data processing without flags into the program counter
+    NK_ALU_PC, // Data processing without flags into the program counter
+    NK_DSP // The ARM9's halfword multiplies, QADD and QSUB
 };
 
 static bool cacheControl(uint32_t op) {
@@ -712,6 +724,8 @@ static int nativeKind(uint32_t op, bool arm7) {
                 return NK_HALF;
             }
             uint32_t rs = (op >> 8) & 0xF;
+            if ((op & 0x0FD000F0) == 0x01000050) // QADD/QSUB
+                return (arm7 || rd == 15 || rn == 15 || rm == 15) ? NK_NONE : NK_DSP;
             if ((op & 0x0FC000F0) == 0x00000090 || (op & 0x0F8000F0) == 0x00800090)
                 return (rd == 15 || rn == 15 || rm == 15 || rs == 15) ? NK_NONE : NK_MULTIPLY;
             if (!arm7 && (op & 0x0FFF0FF0) == 0x016F0F10) // CLZ
@@ -726,6 +740,10 @@ static int nativeKind(uint32_t op, bool arm7) {
         }
         uint32_t opc = (op >> 21) & 0xF;
         bool s = op & BIT(20);
+        if ((op & 0x0F900090) == 0x01000080) { // Halfword multiplies
+            uint32_t rs = (op >> 8) & 0xF;
+            return (arm7 || rd == 15 || rn == 15 || rm == 15 || rs == 15) ? NK_NONE : NK_DSP;
+        }
         if ((op & 0x0FBF0FFF) == 0x010F0000) return (rd == 15) ? NK_NONE : NK_MISC; // MRS
         if (((op & 0x0FB000F0) == 0x01200000 || (op & 0x0FB00000) == 0x03200000) && (op & 0x00090000)) // MSR
             return (op & BIT(22)) ? NK_MSR : NK_NONE;
@@ -894,6 +912,7 @@ bool Jit::emitNative(PpcEmitter &e, uint32_t op, uint32_t pc) {
         case NK_COPROCESSOR: emitCoprocessor(e, op); break;
         case NK_MSR: emitMsr(e, op, pc); break;
         case NK_BLX: emitBlx(e, op, pc); break;
+        case NK_DSP: emitDsp(e, op, pc); break;
     }
 
     if (skip) {
@@ -1365,6 +1384,77 @@ void Jit::emitMultiply(PpcEmitter &e, uint32_t op, uint32_t pc) {
     else {
         e.li(3, accumulate ? 7 : 6);
     }
+}
+
+void Jit::emitDsp(PpcEmitter &e, uint32_t op, uint32_t pc) {
+    // The ARM9's halfword multiplies, then saturated additions and subtractions, which set the sticky Q flag on overflow
+    uint32_t rd = (op >> 16) & 0xF, rn = (op >> 12) & 0xF;
+    if (op & BIT(4)) {
+        bool sub = op & BIT(21);
+        readReg(e, 3, op & 0xF, pc);
+        readReg(e, 4, rd, pc);
+        if (sub) {
+            e.subf(5, 4, 3);
+            e.xor_(6, 3, 4);
+            e.xor_(7, 3, 5);
+        }
+        else {
+            e.add(5, 3, 4);
+            e.xor_(6, 5, 3);
+            e.xor_(7, 5, 4);
+        }
+        e.and_(6, 6, 7);
+        e.cmpwi(6, 0);
+        uint32_t *fits = e.here();
+        e.bge(nullptr);
+        e.srawi(5, 3, 31);
+        e.loadConst(6, 0x7FFFFFFF);
+        e.xor_(5, 5, 6);
+        e.lwz(6, offCpsr, R_ARM);
+        e.oris(6, 6, BIT(27) >> 16);
+        e.stw(6, offCpsr, R_ARM);
+        e.patchBc(fits);
+        writeReg(e, 5, rn);
+        e.li(3, 1);
+        return;
+    }
+
+    // Get the halfwords, which bits 5 and 6 choose; words multiply with a whole first operand and don't use bit 5 for that
+    uint32_t type = (op >> 21) & 0x3; // 0 = SMLA, 1 = SMLAW/SMULW, 2 = SMLAL, 3 = SMUL
+    readReg(e, 3, op & 0xF, pc);
+    readReg(e, 4, (op >> 8) & 0xF, pc);
+    if (type != 1) (op & BIT(5)) ? e.srawi(3, 3, 16) : e.extsh(3, 3);
+    (op & BIT(6)) ? e.srawi(4, 4, 16) : e.extsh(4, 4);
+    e.mullw(5, 3, 4);
+
+    // Long multiplies add to 64 bits, and take another cycle
+    if (type == 2) {
+        e.srawi(6, 5, 31);
+        readReg(e, 7, rn, pc);
+        readReg(e, 8, rd, pc);
+        e.addc(5, 5, 7);
+        e.adde(6, 6, 8);
+        writeReg(e, 5, rn);
+        writeReg(e, 6, rd);
+        e.li(3, 2);
+        return;
+    }
+
+    // Word multiplies keep the middle 32 of the 48 bits
+    bool accumulate = (type == 0) || (type == 1 && !(op & BIT(5)));
+    if (type == 1) {
+        e.mulhw(6, 3, 4);
+        e.rlwinm(5, 5, 16, 16, 31);
+        e.rlwimi(5, 6, 16, 0, 15);
+    }
+    if (accumulate) {
+        readReg(e, 6, rn, pc);
+        e.mr(7, 5);
+        e.add(5, 7, 6);
+        e.call(codeOverflowQ);
+    }
+    writeReg(e, 5, rd);
+    e.li(3, 1);
 }
 
 void Jit::emitSwap(PpcEmitter &e, uint32_t op, uint32_t pc) {

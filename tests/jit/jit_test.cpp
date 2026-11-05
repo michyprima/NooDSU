@@ -36,7 +36,7 @@ bool rigMayJump(uint32_t op, bool thumb);
 bool rigKindJumps(int kind);
 
 enum { NK_NONE, NK_ALU, NK_BRANCH, NK_TRANSFER, NK_BRANCH_REG, NK_HALF, NK_BLOCK, NK_BLOCK_PC, NK_SWAP, NK_MULTIPLY, NK_MISC,
-    NK_COPROCESSOR, NK_MSR, NK_BLX, NK_TRANSFER_PC, NK_ALU_PC, NK_THUMB_BRANCH = 100 };
+    NK_COPROCESSOR, NK_MSR, NK_BLX, NK_TRANSFER_PC, NK_ALU_PC, NK_DSP, NK_THUMB_BRANCH = 100 };
 
 // Addresses in the emulator
 static const uint32_t ARM_STATE = 0x10000, CACHE_FLAG = 0x50000, CACHE = 0x50010, EVENTS = 0x70000, LIMIT = 0x71000,
@@ -661,6 +661,7 @@ static const char *kindName(int kind) {
         case NK_BLX: return "blx";
         case NK_TRANSFER_PC: return "transfer pc";
         case NK_ALU_PC: return "alu pc";
+        case NK_DSP: return "dsp";
         default: return "thumb branch";
     }
 }
@@ -779,6 +780,11 @@ static void suiteArmForms() {
     }
     std::mt19937 fields(777);
     auto r4 = [&]() { return fields() & 0xF; };
+    for (int i = 0; i < 20000; i++) {
+        // Halfword multiplies, QADD and QSUB, whose random values often overflow
+        ops.push_back(0x01000080 | ((fields() & 3) << 21) | ((fields() & 3) << 5) | (r4() << 16) | (r4() << 12) | (r4() << 8) | r4());
+        ops.push_back(0x01000050 | ((fields() & 1) << 21) | (r4() << 16) | (r4() << 12) | r4());
+    }
     for (int i = 0; i < 40000; i++) {
         uint32_t type = fields() % 8; // MUL, MLA, UMULL, UMLAL, SMULL, SMLAL, with and without flags
         static const uint32_t forms[] = { 0x00000090, 0x00200090, 0x00800090, 0x00A00090, 0x00C00090, 0x00E00090 };

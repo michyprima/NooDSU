@@ -185,7 +185,7 @@ private:
     uint32_t pcBehind = 0; // How far the program counter register will be behind at this point in a block being generated
     bool thumbCode = false; // Whether the block being generated is THUMB
     void *codePost[2][2] = {}, *codeSlowPost[2] = {}; // Indexed by impure, then by storing the program counter
-    void *codeCond[14] = {}, *codeFlags[5] = {}, *codeMemory[6] = {}, *codeShift[4] = {}, *codeShiftCarry[4] = {}, *codeMultiplyCycles = nullptr;
+    void *codeCond[14] = {}, *codeFlags[5] = {}, *codeMemory[6] = {}, *codeShift[4] = {}, *codeShiftCarry[4] = {}, *codeMultiplyCycles = nullptr, *codeOverflowQ = nullptr;
     int offPc = 0, offCpsr = 0, offSpsr = 0, offCycles = 0, offEventCycles = 0, offUsr = 0, offRegs = 0;
     uint32_t codeCore = 0;
     bool codeFailed = false;
@@ -239,6 +239,7 @@ private:
     void emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitSwap(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitMultiply(PpcEmitter &e, uint32_t op, uint32_t pc);
+    void emitDsp(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitMisc(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitCoprocessor(PpcEmitter &e, uint32_t op);
     void emitMsr(PpcEmitter &e, uint32_t op, uint32_t pc);
