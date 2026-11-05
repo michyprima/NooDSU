@@ -19,9 +19,11 @@
 
 #include <cstring>
 #include "../core.h"
+#include "../file_lock.h"
 
 Dldi::~Dldi() {
     // Ensure the SD image is closed
+    std::lock_guard<FileLock> guard(fileLock());
     if (sdImage)
         fclose(sdImage);
 }
@@ -79,6 +81,7 @@ void Dldi::patchRom(uint8_t *rom, uint32_t offset, uint32_t size) {
 
 int Dldi::startup() {
     // Try to open the SD image
+    std::lock_guard<FileLock> guard(fileLock());
     sdImage = fopen(Settings::sdImagePath.c_str(), "rb+");
     return (sdImage ? 1 : 0);
 }
@@ -96,8 +99,11 @@ int Dldi::readSectors(bool arm7, uint32_t sector, uint32_t numSectors, uint32_t 
 
     // Read data from the SD image
     uint8_t *data = new uint8_t[size];
-    fseek(sdImage, offset, SEEK_SET);
-    fread(data, sizeof(uint8_t), size, sdImage);
+    {
+        std::lock_guard<FileLock> guard(fileLock());
+        fseek(sdImage, offset, SEEK_SET);
+        fread(data, sizeof(uint8_t), size, sdImage);
+    }
 
     // Write the data to memory
     for (int i = 0; i < size; i++)
@@ -118,8 +124,11 @@ int Dldi::writeSectors(bool arm7, uint32_t sector, uint32_t numSectors, uint32_t
         data[i] = core->memory.read<uint8_t>(arm7, buf + i);
 
     // Write the data to the SD image
-    fseek(sdImage, offset, SEEK_SET);
-    fwrite(data, sizeof(uint8_t), size, sdImage);
+    {
+        std::lock_guard<FileLock> guard(fileLock());
+        fseek(sdImage, offset, SEEK_SET);
+        fwrite(data, sizeof(uint8_t), size, sdImage);
+    }
     delete[] data;
     return 1;
 }
@@ -132,6 +141,7 @@ int Dldi::clearStatus() {
 int Dldi::shutdown() {
     // Close the SD image
     if (!sdImage) return 0;
+    std::lock_guard<FileLock> guard(fileLock());
     fclose(sdImage);
     sdImage = nullptr;
     return 1;
