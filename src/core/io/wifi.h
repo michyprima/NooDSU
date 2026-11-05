@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
@@ -39,6 +40,9 @@ enum PacketType {
 
 class Wifi {
 public:
+    // Frames the DS has sent to the access point, for showing activity; only the emulator thread changes it
+    std::atomic<uint32_t> activity{0};
+
     Wifi(Core *core);
     ~Wifi();
     void stopNetwork();

@@ -24,6 +24,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 namespace ScreenFrame {
     const int COLOR_COUNT = 8;
@@ -34,8 +35,16 @@ namespace ScreenFrame {
         bool bottom; // Whether this is the bottom screen, which has the buttons beside it instead of the speakers
     };
 
+    // The part of a display around the wireless light as it looks with the light off, so the light can be made to blink
+    // over a frame drawn with it on; it's left empty if the light isn't drawn
+    struct LightPatch {
+        int x = 0, y = 0, width = 0, height = 0;
+        std::vector<uint32_t> pixels;
+    };
+
     // Draw a frame for a display showing one or two screens, with its pixels in the same format as the screen textures
     // The hinge's lights and camera are only drawn if asked for, since the real system only has one hinge to show them on
+    // The wireless light is on if asked for, and then the patch to turn it off is filled in
     void draw(uint32_t *pixels, int width, int height, int color, const Screen *screens, int count, bool lights,
-        const uint8_t *fontBmp, const uint8_t *charWidths);
+        bool wireless, LightPatch *patch, const uint8_t *fontBmp, const uint8_t *charWidths);
 }

@@ -174,6 +174,8 @@ int ConsoleUI::stickPointer = 0;
 float ConsoleUI::pointerX = 128, ConsoleUI::pointerY = 96;
 std::chrono::steady_clock::time_point ConsoleUI::pointerHide;
 void *ConsoleUI::frameTextures[2];
+void *ConsoleUI::lightTexture;
+int ConsoleUI::lightRect[4];
 int ConsoleUI::keyBinds[] = {};
 
 const uint32_t ConsoleUI::themeColors[] = {
@@ -522,8 +524,10 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
             composeGbaScreen(gbaTexture);
 
         // Draw the screen frames first, so the screens go over them
-        if (frameTextures[0] || frameTextures[1])
+        if (frameTextures[0] || frameTextures[1]) {
             drawFrames(frameTextures[0], frameTextures[1]);
+            drawWirelessLight();
+        }
 
         if (gbaMode) {
             // Draw the GBA screen, or the one built from it at twice the size, with the last one for ghosting
@@ -881,6 +885,24 @@ bool ConsoleUI::updatePointer(uint32_t held, ScreenLayout *gamepad) {
     return touching;
 }
 
+void ConsoleUI::drawWirelessLight() {
+    // Blink the TV frame's wireless light while the DS is sending over Wi-Fi, about 4 times a second like the real
+    // light, by covering it with its unlit surroundings half the time; it's lit in the frame itself otherwise
+    if (!lightTexture || !core) return;
+    static uint32_t lastActivity = 0;
+    static std::chrono::steady_clock::time_point lastActive;
+    auto now = std::chrono::steady_clock::now();
+    uint32_t activity = core->wifi.activity.load(std::memory_order_relaxed);
+    if (activity != lastActivity) {
+        lastActivity = activity;
+        lastActive = now;
+    }
+    if (now - lastActive > std::chrono::milliseconds(250)) return;
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    if ((ms / 125) & 1)
+        drawOverlay(lightTexture, lightRect[0], lightRect[1], lightRect[2], lightRect[3], false);
+}
+
 void ConsoleUI::updateFrames(ScreenLayout *gamepad) {
     // Work out what each display shows, which is one screen each when split or with the GBA screen, or both otherwise
     // A split display shows the same half of the system as its screen, and GBA mode splits them like the top and bottom
@@ -895,12 +917,13 @@ void ConsoleUI::updateFrames(ScreenLayout *gamepad) {
     }
 
     // Only draw them again if something changed, since this also runs for changes that don't affect them
-    static float last[1 + 2 * 2 * 5];
-    float next[1 + 2 * 2 * 5] = { float(frameColor) };
+    // That includes Wi-Fi being turned on or off, which lights the wireless light
+    static float last[2 + 2 * 2 * 5];
+    float next[2 + 2 * 2 * 5] = { float(frameColor), float(Settings::wifi) };
     for (int i = 0; i < 4; i++) {
         const ScreenFrame::Screen &screen = screens[i / 2][i & 1];
         const float values[] = { screen.x, screen.y, screen.width, screen.height, float(screen.bottom + count * 2) };
-        memcpy(&next[1 + i * 5], values, sizeof(values));
+        memcpy(&next[2 + i * 5], values, sizeof(values));
     }
     if (!memcmp(last, next, sizeof(next))) return;
     memcpy(last, next, sizeof(next));
@@ -909,6 +932,8 @@ void ConsoleUI::updateFrames(ScreenLayout *gamepad) {
         releaseTexture(frameTextures[i]);
         frameTextures[i] = nullptr;
     }
+    releaseTexture(lightTexture);
+    lightTexture = nullptr;
     if (!frameColor) return;
 
     // Draw each display's frame in memory, leaving black bars if there isn't enough for it
@@ -919,10 +944,20 @@ void ConsoleUI::updateFrames(ScreenLayout *gamepad) {
         int width = (i == 0) ? uiWidth : 854, height = (i == 0) ? uiHeight : 480;
         uint32_t *pixels = new (std::nothrow) uint32_t[width * height];
         if (!pixels) continue;
-        ScreenFrame::draw(pixels, width, height, frameColor - 1, screens[i], count, i == 0,
+        ScreenFrame::LightPatch patch;
+        ScreenFrame::draw(pixels, width, height, frameColor - 1, screens[i], count, i == 0, Settings::wifi, &patch,
             &_binary_src_ui_console_images_font_bmp_start, charWidths);
         frameTextures[i] = createTexture(pixels, width, height);
         delete[] pixels;
+
+        // Keep the wireless light's surroundings with it off, for blinking it
+        if (i == 0 && patch.width) {
+            lightTexture = createTexture(patch.pixels.data(), patch.width, patch.height);
+            lightRect[0] = patch.x;
+            lightRect[1] = patch.y;
+            lightRect[2] = patch.width;
+            lightRect[3] = patch.height;
+        }
     }
 #ifdef FRAME_ART_TEST
     // Log how long that took

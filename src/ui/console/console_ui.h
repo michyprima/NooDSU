@@ -137,6 +137,7 @@ public:
     static std::u16string getMiiName(); // Empty if it can't be read
     static bool editText(std::u16string &text, int maxLength, int language, bool numpad = false); // False if canceled
 
+    static void drawWirelessLight();
     static void drawRectangle(float x, float y, float w, float h, uint32_t color = 0xFFFFFFFF);
     static void drawString(std::string string, float x, float y,
         float size, uint32_t color = 0xFFFFFFFF, bool alignRight = false);
@@ -172,6 +173,8 @@ private:
     static std::string basePath, curPath, defaultFolder;
     static bool changed;
     static void *frameTextures[2]; // The screen frame for the TV and the gamepad
+    static void *lightTexture; // The TV frame around its wireless light with the light off, drawn over it to blink
+    static int lightRect[4];
     static void updateFrames(ScreenLayout *gamepad);
 
     // The right stick's pointer, in touch screen pixels, and when it hides

@@ -496,8 +496,10 @@ start:
         uint8_t mac[6];
         for (int i = 0; i < 6; i++)
             mac[i] = wMacaddr[i >> 1] >> ((i & 1) * 8);
-        if (length > 4 && length - 4u <= frame.size())
+        if (length > 4 && length - 4u <= frame.size()) {
             ap->transmit(frame.data(), length - 4, mac);
+            activity.store(activity.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+        }
     }
 
     // Add the frame to the queues of connected cores
