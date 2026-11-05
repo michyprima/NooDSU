@@ -149,7 +149,7 @@ bool Settings::load(std::string path) {
 }
 
 bool Settings::save() {
-    std::lock_guard<std::recursive_mutex> guard(fileLock());
+    std::lock_guard<FileLock> guard(fileLock());
     // Attempt to open the settings file
     FILE *file = fopen((basePath + "/noodsu.ini").c_str(), "w");
     if (!file) return false;

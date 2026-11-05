@@ -208,7 +208,7 @@ void Spi::loadWfcSettings() {
     // Load the access point settings games saved, which are kept apart so a firmware dump is never changed
     size_t offset = apOffset();
     if (!offset) return;
-    std::lock_guard<std::recursive_mutex> guard(fileLock());
+    std::lock_guard<FileLock> guard(fileLock());
     if (FILE *file = fopen((Settings::basePath + "/bios/wfcsettings.bin").c_str(), "rb")) {
         uint8_t data[0x300];
         if (fread(data, 1, sizeof(data), file) == sizeof(data))
@@ -229,7 +229,7 @@ void Spi::writeWfcSettings() {
     mutex.unlock();
     if (!dirty) return;
 
-    std::lock_guard<std::recursive_mutex> guard(fileLock());
+    std::lock_guard<FileLock> guard(fileLock());
     if (FILE *file = fopen((Settings::basePath + "/bios/wfcsettings.bin").c_str(), "wb")) {
         fwrite(data, 1, sizeof(data), file);
         fclose(file);

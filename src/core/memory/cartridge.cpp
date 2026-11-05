@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <thread>
 #include <new>
 
 #include "../core.h"
@@ -205,8 +206,13 @@ void Cartridge::loadRomSection(size_t offset, size_t size) {
 }
 
 void Cartridge::readRomFile(FILE *file, uint8_t *data, size_t offset, size_t size) {
+    // Let other file access go first, since this is called block after block while a ROM loads, and taking the lock
+    // right back each time would keep them waiting until it's all loaded
+    while (fileLock().contended())
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
     // Read data from the ROM file, with 0xFFs past the end
-    std::lock_guard<std::recursive_mutex> guard(fileLock());
+    std::lock_guard<FileLock> guard(fileLock());
     fseek(file, offset, SEEK_SET);
     size_t count = fread(data, sizeof(uint8_t), size, file);
     memset(&data[count], 0xFF, size - count);
@@ -367,7 +373,7 @@ bool Cartridge::takeKeptRom() {
     kept.data = nullptr;
     if (kept.dldiPatched) core->dldi.setPatched();
     {
-        std::lock_guard<std::recursive_mutex> guard(fileLock());
+        std::lock_guard<FileLock> guard(fileLock());
         fclose(romFile);
     }
     romFile = nullptr;
@@ -485,7 +491,7 @@ void Cartridge::runFullLoad() {
 void Cartridge::finishRomLoad() {
     HB_SET(HB_ROM_LOAD_STAGE, 5);
     {
-        std::lock_guard<std::recursive_mutex> guard(fileLock());
+        std::lock_guard<FileLock> guard(fileLock());
         fclose(loadFile);
     }
     loadFile = nullptr;
@@ -506,7 +512,7 @@ void Cartridge::writeSave() {
     // Update the save file if the data changed
     mutex.lock();
     if (saveDirty) {
-        std::lock_guard<std::recursive_mutex> guard(fileLock());
+        std::lock_guard<FileLock> guard(fileLock());
         if (FILE *saveFile = (saveFd == -1) ? fopen(savePath.c_str(), "wb") : fdopen(dup(saveFd), "wb")) {
             // Overwrite and resize without closing the file descriptor
             if (saveFd != -1) {

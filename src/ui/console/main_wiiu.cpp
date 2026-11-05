@@ -952,7 +952,7 @@ bool ConsoleUI::editText(std::u16string &text, int maxLength, int language, bool
     }
     // Hold the file lock while the keyboard is open, since it reads its resources through its own file client and
     // file access from several threads at once can stall the console
-    std::lock_guard<std::recursive_mutex> guard(fileLock());
+    std::lock_guard<FileLock> guard(fileLock());
     FSInit();
     FSAddClient(client, FS_ERROR_FLAG_NONE);
     nn::swkbd::CreateArg create;
@@ -1318,7 +1318,7 @@ int logHeartbeat(int argc, void *argv) {
         // from closing
         if (releaseRequested.load() || uiParked || uiDone) continue;
         volatile uint32_t *v = Heartbeat::values;
-        std::lock_guard<std::recursive_mutex> guard(fileLock());
+        std::lock_guard<FileLock> guard(fileLock());
         if (!(file = fopen(path.c_str(), "a"))) continue;
         fprintf(file, "%u: frames %u task %u wait %u | jit %08X in %u entries %u | 2D %u 3D %u | ui %u stage %u | audio %u"
             " | gpu %u stage %u 3dcnt %04X\n", tick, v[HB_EMU_FRAMES], v[HB_EMU_TASK], v[HB_EMU_WAIT], v[HB_JIT_BLOCK],
@@ -1471,7 +1471,7 @@ int logFrames(int argc, void *argv) {
 #ifdef AUDIO_CAPTURE
         if (FrameLog::shouldDeferWrite()) continue;
 #endif
-        std::lock_guard<std::recursive_mutex> guard(fileLock());
+        std::lock_guard<FileLock> guard(fileLock());
         FrameLog::write(path.c_str());
     }
     return 0;

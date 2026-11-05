@@ -48,7 +48,7 @@ FILE *SaveStates::openFile(const char *mode) {
 }
 
 StateResult SaveStates::checkState() {
-    std::lock_guard<std::recursive_mutex> guard(fileLock());
+    std::lock_guard<FileLock> guard(fileLock());
     // Try to open the state file, if it exists
     FILE *file = openFile("rb");
     if (!file) return STATE_FILE_FAIL;
@@ -76,7 +76,7 @@ StateResult SaveStates::checkState() {
 }
 
 bool SaveStates::saveState() {
-    std::lock_guard<std::recursive_mutex> guard(fileLock());
+    std::lock_guard<FileLock> guard(fileLock());
     // Open the state file and write the header
     FILE *file = openFile("wb");
     if (!file) return false;
@@ -121,7 +121,7 @@ bool SaveStates::saveState() {
 }
 
 bool SaveStates::loadState() {
-    std::lock_guard<std::recursive_mutex> guard(fileLock());
+    std::lock_guard<FileLock> guard(fileLock());
     // Open the state file and read past the header
     FILE *file = openFile("rb");
     if (!file) return false;
