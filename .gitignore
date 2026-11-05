@@ -14,3 +14,4 @@ gba_bios.bin
 sd.img
 /tests/hardware/build/
 /tests/rom/build/
+/tests/gpu3d/build/

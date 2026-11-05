@@ -14,7 +14,10 @@ extern char __end__[];
 
 // The memory the C library can use is what's left before the ARM7's code
 #define HEAP_END ((char*)0x02180000)
+#ifndef FILE_NAME
 #define FILE_NAME "fat:/noodsu-results.bin"
+#define FILE_LABEL "NOODSU-RESULTS.BIN"
+#endif
 #define FILE_LIMIT 0x800000
 
 static FILE *file;
@@ -162,7 +165,7 @@ int saveStart(const char **name) {
     fileHash = 2166136261u;
     fileBytes = fileFill = fileFailed = 0;
     if (openFile()) {
-        *name = "NOODSU-RESULTS.BIN";
+        *name = FILE_LABEL;
         return 1;
     }
     if (!findChip()) return 0;
