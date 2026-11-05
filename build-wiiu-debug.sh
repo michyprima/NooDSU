@@ -11,6 +11,7 @@
 #   threadprobe  Every thread's state on request over UDP, answered from each core, for freezes
 #   profile      Where the emulator thread spends its time, shown on screen
 #   jittest      Runs the JIT against the interpreter before starting a game
+#   romtest      Runs tests/rom's ROM with the interpreter and the JIT, timing them, with the results in romtest.txt
 #   jitsplit     Heartbeat, plus how long each step of compiling JIT blocks takes
 #   drcdebug     What's known about the GamePad's display on the TV, with combos to try getting it back
 #   frametime    Heartbeat, plus where the emulator thread spends each frame, listing every slow frame, and samples
@@ -26,7 +27,7 @@ cd "$(dirname "$0")"
 export DEVKITPRO=${DEVKITPRO:-/opt/devkitpro} DEVKITPPC=${DEVKITPPC:-/opt/devkitpro/devkitPPC}
 BASE='-g -Ofast -fno-allow-store-data-races -flto -ffunction-sections -DESPRESSO -mcpu=750 -meabi -mhard-float $(INCLUDE) -D__WIIU__ -D__WUT__ -DENDIAN_BIG -DNO_FDOPEN -DLOG_LEVEL=0'
 
-[ $# -gt 0 ] || { sed -n '2,23p' "$0"; exit 1; }
+[ $# -gt 0 ] || { sed -n '2,24p' "$0"; exit 1; }
 for variant in "$@"; do
     case $variant in
         heartbeat) flags='-DHEARTBEAT'; name=noodsu-hb; title='NooDS U Heartbeat' ;;
@@ -38,6 +39,7 @@ for variant in "$@"; do
         threadprobe) flags='-DTHREAD_PROBE'; name=noodsu-probe; title='NooDS U Probe' ;;
         profile) flags='-DPROFILE_EMU'; name=noodsu-profile; title='NooDS U Profile' ;;
         jittest) flags='-DJIT_SELFTEST'; name=noodsu-jittest; title='NooDS U JIT Test' ;;
+        romtest) flags='-DROM_TEST'; name=noodsu-romtest; title='NooDS U ROM Test' ;;
         jitsplit) flags='-DHEARTBEAT -DJIT_SPLIT'; name=noodsu-jitsplit; title='NooDS U JIT Split' ;;
         drcdebug) flags='-DDRC_DEBUG'; name=noodsu-drcdebug; title='NooDS U GamePad Debug' ;;
         frametime) flags='-DHEARTBEAT -DPROFILE_EMU'; name=noodsu-frametime; title='NooDS U Frame Times' ;;

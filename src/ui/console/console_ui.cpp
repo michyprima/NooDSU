@@ -43,6 +43,9 @@ static OSThread *emuThread = nullptr;
 #include "../../core/worker_thread.h"
 #include "../../core/emu_profile.h"
 #include "../../core/frame_capture.h"
+#ifdef ROM_TEST
+#include "../../core/rom_test.h"
+#endif
 #ifdef STATE_DEBUG
 #include "gpu3d_wiiu.h"
 #endif
@@ -845,6 +848,12 @@ int ConsoleUI::setPath(std::string path) {
 #ifdef JIT_SELFTEST
         // Test the JIT against the interpreter instead of playing
         jitSelfTest();
+        ndsPath = "";
+        return 1;
+#endif
+#ifdef ROM_TEST
+        // Run tests/rom's ROM instead of playing
+        romTest();
         ndsPath = "";
         return 1;
 #endif
@@ -1879,6 +1888,124 @@ void ConsoleUI::jitSelfTest() {
     delete cores[0];
     restore();
     message("JIT Self-Test (" + mode + ")", result + times);
+}
+#endif
+
+#ifdef ROM_TEST
+void ConsoleUI::romTest() {
+    // Run the ROM with the interpreter, then the JIT with each kind of CPU timing, with nothing else taking time
+    // The ROM writes its results and times to one file, and what differs is found from that afterwards
+    // The user's settings are restored afterwards, so they aren't saved with the test values
+    int saved[] = { Settings::threaded2D, Settings::threaded3D, Settings::emulateAudio, Settings::frameskip, Settings::jit,
+        Settings::hardware3D, Settings::fastTiming, Settings::directBoot, Settings::fpsLimiter };
+    Settings::threaded2D = 0;
+    Settings::threaded3D = 0;
+    Settings::hardware3D = 0;
+    Settings::emulateAudio = 0;
+    Settings::frameskip = 5;
+    Settings::directBoot = 1;
+    Settings::fpsLimiter = 0;
+    RomTest::path = Settings::basePath + "/romtest.txt";
+    remove(RomTest::path.c_str());
+
+    struct Run { const char *name; int jit, fast; } runs[] = { { "interpreter", 0, 0 }, { "jit fast", 1, 1 }, { "jit", 1, 0 } };
+    std::string result;
+    for (Run &run: runs) {
+        Settings::jit = run.jit;
+        Settings::fastTiming = run.fast;
+        if (FILE *file = fopen(RomTest::path.c_str(), "a")) {
+            fprintf(file, "RUN %s\n", run.name);
+            fclose(file);
+        }
+        Core *core = nullptr;
+        try {
+            core = new Core(ndsPath);
+        }
+        catch (CoreError e) {
+            result = "Couldn't load the ROM.";
+            break;
+        }
+        RomTest::done = false;
+        RomTest::progress = 0;
+        std::atomic<bool> stop(false), finished(false);
+        std::string mode = run.jit ? (core->jit.isNative() ? "native code" : "portable executor") : "interpreter";
+        std::function<void()> work = [&]() {
+            while (!RomTest::done && !stop.load())
+                core->runCore();
+            finished.store(true);
+        };
+        WorkerThread::Entry entry = [](int argc, void *argv) -> int {
+            (*(std::function<void()>*)argv)();
+            return 0;
+        };
+        OSThread *thread = WorkerThread::createThread(entry, &work, 0x100000,
+            OSGetThreadPriority(OSGetCurrentThread()), OS_THREAD_ATTRIB_AFFINITY_CPU1);
+
+        // Show progress, and stop if B is pressed or nothing moves for a long time, which would mean a hang
+        auto moved = std::chrono::steady_clock::now();
+        uint32_t last = 0;
+        bool hung = false;
+        while (!finished.load()) {
+            if (getInputPress() & defaultKeys[INPUT_B])
+                stop.store(true);
+            if (RomTest::progress != last) {
+                last = RomTest::progress;
+                moved = std::chrono::steady_clock::now();
+            }
+            else if (std::chrono::steady_clock::now() - moved > std::chrono::seconds(60)) {
+                hung = true;
+                stop.store(true);
+            }
+            startFrame(palette[0]);
+            drawString("ROM Test: " + std::string(run.name) + " (" + mode + ")", SCALE(72), SCALE(30), SCALE(42), palette[1]);
+            drawString("Case " + std::to_string(last), SCALE(90), SCALE(124), SCALE(38), palette[1]);
+            drawString("Press B to stop", SCALE(90), SCALE(238), SCALE(38), palette[1]);
+            endFrame();
+        }
+        OSJoinThread(thread, nullptr);
+        bool stopped = !RomTest::done;
+        delete core;
+        if (stopped) {
+            result = hung ? (std::string("Stuck at case ") + std::to_string(last) + " in " + run.name) : "Stopped early";
+            if (FILE *file = fopen(RomTest::path.c_str(), "a")) {
+                fprintf(file, "STOPPED %s\n", result.c_str());
+                fclose(file);
+            }
+            break;
+        }
+    }
+
+    Settings::threaded2D = saved[0];
+    Settings::threaded3D = saved[1];
+    Settings::emulateAudio = saved[2];
+    Settings::frameskip = saved[3];
+    Settings::jit = saved[4];
+    Settings::hardware3D = saved[5];
+    Settings::fastTiming = saved[6];
+    Settings::directBoot = saved[7];
+    Settings::fpsLimiter = saved[8];
+
+    // Compare what each run's cases left against the interpreter's, in the order they ran
+    if (result == "") {
+        std::vector<std::string> lines[3];
+        char line[256];
+        int run = -1, total = 0, differ[3] = {};
+        if (FILE *file = fopen(RomTest::path.c_str(), "r")) {
+            while (fgets(line, sizeof(line), file)) {
+                if (!strncmp(line, "RUN ", 4)) run++;
+                else if (line[0] == 'C' && run >= 0 && run < 3) lines[run].push_back(line);
+            }
+            fclose(file);
+        }
+        total = lines[0].size();
+        for (int i = 1; i < 3; i++) {
+            for (size_t j = 0; j < lines[0].size(); j++)
+                if (j >= lines[i].size() || lines[i][j] != lines[0][j]) differ[i]++;
+        }
+        result = std::to_string(total) + " cases\nFast timing JIT: " + std::to_string(differ[1]) + " differ\nJIT: " +
+            std::to_string(differ[2]) + " differ\n\nResults and times are in romtest.txt";
+    }
+    message("ROM Test", result);
 }
 #endif
 

@@ -21,6 +21,24 @@
 #include <cstring>
 #include "../core.h"
 #include "../emu_profile.h"
+#ifdef ROM_TEST
+#include "../rom_test.h"
+
+void RomTest::write(Memory *memory, uint32_t address, uint32_t value) {
+    switch (address & 0xFFF) {
+        case 0x008: text = value; break;
+        case 0x00C: // Save this much text, from either CPU's memory; both can read main RAM
+            if (FILE *file = fopen(path.c_str(), "a")) {
+                for (uint32_t i = 0; i < value; i++)
+                    fputc(memory->read<uint8_t>(false, text + i), file);
+                fclose(file);
+            }
+            break;
+        case 0x010: progress = value; break;
+        case 0x014: done = true; break;
+    }
+}
+#endif
 
 // Defines an 8-bit register in an I/O switch statement
 #define DEF_IO08(addr, func) \
@@ -800,6 +818,9 @@ template <typename T> T Memory::readFallback(bool arm7, uint32_t address) {
                 return core->cartridgeNds.readRomDataIn(0);
             if (sizeof(T) == 4 && address == 0x40001A4)
                 return core->cartridgeNds.readRomCtrl(0);
+#ifdef ROM_TEST
+            if ((address & 0xFFFFF000) == 0x4FFF000) return RomTest::read(address);
+#endif
             return ioRead9<T>(address);
 
         case 0x5000000: // Palettes
@@ -867,6 +888,9 @@ template <typename T> T Memory::readFallback(bool arm7, uint32_t address) {
     else { // ARM7
         switch (address & 0xFF000000) {
         case 0x4000000: // I/O registers
+#ifdef ROM_TEST
+            if ((address & 0xFFFFF000) == 0x4FFF000) return RomTest::read(address);
+#endif
             return ioRead7<T>(address);
 
         case 0x6000000: { // VRAM
@@ -982,6 +1006,9 @@ template <typename T> void Memory::writeFallback(bool arm7, uint32_t address, T 
             // Send 32-bit GXFIFO writes straight to the 3D engine, since games stream lots of them
             if (sizeof(T) == 4 && (address & ~0x3F) == 0x4000400)
                 return core->gpu3D.writeGxFifo(0xFFFFFFFF, value);
+#ifdef ROM_TEST
+            if ((address & 0xFFFFF000) == 0x4FFF000) return RomTest::write(this, address, value);
+#endif
             ioWrite9<T>(address, value);
             return;
 
@@ -1044,6 +1071,9 @@ template <typename T> void Memory::writeFallback(bool arm7, uint32_t address, T 
     else { // ARM7
         switch (address & 0xFF000000) {
         case 0x4000000: // I/O registers
+#ifdef ROM_TEST
+            if ((address & 0xFFFFF000) == 0x4FFF000) return RomTest::write(this, address, value);
+#endif
             ioWrite7<T>(address, value);
             return;
 

@@ -13,3 +13,4 @@ firmware.bin
 gba_bios.bin
 sd.img
 /tests/hardware/build/
+/tests/rom/build/

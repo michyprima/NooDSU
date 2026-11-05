@@ -178,6 +178,9 @@ private:
 #ifdef JIT_SELFTEST
     static void jitSelfTest();
 #endif
+#ifdef ROM_TEST
+    static void romTest();
+#endif
     static void settingsMenu();
     static void controlsMenu();
     static void aboutMenu();
