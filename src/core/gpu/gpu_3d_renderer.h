@@ -64,6 +64,7 @@ public:
     void drawScanline(int line);
     void finishHardwareFrame();
     uint32_t *getLine(int line);
+    bool hasFrame() { return (hardwareFrame && hardwareBuffer) || framebuffer; }
 
     uint16_t readDisp3DCnt() { return disp3DCnt; }
 

@@ -633,7 +633,11 @@ void Gpu::scanline355() {
                     buffers.hiRes3D = newFramebuffer(256 * 192 * 4);
                     uint32_t *frame = core->gpu3DRenderer.getLine(0);
                     core->gpu3DRenderer.forgetHardwareRows(0, 384);
-                    memcpy(buffers.hiRes3D, frame, 256 * 192 * 4 * sizeof(uint32_t));
+                    // Before anything is drawn there's only a blank line, so the frame is transparent
+                    if (core->gpu3DRenderer.hasFrame())
+                        memcpy(buffers.hiRes3D, frame, 256 * 192 * 4 * sizeof(uint32_t));
+                    else
+                        memset(buffers.hiRes3D, 0, 256 * 192 * 4 * sizeof(uint32_t));
                 }
                 HB_ADD_US(HB_EMU_HIRES_US, hbHiRes);
                 EP_ADD(EP_HIRES, hiRes);
