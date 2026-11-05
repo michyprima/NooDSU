@@ -254,6 +254,7 @@ void Jit::initCodegen() {
     addrMemory = (uint32_t)(uintptr_t)&core->memory;
     addrReadMap = (uint32_t)(uintptr_t)(arm7 ? &core->memory.readMap7[0] : &core->memory.readMap9A[0]);
     addrWriteMap = (uint32_t)(uintptr_t)(arm7 ? &core->memory.writeMap7[0] : &core->memory.writeMap9A[0]);
+    addrDtcmReg = (uint32_t)(uintptr_t)&core->cp15.dtcmReg;
     addrLoad32 = (uint32_t)(uintptr_t)(arm7 ? &jitLoad32<true> : &jitLoad32<false>);
     addrLoad8 = (uint32_t)(uintptr_t)(arm7 ? &jitLoad8<true> : &jitLoad8<false>);
     addrStore32 = (uint32_t)(uintptr_t)(arm7 ? &jitStore32<true> : &jitStore32<false>);
@@ -674,8 +675,15 @@ enum NativeKind {
     NK_BLOCK_PC, // LDM that loads the program counter, like a function return
     NK_SWAP, // SWP/SWPB
     NK_MULTIPLY, // MUL/MLA and long multiplies
-    NK_MISC // CLZ and MRS
+    NK_MISC, // CLZ and MRS
+    NK_COPROCESSOR // MCR that only changes the caches, and MRC of the DTCM base
 };
+
+static bool cacheControl(uint32_t op) {
+    // Check if an MCR is for the cache or write buffer, which aren't emulated, and not one of the writes that halts
+    uint32_t reg = (((op >> 16) & 0xF) << 16) | ((op & 0xF) << 8) | ((op >> 5) & 0x7);
+    return (op & 0x0F100010) == 0x0E000010 && (reg >> 16) == 7 && reg != 0x070004 && reg != 0x070802;
+}
 
 static int nativeKind(uint32_t op, bool arm7) {
     // Check which kind of native code an ARM instruction can be generated as, or NK_NONE
@@ -715,6 +723,11 @@ static int nativeKind(uint32_t op, bool arm7) {
     }
     if ((op & 0x0E000000) == 0x0A000000) // B/BL
         return NK_BRANCH;
+    if ((op & 0x0F000010) == 0x0E000010) { // MCR/MRC, which the ARM7 ignores
+        if (arm7) return NK_NONE;
+        if (cacheControl(op)) return NK_COPROCESSOR;
+        return ((op & 0x0F1F00FF) == 0x0E190011 && rd != 15) ? NK_COPROCESSOR : NK_NONE;
+    }
     if ((op & 0x0C000000) == 0x04000000) { // LDR/STR/LDRB/STRB
         if ((op & BIT(25)) && (op & BIT(4))) return NK_NONE; // Undefined
         bool writeback = !(op & BIT(24)) || (op & BIT(21));
@@ -861,6 +874,7 @@ bool Jit::emitNative(PpcEmitter &e, uint32_t op, uint32_t pc) {
         case NK_SWAP: emitSwap(e, op, pc); break;
         case NK_MULTIPLY: emitMultiply(e, op, pc); break;
         case NK_MISC: emitMisc(e, op, pc); break;
+        case NK_COPROCESSOR: emitCoprocessor(e, op); break;
     }
 
     if (skip) {
@@ -1206,6 +1220,16 @@ void Jit::emitMisc(PpcEmitter &e, uint32_t op, uint32_t pc) {
     }
 }
 
+void Jit::emitCoprocessor(PpcEmitter &e, uint32_t op) {
+    // Cache and write buffer operations do nothing, and the only register read is the DTCM base
+    if (op & BIT(20)) {
+        e.loadConst(5, addrDtcmReg);
+        e.lwz(5, 0, 5);
+        writeReg(e, 5, (op >> 12) & 0xF);
+    }
+    e.li(3, 1);
+}
+
 void Jit::emitMultiply(PpcEmitter &e, uint32_t op, uint32_t pc) {
     // Multiply, with an optional accumulate and flags; only N and Z change
     // Timing is fixed on the ARM9, and depends on the value in r4 on the ARM7
@@ -1378,6 +1402,7 @@ static bool isPure(uint32_t op, bool thumb) {
     }
     if ((op & 0x0E000000) == 0x02000000) return true; // Data processing with immediate
     if ((op & 0x0E000090) != 0x00000090 && (op & 0x0C000000) == 0) return true; // Data processing and misc
+    if ((op & 0x0F100010) == 0x0E100010 || cacheControl(op)) return true; // MRC and cache control
     if ((op & 0x0FC000F0) == 0x00000090) return true; // MUL/MLA
     if ((op & 0x0F8000F0) == 0x00800090) return true; // Long multiplies
     return (op & 0x0E000000) == 0x0A000000; // B/BL

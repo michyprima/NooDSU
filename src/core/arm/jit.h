@@ -193,6 +193,7 @@ private:
 
     // Addresses that native instructions use, which tests can point elsewhere
     uint32_t addrCondition = 0, addrMemory = 0, addrReadMap = 0, addrWriteMap = 0;
+    uint32_t addrDtcmReg = 0;
     uint32_t addrLoad32 = 0, addrLoad8 = 0, addrStore32 = 0, addrStore8 = 0, addrLoad16 = 0, addrStore16 = 0;
 
     uint8_t **codeMap();
@@ -238,6 +239,7 @@ private:
     void emitSwap(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitMultiply(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitMisc(PpcEmitter &e, uint32_t op, uint32_t pc);
+    void emitCoprocessor(PpcEmitter &e, uint32_t op);
     void emitBranchReg(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitJump(PpcEmitter &e, int rs, bool interwork);
     void readReg(PpcEmitter &e, int rt, int reg, uint32_t pc);

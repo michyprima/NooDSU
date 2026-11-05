@@ -36,12 +36,12 @@ bool rigMayJump(uint32_t op, bool thumb);
 bool rigKindJumps(int kind);
 
 enum { NK_NONE, NK_ALU, NK_BRANCH, NK_TRANSFER, NK_BRANCH_REG, NK_HALF, NK_BLOCK, NK_BLOCK_PC, NK_SWAP, NK_MULTIPLY, NK_MISC,
-    NK_THUMB_BRANCH = 100 };
+    NK_COPROCESSOR, NK_THUMB_BRANCH = 100 };
 
 // Addresses in the emulator
 static const uint32_t ARM_STATE = 0x10000, CACHE_FLAG = 0x50000, CACHE = 0x50010, EVENTS = 0x70000, LIMIT = 0x71000,
     GLOBAL = 0x72000, STACK = 0x7F000, END = 0x80000, COND_TABLE = 0x200000, READ_MAP = 0x400000, WRITE_MAP = 0x800000,
-    FAKE = 0x3F0000, FAKE_MEMORY = 0x3F0800, FAKE_HANDLER = 0x3F1000, FAKE_INTERLEAVE = 0x3F2000, CODE = 0x10000000;
+    FAKE = 0x3F0000, FAKE_MEMORY = 0x3F0800, FAKE_HANDLER = 0x3F1000, FAKE_INTERLEAVE = 0x3F2000, DTCM_REG = 0x3F4000, CODE = 0x10000000;
 static const uint32_t OFF_REGS = 0x40, OFF_CPSR = 0x80, OFF_CYCLES = 0x84, OFF_SPSR = 0x88, OFF_BANK = 0xA0, OFF_SPSR_VALUE = 0xC0;
 
 // Guest memory: data, then code, which is real main RAM for the interpreter and a copy in the emulator
@@ -652,6 +652,7 @@ static const char *kindName(int kind) {
         case NK_SWAP: return "swap";
         case NK_MULTIPLY: return "multiply";
         case NK_MISC: return "misc";
+        case NK_COPROCESSOR: return "coprocessor";
         default: return "thumb branch";
     }
 }
@@ -1716,6 +1717,7 @@ static void setup(Jit &jit) {
     jit.addrMemory = FAKE_MEMORY;
     jit.addrReadMap = READ_MAP;
     jit.addrWriteMap = WRITE_MAP;
+    jit.addrDtcmReg = DTCM_REG;
     jit.addrLoad32 = FAKE;
     jit.addrLoad8 = FAKE + 8;
     jit.addrStore32 = FAKE + 16;
@@ -1767,6 +1769,8 @@ int main(int argc, char **argv) {
     uint32_t blr = swap32(0x4E800020);
     for (uint32_t a = FAKE; a < FAKE_INTERLEAVE + 0x10; a += 4) uc_mem_write(uc, a, &blr, 4);
     writeBe(EVENTS, EVENTS + 0x10);
+    core->cp15.dtcmReg = 0x027E000A;
+    writeBe(DTCM_REG, core->cp15.dtcmReg);
     uc_hook hook;
     uc_hook_add(uc, &hook, UC_HOOK_CODE, (void*)hookFake, nullptr, FAKE, FAKE_INTERLEAVE + 8);
 

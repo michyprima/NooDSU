@@ -25,6 +25,7 @@
 class Core;
 
 class Cp15 {
+    friend class Jit;
 public:
     uint32_t exceptionAddr = 0;
     bool dtcmCanRead = false, dtcmCanWrite = false;
