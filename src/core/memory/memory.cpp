@@ -1013,6 +1013,7 @@ template <typename T> void Memory::writeFallback(bool arm7, uint32_t address, T 
             return;
 
         case 0x5000000: // Palettes
+            if (sizeof(T) == 1) return; // Byte writes are ignored on a real DS
             data = &palette[address & 0x7FF];
             break;
 
