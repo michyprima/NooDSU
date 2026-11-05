@@ -27,6 +27,7 @@
 #include "../core.h"
 #include "../emu_profile.h"
 #include "../frame_capture.h"
+#include "../file_lock.h"
 
 Gpu3DRenderer::Gpu3DRenderer(Core *core): core(core) {
     // Mark the scanlines as ready to start
@@ -199,12 +200,15 @@ uint32_t *Gpu3DRenderer::getLine1(int line) {
         static uint32_t layer[256 * 192];
         memcpy(&layer[line * 256], lineData(line), 256 * sizeof(uint32_t));
         if (line == 191) {
-            if (FILE *file = fopen(dumpLayerPath.c_str(), "wb")) {
-                for (int i = 0; i < 256 * 192; i++) {
-                    uint8_t b[4] = { uint8_t(layer[i] >> 24), uint8_t(layer[i] >> 16), uint8_t(layer[i] >> 8), uint8_t(layer[i]) };
-                    fwrite(b, 4, 1, file);
+            {
+                std::lock_guard<FileLock> fileGuard(fileLock());
+                if (FILE *file = fopen(dumpLayerPath.c_str(), "wb")) {
+                    for (int i = 0; i < 256 * 192; i++) {
+                        uint8_t b[4] = { uint8_t(layer[i] >> 24), uint8_t(layer[i] >> 16), uint8_t(layer[i] >> 8), uint8_t(layer[i]) };
+                        fwrite(b, 4, 1, file);
+                    }
+                    fclose(file);
                 }
-                fclose(file);
             }
             dumpLayerPath.clear();
         }
@@ -239,25 +243,28 @@ void Gpu3DRenderer::drawScanline(int line) {
                 std::to_string((dumpFrames / 60) % 4) + ".bin";
             dumpLayerPath = Settings::basePath + (hw ? "/layer_gpu" : "/layer_sw") +
                 std::to_string((dumpFrames / 60) % 4) + ".bin";
-            if (FILE *file = fopen(path.c_str(), "wb")) {
-                Gpu3D &g = core->gpu3D;
-                auto put = [&](uint32_t value) {
-                    uint8_t b[4] = { uint8_t(value >> 24), uint8_t(value >> 16), uint8_t(value >> 8), uint8_t(value) };
-                    fwrite(b, 4, 1, file);
-                };
-                put(g.polygonCountOut);
-                uint32_t vertexCount = 0;
-                for (int i = 0; i < g.polygonCountOut; i++) {
-                    _Polygon &p = g.polygonsOut[i];
-                    put(p.vertices); put(p.size); put(p.crossed); put(p.sizeS); put(p.sizeT); put(p.textureAddr);
-                    vertexCount = std::max<uint32_t>(vertexCount, p.vertices + p.size);
+            {
+                std::lock_guard<FileLock> fileGuard(fileLock());
+                if (FILE *file = fopen(path.c_str(), "wb")) {
+                    Gpu3D &g = core->gpu3D;
+                    auto put = [&](uint32_t value) {
+                        uint8_t b[4] = { uint8_t(value >> 24), uint8_t(value >> 16), uint8_t(value >> 8), uint8_t(value) };
+                        fwrite(b, 4, 1, file);
+                    };
+                    put(g.polygonCountOut);
+                    uint32_t vertexCount = 0;
+                    for (int i = 0; i < g.polygonCountOut; i++) {
+                        _Polygon &p = g.polygonsOut[i];
+                        put(p.vertices); put(p.size); put(p.crossed); put(p.sizeS); put(p.sizeT); put(p.textureAddr);
+                        vertexCount = std::max<uint32_t>(vertexCount, p.vertices + p.size);
+                    }
+                    put(vertexCount);
+                    for (uint32_t i = 0; i < vertexCount; i++) {
+                        Vertex &v = g.verticesOut[i];
+                        put(v.x); put(v.y); put(v.z); put(v.w); put(v.s); put(v.t); put(v.color);
+                    }
+                    fclose(file);
                 }
-                put(vertexCount);
-                for (uint32_t i = 0; i < vertexCount; i++) {
-                    Vertex &v = g.verticesOut[i];
-                    put(v.x); put(v.y); put(v.z); put(v.w); put(v.s); put(v.t); put(v.color);
-                }
-                fclose(file);
             }
         }
 #endif

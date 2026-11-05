@@ -60,6 +60,7 @@ volatile uint32_t gpu3dStage, gpu3dFrames;
 #define GPU_STAGE(stage) do { gpu3dStage = (stage); HB_SET(HB_GPU_STAGE, stage); } while (0)
 #include "../../core/settings.h"
 #include "../../core/worker_thread.h"
+#include "../../core/file_lock.h"
 
 extern const uint8_t gpu3d_color_gsh[], gpu3d_modulate_gsh[], gpu3d_decal_gsh[], gpu3d_modtrans_gsh[], gpu3d_edge_gsh[],
     gpu3d_fog_gsh[], gpu3d_aa_gsh[], gpu3d_toon_gsh[], gpu3d_pack_gsh[], gpu3d_clear_gsh[], gpu3d_fill_gsh[];
@@ -1571,32 +1572,35 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         DCInvalidateRange(colorBuffer.surface.image, colorBuffer.surface.imageSize);
 
         std::string path = Settings::basePath + "/gpudump" + std::to_string((frameCount / 15) % 20) + ".bin";
-        if (FILE *file = fopen(path.c_str(), "wb")) {
-            uint32_t header[] = { 0x47444D54, frameCount, count, (uint32_t)draws.size(), wBuffer, (uint32_t)dumpMap.size() / 2,
-                colorBuffer.surface.pitch, (uint32_t)sizeof(GpuDraw) };
-            fwrite(header, sizeof(header), 1, file);
-            fwrite(draws.data(), sizeof(GpuDraw), draws.size(), file);
-            fwrite(dumpMap.data(), 4, dumpMap.size(), file);
-            fwrite(original.data(), sizeof(GpuVertex), count, file);
-            fwrite(image.data(), 4, image.size(), file);
-            fwrite(colorBuffer.surface.image, 4, colorBuffer.surface.pitch * 192, file);
-            fwrite(software.data(), 4, software.size(), file);
-            fwrite(&disp3DCnt, 2, 1, file);
-            fwrite(&disp3DCnt, 2, 1, file);
-            for (int y = 0; y < 192; y++)
-                fwrite((uint32_t*)packedBuffer.surface.image + y * packedBuffer.surface.pitch, 4, 256, file);
-            fwrite(attribBuffer.surface.image, 8, attribBuffer.surface.pitch * 192, file);
-            for (auto &entry : textures) {
-                GX2Texture *texture = entry.second.texture;
-                if (!texture || entry.second.frame != frameCount) continue;
-                DCInvalidateRange(texture->surface.image, texture->surface.imageSize);
-                uint32_t info[] = { (uint32_t)texture, texture->surface.width, texture->surface.height,
-                    texture->surface.pitch, (uint32_t)entry.first, (uint32_t)(entry.first >> 32) };
-                fwrite(info, sizeof(info), 1, file);
-                for (uint32_t y = 0; y < texture->surface.height; y++)
-                    fwrite((uint32_t*)texture->surface.image + y * texture->surface.pitch, 4, texture->surface.width, file);
+        {
+            std::lock_guard<FileLock> fileGuard(fileLock());
+            if (FILE *file = fopen(path.c_str(), "wb")) {
+                uint32_t header[] = { 0x47444D54, frameCount, count, (uint32_t)draws.size(), wBuffer, (uint32_t)dumpMap.size() / 2,
+                    colorBuffer.surface.pitch, (uint32_t)sizeof(GpuDraw) };
+                fwrite(header, sizeof(header), 1, file);
+                fwrite(draws.data(), sizeof(GpuDraw), draws.size(), file);
+                fwrite(dumpMap.data(), 4, dumpMap.size(), file);
+                fwrite(original.data(), sizeof(GpuVertex), count, file);
+                fwrite(image.data(), 4, image.size(), file);
+                fwrite(colorBuffer.surface.image, 4, colorBuffer.surface.pitch * 192, file);
+                fwrite(software.data(), 4, software.size(), file);
+                fwrite(&disp3DCnt, 2, 1, file);
+                fwrite(&disp3DCnt, 2, 1, file);
+                for (int y = 0; y < 192; y++)
+                    fwrite((uint32_t*)packedBuffer.surface.image + y * packedBuffer.surface.pitch, 4, 256, file);
+                fwrite(attribBuffer.surface.image, 8, attribBuffer.surface.pitch * 192, file);
+                for (auto &entry : textures) {
+                    GX2Texture *texture = entry.second.texture;
+                    if (!texture || entry.second.frame != frameCount) continue;
+                    DCInvalidateRange(texture->surface.image, texture->surface.imageSize);
+                    uint32_t info[] = { (uint32_t)texture, texture->surface.width, texture->surface.height,
+                        texture->surface.pitch, (uint32_t)entry.first, (uint32_t)(entry.first >> 32) };
+                    fwrite(info, sizeof(info), 1, file);
+                    for (uint32_t y = 0; y < texture->surface.height; y++)
+                        fwrite((uint32_t*)texture->surface.image + y * texture->surface.pitch, 4, texture->surface.width, file);
+                }
+                fclose(file);
             }
-            fclose(file);
         }
     }
 #endif

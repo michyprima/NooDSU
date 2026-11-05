@@ -21,6 +21,7 @@
 #include <cstring>
 #include "../core.h"
 #include "../emu_profile.h"
+#include "../file_lock.h"
 #ifdef ROM_TEST
 #include "../rom_test.h"
 
@@ -28,10 +29,13 @@ void RomTest::write(Memory *memory, uint32_t address, uint32_t value) {
     switch (address & 0xFFF) {
         case 0x008: text = value; break;
         case 0x00C: // Save this much text, from either CPU's memory; both can read main RAM
-            if (FILE *file = fopen(path.c_str(), "a")) {
-                for (uint32_t i = 0; i < value; i++)
-                    fputc(memory->read<uint8_t>(false, text + i), file);
-                fclose(file);
+            {
+                std::lock_guard<FileLock> fileGuard(fileLock());
+                if (FILE *file = fopen(path.c_str(), "a")) {
+                    for (uint32_t i = 0; i < value; i++)
+                        fputc(memory->read<uint8_t>(false, text + i), file);
+                    fclose(file);
+                }
             }
             break;
         case 0x010: progress = value; break;

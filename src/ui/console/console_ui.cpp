@@ -128,9 +128,12 @@ static std::atomic<int> debugAfterLoad(0);
 static uint32_t debugWakes[2] = {}, debugStuckFrames = 0;
 
 static void debugWrite(const std::string &text) {
-    if (FILE *file = fopen((Settings::basePath + "/statelog.txt").c_str(), "a")) {
-        fputs(text.c_str(), file);
-        fclose(file);
+    {
+        std::lock_guard<FileLock> fileGuard(fileLock());
+        if (FILE *file = fopen((Settings::basePath + "/statelog.txt").c_str(), "a")) {
+            fputs(text.c_str(), file);
+            fclose(file);
+        }
     }
 }
 
@@ -446,13 +449,16 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         if (FrameCapture::state.load() == 1 && FrameCapture::emuFrame >= FrameCapture::firstFrame + FrameCapture::FRAMES + 6)
             FrameCapture::state.store(2);
         if (FrameCapture::state.load() == 2) {
-            if (FILE *file = fopen((Settings::basePath + "/capture.bin").c_str(), "wb")) {
-                uint32_t header[] = { 0x4E434150, (uint32_t)FrameCapture::FRAMES, FrameCapture::firstFrame,
-                    (uint32_t)sizeof(FrameCapture::Frame), (uint32_t)FrameCapture::RENDERS, (uint32_t)sizeof(FrameCapture::Render) };
-                fwrite(header, sizeof(header), 1, file);
-                fwrite(FrameCapture::frames, sizeof(FrameCapture::Frame), FrameCapture::FRAMES, file);
-                fwrite(FrameCapture::renders, sizeof(FrameCapture::Render), FrameCapture::RENDERS, file);
-                fclose(file);
+            {
+                std::lock_guard<FileLock> fileGuard(fileLock());
+                if (FILE *file = fopen((Settings::basePath + "/capture.bin").c_str(), "wb")) {
+                    uint32_t header[] = { 0x4E434150, (uint32_t)FrameCapture::FRAMES, FrameCapture::firstFrame,
+                        (uint32_t)sizeof(FrameCapture::Frame), (uint32_t)FrameCapture::RENDERS, (uint32_t)sizeof(FrameCapture::Render) };
+                    fwrite(header, sizeof(header), 1, file);
+                    fwrite(FrameCapture::frames, sizeof(FrameCapture::Frame), FrameCapture::FRAMES, file);
+                    fwrite(FrameCapture::renders, sizeof(FrameCapture::Render), FrameCapture::RENDERS, file);
+                    fclose(file);
+                }
             }
             delete[] FrameCapture::frames;
             FrameCapture::frames = nullptr;
@@ -920,10 +926,13 @@ void ConsoleUI::updateFrames(ScreenLayout *gamepad) {
     }
 #ifdef FRAME_ART_TEST
     // Log how long that took
-    if (FILE *log = fopen((Settings::basePath + "/frameart.txt").c_str(), "a")) {
-        fprintf(log, "Color %d, %dx%d, %d screens: %.1f ms\n", frameColor, uiWidth, uiHeight, count,
-            OSTicksToMicroseconds(OSGetSystemTime() - start) / 1000.0);
-        fclose(log);
+    {
+        std::lock_guard<FileLock> fileGuard(fileLock());
+        if (FILE *log = fopen((Settings::basePath + "/frameart.txt").c_str(), "a")) {
+            fprintf(log, "Color %d, %dx%d, %d screens: %.1f ms\n", frameColor, uiWidth, uiHeight, count,
+                OSTicksToMicroseconds(OSGetSystemTime() - start) / 1000.0);
+            fclose(log);
+        }
     }
 #endif
 }
@@ -1873,9 +1882,12 @@ void ConsoleUI::pauseMenu() {
                 // The details are on a second page, shown after the first is dismissed
                 // Both pages are also added to a file, which is easier to read than the screen
                 std::string pages[] = { Sampler::report(0), Sampler::report(1) };
-                if (FILE *file = fopen((Settings::basePath + "/samples.txt").c_str(), "a")) {
-                    fprintf(file, "%s\n%s\n\n", pages[0].c_str(), pages[1].c_str());
-                    fclose(file);
+                {
+                    std::lock_guard<FileLock> fileGuard(fileLock());
+                    if (FILE *file = fopen((Settings::basePath + "/samples.txt").c_str(), "a")) {
+                        fprintf(file, "%s\n%s\n\n", pages[0].c_str(), pages[1].c_str());
+                        fclose(file);
+                    }
                 }
                 if (message("CPU Samples", pages[0]))
                     message("CPU Samples: details", pages[1]);
@@ -1996,9 +2008,12 @@ void ConsoleUI::jitSelfTest() {
 
     // Note the start in the results file, so a test that never finished can be told apart from an old result
     std::string resultsPath = Settings::basePath + "/jittest.txt";
-    if (FILE *file = fopen(resultsPath.c_str(), "a")) {
-        fprintf(file, "Started %s\n", ndsPath.c_str());
-        fclose(file);
+    {
+        std::lock_guard<FileLock> fileGuard(fileLock());
+        if (FILE *file = fopen(resultsPath.c_str(), "a")) {
+            fprintf(file, "Started %s\n", ndsPath.c_str());
+            fclose(file);
+        }
     }
 
     // Compare CPU and scheduler state every time the cores stop, and the screens of every drawn frame
@@ -2084,9 +2099,12 @@ void ConsoleUI::jitSelfTest() {
     char times[128];
     snprintf(times, sizeof(times), "\n\nInterpreter: %.1f s\nJIT: %.1f s (%.0f%% of the interpreter's time)",
         timeA, timeB, timeA > 0 ? timeB * 100 / timeA : 0);
-    if (FILE *file = fopen(resultsPath.c_str(), "a")) {
-        fprintf(file, "%s, %ld frames: %s%s\n\n", mode.c_str(), frames.load(), result.c_str(), times);
-        fclose(file);
+    {
+        std::lock_guard<FileLock> fileGuard(fileLock());
+        if (FILE *file = fopen(resultsPath.c_str(), "a")) {
+            fprintf(file, "%s, %ld frames: %s%s\n\n", mode.c_str(), frames.load(), result.c_str(), times);
+            fclose(file);
+        }
     }
     delete cores[1];
     delete cores[0];
@@ -2110,16 +2128,22 @@ void ConsoleUI::romTest() {
     Settings::directBoot = 1;
     Settings::fpsLimiter = 0;
     RomTest::path = Settings::basePath + "/romtest.txt";
-    remove(RomTest::path.c_str());
+    {
+        std::lock_guard<FileLock> fileGuard(fileLock());
+        remove(RomTest::path.c_str());
+    }
 
     struct Run { const char *name; int jit, fast; } runs[] = { { "interpreter", 0, 0 }, { "jit fast", 1, 1 }, { "jit", 1, 0 } };
     std::string result;
     for (Run &run: runs) {
         Settings::jit = run.jit;
         Settings::fastTiming = run.fast;
-        if (FILE *file = fopen(RomTest::path.c_str(), "a")) {
-            fprintf(file, "RUN %s\n", run.name);
-            fclose(file);
+        {
+            std::lock_guard<FileLock> fileGuard(fileLock());
+            if (FILE *file = fopen(RomTest::path.c_str(), "a")) {
+                fprintf(file, "RUN %s\n", run.name);
+                fclose(file);
+            }
         }
         Core *core = nullptr;
         try {
@@ -2171,9 +2195,12 @@ void ConsoleUI::romTest() {
         delete core;
         if (stopped) {
             result = hung ? (std::string("Stuck at case ") + std::to_string(last) + " in " + run.name) : "Stopped early";
-            if (FILE *file = fopen(RomTest::path.c_str(), "a")) {
-                fprintf(file, "STOPPED %s\n", result.c_str());
-                fclose(file);
+            {
+                std::lock_guard<FileLock> fileGuard(fileLock());
+                if (FILE *file = fopen(RomTest::path.c_str(), "a")) {
+                    fprintf(file, "STOPPED %s\n", result.c_str());
+                    fclose(file);
+                }
             }
             break;
         }
@@ -2194,12 +2221,15 @@ void ConsoleUI::romTest() {
         std::vector<std::string> lines[3];
         char line[256];
         int run = -1, total = 0, differ[3] = {};
-        if (FILE *file = fopen(RomTest::path.c_str(), "r")) {
-            while (fgets(line, sizeof(line), file)) {
-                if (!strncmp(line, "RUN ", 4)) run++;
-                else if (line[0] == 'C' && run >= 0 && run < 3) lines[run].push_back(line);
+        {
+            std::lock_guard<FileLock> fileGuard(fileLock());
+            if (FILE *file = fopen(RomTest::path.c_str(), "r")) {
+                while (fgets(line, sizeof(line), file)) {
+                    if (!strncmp(line, "RUN ", 4)) run++;
+                    else if (line[0] == 'C' && run >= 0 && run < 3) lines[run].push_back(line);
+                }
+                fclose(file);
             }
-            fclose(file);
         }
         total = lines[0].size();
         for (int i = 1; i < 3; i++) {

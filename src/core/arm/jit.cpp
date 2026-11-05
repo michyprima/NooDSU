@@ -25,6 +25,7 @@
 
 #include "../core.h"
 #include "../emu_profile.h"
+#include "../file_lock.h"
 
 // Blocks are allocated in groups and reused, since allocating one at a time can stall a frame while a game is running
 // They're only allocated and deleted by one thread at a time, so this doesn't need a lock
@@ -66,6 +67,7 @@ void jitLog(const char *format, ...) {
     // Append a line and close the file every time, so it survives a freeze
     static int lines = 0;
     if (++lines > 2000) return;
+    std::lock_guard<FileLock> fileGuard(fileLock());
     FILE *file = fopen((Settings::basePath + "/jit.log").c_str(), lines == 1 ? "w" : "a");
     if (!file) return;
     va_list args;

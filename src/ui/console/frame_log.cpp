@@ -26,6 +26,7 @@
 #include <coreinit/time.h>
 
 #include "frame_log.h"
+#include "../../core/file_lock.h"
 
 namespace FrameLog {
     // An entry has a type, and for the emulator, when the frame finished, when its display wait ended, and its polygons;
@@ -108,6 +109,7 @@ namespace FrameLog {
     }
 
     static void appendSamples(SampleRing &ring, const std::string &path, uint32_t stream, bool first) {
+        std::lock_guard<FileLock> fileGuard(fileLock());
         FILE *file = fopen(path.c_str(), first ? "wb" : "ab");
         if (!file) return;
         ring.drain(file, stream);
@@ -146,6 +148,7 @@ namespace FrameLog {
     void write(const char *path) {
         // Start a new file the first time, with the time base's speed
         static bool started = false;
+        std::lock_guard<FileLock> fileGuard(fileLock());
         FILE *file = fopen(path, started ? "ab" : "wb");
         if (!file) return;
         if (!started) {
