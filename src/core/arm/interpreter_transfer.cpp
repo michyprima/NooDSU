@@ -509,6 +509,11 @@ FORCE_INLINE int Interpreter::strdPt(uint32_t opcode, uint32_t op2) { // STRD Rd
     return 2;
 }
 
+FORCE_INLINE uint32_t stmValue(uint32_t value, int reg) {
+    // A real DS stores the program counter 4 higher than it normally reads with STM, on both CPUs
+    return value + ((reg == 15) << 2);
+}
+
 int Interpreter::swpb(uint32_t opcode) { // SWPB Rd,Rm,[Rn]
     // Swap byte
     uint32_t *op0 = registers[(opcode >> 12) & 0xF];
@@ -557,7 +562,7 @@ int Interpreter::stmda(uint32_t opcode) { // STMDA Rn, <Rlist>
     uint32_t op0 = *registers[(opcode >> 16) & 0xF] - (m << 2);
     for (int i = 0; i < 16; i++) {
         if (~opcode & BIT(i)) continue;
-        core->memory.write<uint32_t>(arm7, op0 += 4, *registers[i]);
+        core->memory.write<uint32_t>(arm7, op0 += 4, stmValue(*registers[i], i));
     }
     return m + (arm7 || m < 2);
 }
@@ -585,7 +590,7 @@ int Interpreter::stmia(uint32_t opcode) { // STMIA Rn, <Rlist>
     uint32_t op0 = *registers[(opcode >> 16) & 0xF];
     for (int i = 0; i < 16; i++) {
         if (~opcode & BIT(i)) continue;
-        core->memory.write<uint32_t>(arm7, op0, *registers[i]);
+        core->memory.write<uint32_t>(arm7, op0, stmValue(*registers[i], i));
         op0 += 4;
     }
     return m + (arm7 || m < 2);
@@ -614,7 +619,7 @@ int Interpreter::stmdb(uint32_t opcode) { // STMDB Rn, <Rlist>
     uint32_t op0 = *registers[(opcode >> 16) & 0xF] - (m << 2);
     for (int i = 0; i < 16; i++) {
         if (~opcode & BIT(i)) continue;
-        core->memory.write<uint32_t>(arm7, op0, *registers[i]);
+        core->memory.write<uint32_t>(arm7, op0, stmValue(*registers[i], i));
         op0 += 4;
     }
     return m + (arm7 || m < 2);
@@ -642,7 +647,7 @@ int Interpreter::stmib(uint32_t opcode) { // STMIB Rn, <Rlist>
     uint32_t op0 = *registers[(opcode >> 16) & 0xF];
     for (int i = 0; i < 16; i++) {
         if (~opcode & BIT(i)) continue;
-        core->memory.write<uint32_t>(arm7, op0 += 4, *registers[i]);
+        core->memory.write<uint32_t>(arm7, op0 += 4, stmValue(*registers[i], i));
     }
     return m + (arm7 || m < 2);
 }
@@ -679,7 +684,7 @@ int Interpreter::stmdaW(uint32_t opcode) { // STMDA Rn!, <Rlist>
     // Block store, post-decrement with writeback
     for (int i = 0; i < 16; i++) {
         if (~opcode & BIT(i)) continue;
-        core->memory.write<uint32_t>(arm7, address += 4, *registers[i]);
+        core->memory.write<uint32_t>(arm7, address += 4, stmValue(*registers[i], i));
     }
     *registers[op0] = address - (m << 2);
     return m + (arm7 || m < 2);
@@ -718,7 +723,7 @@ int Interpreter::stmiaW(uint32_t opcode) { // STMIA Rn!, <Rlist>
     // Block store, post-increment with writeback
     for (int i = 0; i < 16; i++) {
         if (~opcode & BIT(i)) continue;
-        core->memory.write<uint32_t>(arm7, address, *registers[i]);
+        core->memory.write<uint32_t>(arm7, address, stmValue(*registers[i], i));
         address += 4;
     }
     *registers[op0] = address;
@@ -758,7 +763,7 @@ int Interpreter::stmdbW(uint32_t opcode) { // STMDB Rn!, <Rlist>
     // Block store, pre-decrement with writeback
     for (int i = 0; i < 16; i++) {
         if (~opcode & BIT(i)) continue;
-        core->memory.write<uint32_t>(arm7, address, *registers[i]);
+        core->memory.write<uint32_t>(arm7, address, stmValue(*registers[i], i));
         address += 4;
     }
     *registers[op0] = address - (m << 2);
@@ -797,7 +802,7 @@ int Interpreter::stmibW(uint32_t opcode) { // STMIB Rn!, <Rlist>
     // Block store, pre-increment with writeback
     for (int i = 0; i < 16; i++) {
         if (~opcode & BIT(i)) continue;
-        core->memory.write<uint32_t>(arm7, address += 4, *registers[i]);
+        core->memory.write<uint32_t>(arm7, address += 4, stmValue(*registers[i], i));
     }
     *registers[op0] = address;
     return m + (arm7 || m < 2);
@@ -826,7 +831,7 @@ int Interpreter::stmdaU(uint32_t opcode) { // STMDA Rn, <Rlist>^
     uint32_t op0 = *registers[(opcode >> 16) & 0xF] - (m << 2);
     for (int i = 0; i < 16; i++) {
         if (~opcode & BIT(i)) continue;
-        core->memory.write<uint32_t>(arm7, op0 += 4, registersUsr[i]);
+        core->memory.write<uint32_t>(arm7, op0 += 4, stmValue(registersUsr[i], i));
     }
     return m + (arm7 || m < 2);
 }
@@ -855,7 +860,7 @@ int Interpreter::stmiaU(uint32_t opcode) { // STMIA Rn, <Rlist>^
     uint32_t op0 = *registers[(opcode >> 16) & 0xF];
     for (int i = 0; i < 16; i++) {
         if (~opcode & BIT(i)) continue;
-        core->memory.write<uint32_t>(arm7, op0, registersUsr[i]);
+        core->memory.write<uint32_t>(arm7, op0, stmValue(registersUsr[i], i));
         op0 += 4;
     }
     return m + (arm7 || m < 2);
@@ -885,7 +890,7 @@ int Interpreter::stmdbU(uint32_t opcode) { // STMDB Rn, <Rlist>^
     uint32_t op0 = *registers[(opcode >> 16) & 0xF] - (m << 2);
     for (int i = 0; i < 16; i++) {
         if (~opcode & BIT(i)) continue;
-        core->memory.write<uint32_t>(arm7, op0, registersUsr[i]);
+        core->memory.write<uint32_t>(arm7, op0, stmValue(registersUsr[i], i));
         op0 += 4;
     }
     return m + (arm7 || m < 2);
@@ -914,7 +919,7 @@ int Interpreter::stmibU(uint32_t opcode) { // STMIB Rn, <Rlist>^
     uint32_t op0 = *registers[(opcode >> 16) & 0xF];
     for (int i = 0; i < 16; i++) {
         if (~opcode & BIT(i)) continue;
-        core->memory.write<uint32_t>(arm7, op0 += 4, registersUsr[i]);
+        core->memory.write<uint32_t>(arm7, op0 += 4, stmValue(registersUsr[i], i));
     }
     return m + (arm7 || m < 2);
 }
@@ -952,7 +957,7 @@ int Interpreter::stmdaUW(uint32_t opcode) { // STMDA Rn!, <Rlist>^
     // User block store, post-decrement with writeback
     for (int i = 0; i < 16; i++) {
         if (~opcode & BIT(i)) continue;
-        core->memory.write<uint32_t>(arm7, address += 4, registersUsr[i]);
+        core->memory.write<uint32_t>(arm7, address += 4, stmValue(registersUsr[i], i));
     }
     *registers[op0] = address - (m << 2);
     return m + (arm7 || m < 2);
@@ -992,7 +997,7 @@ int Interpreter::stmiaUW(uint32_t opcode) { // STMIA Rn!, <Rlist>^
     // User block store, post-increment with writeback
     for (int i = 0; i < 16; i++) {
         if (~opcode & BIT(i)) continue;
-        core->memory.write<uint32_t>(arm7, address, registersUsr[i]);
+        core->memory.write<uint32_t>(arm7, address, stmValue(registersUsr[i], i));
         address += 4;
     }
     *registers[op0] = address;
@@ -1033,7 +1038,7 @@ int Interpreter::stmdbUW(uint32_t opcode) { // STMDB Rn!, <Rlist>^
     // User block store, pre-decrement with writeback
     for (int i = 0; i < 16; i++) {
         if (~opcode & BIT(i)) continue;
-        core->memory.write<uint32_t>(arm7, address, registersUsr[i]);
+        core->memory.write<uint32_t>(arm7, address, stmValue(registersUsr[i], i));
         address += 4;
     }
     *registers[op0] = address - (m << 2);
@@ -1073,7 +1078,7 @@ int Interpreter::stmibUW(uint32_t opcode) { // STMIB Rn!, <Rlist>^
     // User block store, pre-increment with writeback
     for (int i = 0; i < 16; i++) {
         if (~opcode & BIT(i)) continue;
-        core->memory.write<uint32_t>(arm7, address += 4, registersUsr[i]);
+        core->memory.write<uint32_t>(arm7, address += 4, stmValue(registersUsr[i], i));
     }
     *registers[op0] = address;
     return m + (arm7 || m < 2);
