@@ -103,18 +103,19 @@ bool Settings::load(std::string path) {
     mkdir((basePath + "/saves").c_str() MKDIR_ARGS);
     mkdir((basePath + "/states").c_str() MKDIR_ARGS);
     mkdir((basePath + "/cheats").c_str() MKDIR_ARGS);
+    mkdir((basePath + "/bios").c_str() MKDIR_ARGS);
 
-    // Open the settings file or set defaults if it doesn't exist
+    // Open the settings file or set defaults if it doesn't exist, with system files in the bios folder
     FILE *file = fopen((basePath + "/noodsu.ini").c_str(), "r");
     if (!file) {
-        gbaBiosPath = basePath + "/gba_bios.bin";
-        ndsBios9Path = basePath + "/bios9.bin";
-        ndsBios7Path = basePath + "/bios7.bin";
-        ndsFirmPath = basePath + "/firmware.bin";
-        dsiBios9Path = basePath + "/bios9i.bin";
-        dsiBios7Path = basePath + "/bios7i.bin";
-        dsiFirmPath = basePath + "/firmwarei.bin";
-        dsiNandPath = basePath + "/nand.bin";
+        gbaBiosPath = basePath + "/bios/gba_bios.bin";
+        ndsBios9Path = basePath + "/bios/bios9.bin";
+        ndsBios7Path = basePath + "/bios/bios7.bin";
+        ndsFirmPath = basePath + "/bios/firmware.bin";
+        dsiBios9Path = basePath + "/bios/bios9i.bin";
+        dsiBios7Path = basePath + "/bios/bios7i.bin";
+        dsiFirmPath = basePath + "/bios/firmwarei.bin";
+        dsiNandPath = basePath + "/bios/nand.bin";
         sdImagePath = basePath + "/sd.img";
         save();
         return false;

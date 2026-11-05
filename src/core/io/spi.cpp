@@ -17,10 +17,12 @@
     along with NooDS U. If not, see <https://www.gnu.org/licenses/>.
 */
 
+#include <algorithm>
 #include <cstring>
 #include "../core.h"
 
 Language Spi::language = LG_ENGLISH;
+std::u16string Spi::nickname;
 
 Spi::~Spi() {
     // Free any dynamic memory
@@ -58,6 +60,19 @@ uint16_t Spi::crc16(uint32_t value, uint8_t *data, size_t size) {
     return value;
 }
 
+void Spi::writeNickname(uint8_t *settings) {
+    // Write the nickname specified by the frontend to a copy of the user settings, if there is one
+    if (nickname.empty()) return;
+    size_t length = std::min<size_t>(nickname.size(), 10);
+    for (size_t i = 0; i < 10; i++) {
+        uint16_t value = (i < length) ? nickname[i] : 0;
+        settings[0x06 + i * 2] = value >> 0;
+        settings[0x07 + i * 2] = value >> 8;
+    }
+    settings[0x1A] = length;
+    settings[0x1B] = 0;
+}
+
 bool Spi::loadFirmware() {
     // Ensure firmware memory isn't already allocated
     if (firmware)
@@ -84,12 +99,13 @@ bool Spi::loadFirmware() {
             firmware[0x2B] = crc >> 8;
         }
 
-        // Set the language specified by the frontend in both copies of the user settings
+        // Set the language and nickname specified by the frontend in both copies of the user settings
         // A copy that already fails its CRC is left alone, so that it doesn't start looking valid
         for (uint32_t addr = firmSize - 0x200; firmSize >= 0x200 && addr < firmSize; addr += 0x100) {
             if (crc16(0xFFFF, &firmware[addr], 0x70) != U8TO16(firmware, addr + 0x72))
                 continue;
             firmware[addr + 0x64] = (firmware[addr + 0x64] & ~0x7) | language;
+            writeNickname(&firmware[addr]);
             uint16_t crc = crc16(0xFFFF, &firmware[addr], 0x70);
             firmware[addr + 0x72] = crc >> 0;
             firmware[addr + 0x73] = crc >> 8;
@@ -159,8 +175,9 @@ bool Spi::loadFirmware() {
         firmware[addr + 0x62] = 0xFF; // SCR X2
         firmware[addr + 0x63] = 0xBF; // SCR Y2
 
-        // Set the language specified by the frontend
+        // Set the language and nickname specified by the frontend
         firmware[addr + 0x64] = language;
+        writeNickname(&firmware[addr]);
 
         // Calculate the user settings CRC
         crc = crc16(0xFFFF, &firmware[addr], 0x70);

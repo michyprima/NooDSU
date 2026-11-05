@@ -24,6 +24,7 @@
 #include <coreinit/exception.h>
 #include <coreinit/foreground.h>
 #include <coreinit/internal.h>
+#include <coreinit/mcp.h>
 #include <coreinit/memdefaultheap.h>
 #ifdef THREAD_PROBE
 #include <arpa/inet.h>
@@ -42,6 +43,8 @@
 #include <gx2/swap.h>
 #include <gx2r/draw.h>
 #include <mic/mic.h>
+#include <nn/act.h>
+#include <nn/swkbd.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
 #include <padscore/kpad.h>
@@ -82,6 +85,8 @@ VPADStatus vpad;
 VPADTouchData touch;
 uint32_t extHeld[4];
 float extStick[4][2]; // Right stick positions of the other controllers
+KPADStatus kpad[4]; // The other controllers' last reads, for the system keyboard
+bool kpadRead[4]; // Whether each controller was read this frame
 bool scanned;
 
 WHBGfxShaderGroup group;
@@ -835,9 +840,9 @@ void scanInput() {
     // Read Pro Controllers and Classic Controllers on every channel
     // Channels without new data keep their last state, and disconnected ones are cleared
     for (int i = 0; i < 4; i++) {
-        KPADStatus status;
+        KPADStatus &status = kpad[i];
         KPADError error;
-        if (!KPADReadEx((KPADChan)i, &status, 1, &error)) {
+        if (!(kpadRead[i] = KPADReadEx((KPADChan)i, &status, 1, &error))) {
             if (error == KPAD_ERROR_INVALID_CONTROLLER) {
                 extHeld[i] = 0;
                 extStick[i][0] = extStick[i][1] = 0;
@@ -887,6 +892,144 @@ void ConsoleUI::getInputStick(float &x, float &y) {
             y = extStick[i][1];
         }
     }
+}
+
+std::u16string ConsoleUI::getMiiName() {
+    // Read the current Wii U user's Mii name, which is up to 10 characters like a DS nickname
+    int16_t name[nn::act::MiiNameSize] = {};
+    nn::act::Initialize();
+    bool read = nn::act::GetMiiName(name).IsSuccess();
+    nn::act::Finalize();
+    std::u16string result;
+    for (int i = 0; read && i < nn::act::MiiNameSize && name[i]; i++)
+        result += char16_t(name[i]);
+    return result;
+}
+
+static void drawKeyboard(bool tv) {
+    // Draw the system keyboard with its own GX2 state, since it leaves its state set and would break the UI's drawing
+    static GX2ContextState *state = nullptr;
+    if (!state) {
+        state = (GX2ContextState*)MEMAllocFromDefaultHeapEx(sizeof(GX2ContextState), GX2_CONTEXT_STATE_ALIGNMENT);
+        if (!state) return;
+        GX2SetupContextStateEx(state, TRUE);
+    }
+    GX2ColorBuffer *color = tv ? WHBGfxGetTVColourBuffer() : WHBGfxGetDRCColourBuffer();
+    GX2DepthBuffer *depth = tv ? WHBGfxGetTVDepthBuffer() : WHBGfxGetDRCDepthBuffer();
+    GX2SetContextState(state);
+    GX2SetColorBuffer(color, GX2_RENDER_TARGET_0);
+    GX2SetDepthBuffer(depth);
+    GX2SetViewport(0, 0, color->surface.width, color->surface.height, 0, 1);
+    GX2SetScissor(0, 0, color->surface.width, color->surface.height);
+    if (tv) nn::swkbd::DrawTV();
+    else nn::swkbd::DrawDRC();
+}
+
+bool ConsoleUI::editText(std::u16string &text, int maxLength, int language) {
+    // Choose the keyboard's region from the console's, so it has the layouts the user is used to
+    nn::swkbd::RegionType region = nn::swkbd::RegionType::Europe;
+    int32_t mcp = MCP_Open();
+    alignas(0x40) MCPSysProdSettings product = {};
+    if (mcp >= 0 && MCP_GetSysProdSettings(mcp, &product) >= 0) {
+        switch (product.product_area) {
+            case MCP_REGION_JAPAN: region = nn::swkbd::RegionType::Japan; break;
+            case MCP_REGION_USA: region = nn::swkbd::RegionType::USA; break;
+            case MCP_REGION_CHINA: region = nn::swkbd::RegionType::China; break;
+            case MCP_REGION_KOREA: region = nn::swkbd::RegionType::Korea; break;
+            case MCP_REGION_TAIWAN: region = nn::swkbd::RegionType::Taiwan; break;
+            default: break;
+        }
+    }
+    if (mcp >= 0) MCP_Close(mcp);
+
+    // Start the system keyboard, which only takes its memory while it's open
+    FSClient *client = (FSClient*)MEMAllocFromDefaultHeap(sizeof(FSClient));
+    void *work = MEMAllocFromDefaultHeap(nn::swkbd::GetWorkMemorySize(0));
+    if (!client || !work) {
+        if (client) MEMFreeToDefaultHeap(client);
+        if (work) MEMFreeToDefaultHeap(work);
+        return false;
+    }
+    FSInit();
+    FSAddClient(client, FS_ERROR_FLAG_NONE);
+    nn::swkbd::CreateArg create;
+    create.workMemory = work;
+    create.regionType = region;
+    create.fsClient = client;
+    bool created = nn::swkbd::Create(create);
+
+    // Show a text box with the current text, in the system's language
+    bool decided = false;
+    if (created) {
+        nn::swkbd::AppearArg appear;
+        appear.keyboardArg.configArg.languageType = nn::swkbd::LanguageType(language);
+        appear.keyboardArg.configArg.disableNewLine = true;
+        appear.inputFormArg.initialText = text.c_str();
+        appear.inputFormArg.maxTextLength = maxLength;
+        appear.inputFormArg.higlightInitialText = true;
+        nn::swkbd::AppearInputForm(appear);
+
+        // Run the keyboard until a choice is made, then until it finishes hiding
+        bool closing = false;
+        while (!closing || nn::swkbd::GetStateInputForm() != nn::swkbd::State::Hidden) {
+            // Pass it the controllers, with the GamePad's touch calibrated like the menus use it
+            // Input is also scanned for the menus, so buttons still held from here aren't new presses there
+            getInputPress();
+            VPADStatus gamepad = vpad;
+            gamepad.tpNormal = touch;
+            nn::swkbd::ControllerInfo info;
+            info.vpad = &gamepad;
+            for (int i = 0; i < 4; i++)
+                info.kpad[i] = kpadRead[i] ? &kpad[i] : nullptr;
+            nn::swkbd::Calc(info);
+            if (nn::swkbd::IsNeedCalcSubThreadFont())
+                nn::swkbd::CalcSubThreadFont();
+            if (nn::swkbd::IsNeedCalcSubThreadPredict())
+                nn::swkbd::CalcSubThreadPredict();
+
+            // Take the text when confirmed, or leave it when canceled
+            if (!closing && (nn::swkbd::IsDecideOkButton(nullptr) || nn::swkbd::IsDecideCancelButton(nullptr))) {
+                if (nn::swkbd::IsDecideOkButton(nullptr)) {
+                    const char16_t *result = nn::swkbd::GetInputFormString();
+                    text = result ? result : u"";
+                    decided = true;
+                }
+                nn::swkbd::DisappearInputForm();
+                closing = true;
+            }
+
+            // Draw the keyboard on the GamePad, then copy it to the TV, where the system only draws it for remotes
+            // The TV reads the GamePad's frame as a texture, set up each frame since WHB reallocates the frame when
+            // getting the foreground back
+            startFrame(palette[0]);
+            drawKeyboard(false);
+            GX2ColorBuffer *drcTarget = WHBGfxGetDRCColourBuffer();
+            GX2Texture drcTexture;
+            memset(&drcTexture, 0, sizeof(drcTexture));
+            drcTexture.surface = drcTarget->surface;
+            drcTexture.surface.use = GX2_SURFACE_USE_TEXTURE;
+            drcTexture.viewNumSlices = 1;
+            drcTexture.compMap = 0x00010203;
+            GX2InitTextureRegs(&drcTexture);
+            GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE),
+                drcTarget->surface.image, drcTarget->surface.imageSize);
+            WHBGfxBeginRenderTV();
+            GX2SetAttribBuffer(0, sizeof(composePositions), 2 * sizeof(float), composePositions);
+            GX2SetAttribBuffer(1, sizeof(composeCoords), 2 * sizeof(float), composeCoords);
+            GX2SetAttribBuffer(2, sizeof(composeColors), 4 * sizeof(float), composeColors);
+            drawQuad(&drcTexture, true);
+            drawKeyboard(true);
+            WHBGfxBeginRenderDRC();
+            endFrame();
+        }
+        nn::swkbd::Destroy();
+    }
+
+    // Free the keyboard's memory
+    FSDelClient(client, FS_ERROR_FLAG_NONE);
+    MEMFreeToDefaultHeap(client);
+    MEMFreeToDefaultHeap(work);
+    return decided;
 }
 
 // The GamePad's microphone, which the system fills a ring buffer from

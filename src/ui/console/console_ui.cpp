@@ -164,6 +164,7 @@ int ConsoleUI::showFpsCounter = 0;
 int ConsoleUI::menuTheme = 0;
 int ConsoleUI::frameColor = 1;
 int ConsoleUI::gameLanguage = 0;
+std::string ConsoleUI::nickname;
 int ConsoleUI::micInput = 1;
 int ConsoleUI::stickPointer = 0;
 float ConsoleUI::pointerX = 128, ConsoleUI::pointerY = 96;
@@ -291,6 +292,7 @@ void ConsoleUI::initialize(int width, int height, std::string root, std::string 
         Setting("menuTheme", &menuTheme, false),
         Setting("screenFrame", &frameColor, false),
         Setting("gameLanguage", &gameLanguage, false),
+        Setting("nickname", &nickname, true),
         Setting("micInput", &micInput, false),
         Setting("stickPointer", &stickPointer, false),
         Setting("defaultFolder", &defaultFolder, true),
@@ -1390,6 +1392,62 @@ bool ConsoleUI::fileBrowser() {
     }
 }
 
+static std::u16string utf8To16(const std::string &text) {
+    // Convert UTF-8 to UTF-16, for characters that fit in one UTF-16 unit like the DS's
+    // Anything longer becomes a question mark
+    std::u16string result;
+    for (size_t i = 0; i < text.size();) {
+        uint8_t c = text[i];
+        int extra = (c >= 0xF0) ? 3 : (c >= 0xE0) ? 2 : (c >= 0xC0) ? 1 : 0;
+        uint32_t value = c & (0x7F >> (extra + (extra > 0)));
+        for (int j = 1; j <= extra && i + j < text.size(); j++)
+            value = (value << 6) | (text[i + j] & 0x3F);
+        result += (extra < 3) ? char16_t(value) : u'?';
+        i += extra + 1;
+    }
+    return result;
+}
+
+static std::string utf16To8(const std::u16string &text) {
+    // Convert UTF-16 to UTF-8, for characters that fit in one UTF-16 unit like the DS's
+    std::string result;
+    for (char16_t c : text) {
+        if (c < 0x80) {
+            result += char(c);
+        }
+        else if (c < 0x800) {
+            result += char(0xC0 | (c >> 6));
+            result += char(0x80 | (c & 0x3F));
+        }
+        else {
+            result += char(0xE0 | (c >> 12));
+            result += char(0x80 | ((c >> 6) & 0x3F));
+            result += char(0x80 | (c & 0x3F));
+        }
+    }
+    return result;
+}
+
+static std::string menuText(const std::u16string &text) {
+    // Show text in the menu font, which only has ASCII
+    std::string result;
+    for (char16_t c : text)
+        result += (c >= 32 && c < 127) ? char(c) : '?';
+    return result;
+}
+
+static uint32_t cafeLanguage() {
+    // Read the Wii U's language, which numbers the ones shared with the DS the same way
+    alignas(0x40) uint32_t value = LG_ENGLISH;
+    alignas(0x40) UCSysConfig config = { "cafe.language", 0x777, UC_DATATYPE_UNSIGNED_INT, 0, sizeof(value), &value };
+    UCHandle handle = UCOpen();
+    if (handle >= 0) {
+        if (UCReadSysConfig(handle, 1, &config) != 0) value = LG_ENGLISH;
+        UCClose(handle);
+    }
+    return value;
+}
+
 void ConsoleUI::settingsMenu() {
     // Define possible values for settings
     const std::vector<std::string> toggle = { "Off", "On" };
@@ -1416,6 +1474,9 @@ void ConsoleUI::settingsMenu() {
     const std::vector<std::string> pointer = { "Off", "On (Hide After 15s)", "On (Hide After 30s)", "On (Always)" };
     if (Settings::gpuAntiAlias >= (int)antiAlias.size()) Settings::gpuAntiAlias = 0;
 
+    // The Mii name is shown for the nickname when it isn't set
+    std::u16string miiName = getMiiName();
+
     int index = 0;
     while (true) {
         // Create a list of settings and current values, remembering what each one changes
@@ -1440,6 +1501,11 @@ void ConsoleUI::settingsMenu() {
         add("Menu Theme", menuTheme, theme);
         add("Screen Frame", frameColor, frame);
         add("Game Language", gameLanguage, language);
+        int nicknameIndex = settings.size();
+        settings.push_back(MenuItem("Nickname", nickname.empty() ?
+            (miiName.empty() ? "Mii Name" : "Mii Name (" + menuText(miiName) + ")") :
+            menuText(utf8To16(nickname))));
+        values.push_back({ nullptr, 0 });
         add("Microphone", micInput, mic);
         add("Right Stick Pointer", stickPointer, pointer);
 
@@ -1482,8 +1548,18 @@ void ConsoleUI::settingsMenu() {
         if (pressed & defaultKeys[INPUT_A]) {
             // Change the chosen setting to its next value
             int *value = values[index].first;
-            if (value) *value = (*value + 1) % values[index].second;
-            else aboutMenu();
+            if (value) {
+                *value = (*value + 1) % values[index].second;
+            }
+            else if (index == nicknameIndex) {
+                // Edit the nickname with the system keyboard, following the Mii name if left empty or matching it
+                std::u16string text = nickname.empty() ? miiName : utf8To16(nickname);
+                if (editText(text, 10, cafeLanguage()))
+                    nickname = (text.empty() || text == miiName) ? "" : utf16To8(text);
+            }
+            else {
+                aboutMenu();
+            }
 
             // Update the palette when changing themes
             palette = &themeColors[menuTheme * 7];
@@ -2108,22 +2184,16 @@ void ConsoleUI::romTest() {
 #endif
 
 static Language systemLanguage() {
-    // Read the Wii U's language, which numbers the ones shared with the DS the same way
-    alignas(0x40) uint32_t value = LG_ENGLISH;
-    alignas(0x40) UCSysConfig config = { "cafe.language", 0x777, UC_DATATYPE_UNSIGNED_INT, 0, sizeof(value), &value };
-    UCHandle handle = UCOpen();
-    if (handle >= 0) {
-        if (UCReadSysConfig(handle, 1, &config) != 0) value = LG_ENGLISH;
-        UCClose(handle);
-    }
-
     // Fall back to English for languages the DS doesn't have
+    uint32_t value = cafeLanguage();
     return (value <= LG_SPANISH) ? Language(value) : LG_ENGLISH;
 }
 
 bool ConsoleUI::createCore() {
-    // Choose the language for games to see
+    // Choose the language and nickname for games to see
+    // If the Mii name can't be read, a firmware dump's own name is kept
     Spi::setLanguage(gameLanguage ? Language(gameLanguage - 1) : systemLanguage());
+    Spi::setNickname(nickname.empty() ? getMiiName() : utf8To16(nickname));
 
     try {
         // Let a new core reuse ROMs that are already in memory, instead of reading them from file again

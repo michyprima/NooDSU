@@ -23,6 +23,7 @@
 #include <atomic>
 #include <cstdio>
 #include <mutex>
+#include <string>
 
 enum Language {
     LG_JAPANESE = 0,
@@ -53,6 +54,7 @@ public:
     void clearTouch();
 
     static void setLanguage(Language lang) { language = lang; }
+    static void setNickname(const std::u16string &name) { nickname = name; }
     void sendMicData(const int16_t *samples, size_t count, size_t rate);
     void setMicBlow(bool blow) { micBlow.store(blow); }
     void resetCycles();
@@ -67,6 +69,7 @@ private:
     Core *core;
 
     static Language language;
+    static std::u16string nickname; // Empty keeps the firmware's own
     uint8_t *firmware = nullptr;
     size_t firmSize = 0;
 
@@ -90,4 +93,5 @@ private:
     uint8_t spiData = 0;
 
     static uint16_t crc16(uint32_t value, uint8_t *data, size_t size);
+    static void writeNickname(uint8_t *settings);
 };

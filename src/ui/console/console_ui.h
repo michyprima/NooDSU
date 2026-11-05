@@ -106,6 +106,7 @@ public:
     static int menuTheme;
     static int frameColor; // The screen frame's color, or 0 for none
     static int gameLanguage; // The language games see, or 0 for the system's
+    static std::string nickname; // The name games see in UTF-8, or empty for the Mii's
     static int micInput; // Whether games hear the GamePad's microphone
     static int stickPointer; // Whether the right stick moves a pointer on the touch screen, and when it hides
     static int keyBinds[INPUT_MAX];
@@ -133,6 +134,8 @@ public:
     static void getInputStick(float &x, float &y);
     static size_t getMicSamples(int16_t *out, size_t max);
     static void closeMic();
+    static std::u16string getMiiName(); // Empty if it can't be read
+    static bool editText(std::u16string &text, int maxLength, int language); // False if canceled
 
     static void drawRectangle(float x, float y, float w, float h, uint32_t color = 0xFFFFFFFF);
     static void drawString(std::string string, float x, float y,
