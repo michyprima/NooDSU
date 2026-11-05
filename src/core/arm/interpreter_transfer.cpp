@@ -1088,12 +1088,10 @@ int Interpreter::stmibUW(uint32_t opcode) { // STMIB Rn!, <Rlist>^
 }
 
 int Interpreter::msrRc(uint32_t opcode) { // MSR CPSR,Rm
-    // Write the first 8 bits of the status flags, only changing the CPU mode when not in user mode
+    // Write the first 8 bits of the status flags, unless in user mode
     uint32_t op1 = *registers[opcode & 0xF];
-    if (opcode & BIT(16)) {
-        uint8_t mask = ((cpsr & 0x1F) == 0x10) ? 0xE0 : 0xFF;
-        setCpsr((cpsr & ~mask) | (op1 & mask));
-    }
+    if ((opcode & BIT(16)) && (cpsr & 0x1F) != 0x10)
+        setCpsr((cpsr & ~0xFF) | (op1 & 0xFF));
 
     // Write the remaining 8-bit blocks of the status flags
     for (int i = 1; i < 4; i++) {
@@ -1120,11 +1118,9 @@ int Interpreter::msrIc(uint32_t opcode) { // MSR CPSR,#i
     uint8_t shift = (opcode >> 7) & 0x1E;
     uint32_t op1 = (value << (32 - shift)) | (value >> shift);
 
-    // Write the first 8 bits of the status flags, only changing the CPU mode when not in user mode
-    if (opcode & BIT(16)) {
-        uint8_t mask = ((cpsr & 0x1F) == 0x10) ? 0xE0 : 0xFF;
-        setCpsr((cpsr & ~mask) | (op1 & mask));
-    }
+    // Write the first 8 bits of the status flags, unless in user mode
+    if ((opcode & BIT(16)) && (cpsr & 0x1F) != 0x10)
+        setCpsr((cpsr & ~0xFF) | (op1 & 0xFF));
 
     // Write the remaining 8-bit blocks of the status flags
     for (int i = 1; i < 4; i++) {
