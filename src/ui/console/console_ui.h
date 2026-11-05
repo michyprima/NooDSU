@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -46,6 +47,7 @@ enum MenuInputs {
     INPUT_FAST_TOGG,
     INPUT_SCRN_SWAP,
     INPUT_MIC_BLOW,
+    INPUT_POINTER_TOUCH,
     INPUT_MAX
 };
 
@@ -105,12 +107,14 @@ public:
     static int frameColor; // The screen frame's color, or 0 for none
     static int gameLanguage; // The language games see, or 0 for the system's
     static int micInput; // Whether games hear the GamePad's microphone
+    static int stickPointer; // Whether the right stick moves a pointer on the touch screen, and when it hides
     static int keyBinds[INPUT_MAX];
 
     // Data that is defined per-platform
     static uint32_t defaultKeys[INPUT_MAX];
     static const char *keyNames[32];
     static const int micRate; // Microphone samples per second
+    static const uint32_t pointerKeys; // The right stick's directions, which the pointer takes from the game
 
     // Functions that are implemented per-platform
     static void startFrame(uint32_t color);
@@ -123,8 +127,10 @@ public:
     static void destroyHiResTexture(void *texture);
     static void drawTexture(void *texture, float tx, float ty, float tw, float th, float x, float y,
         float w, float h, bool filter = true, int rotation = 0, uint32_t color = 0xFFFFFFFF);
+    static void drawOverlay(void *texture, float x, float y, float w, float h, bool gamepad);
     static uint32_t getInputHeld();
     static MenuTouch getInputTouch();
+    static void getInputStick(float &x, float &y);
     static size_t getMicSamples(int16_t *out, size_t max);
     static void closeMic();
 
@@ -150,6 +156,7 @@ private:
     static void *fileTextures[2];
     static void *folderTextures[2];
     static void *fontTexture;
+    static void *pointerTexture;
 
     static const uint32_t *palette;
     static uint32_t uiWidth, uiHeight;
@@ -161,6 +168,11 @@ private:
     static bool changed;
     static void *frameTextures[2]; // The screen frame for the TV and the gamepad
     static void updateFrames(ScreenLayout *gamepad);
+
+    // The right stick's pointer, in touch screen pixels, and when it hides
+    static float pointerX, pointerY;
+    static std::chrono::steady_clock::time_point pointerHide;
+    static bool updatePointer(uint32_t held, ScreenLayout *gamepad);
 
     static std::thread *coreThread;
     static WorkerThread *saveThread;

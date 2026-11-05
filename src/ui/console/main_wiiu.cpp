@@ -81,6 +81,7 @@ bool firstScreen;
 VPADStatus vpad;
 VPADTouchData touch;
 uint32_t extHeld[4];
+float extStick[4][2]; // Right stick positions of the other controllers
 bool scanned;
 
 WHBGfxShaderGroup group;
@@ -161,8 +162,11 @@ uint32_t ConsoleUI::defaultKeys[] {
     VPAD_BUTTON_UP | VPAD_STICK_R_EMULATION_UP | VPAD_STICK_L_EMULATION_UP,
     VPAD_BUTTON_DOWN | VPAD_STICK_R_EMULATION_DOWN | VPAD_STICK_L_EMULATION_DOWN,
     VPAD_BUTTON_ZR, VPAD_BUTTON_ZL, VPAD_BUTTON_X, VPAD_BUTTON_Y,
-    VPAD_BUTTON_L | VPAD_BUTTON_R, 0, 0, 0, VPAD_BUTTON_STICK_L
+    VPAD_BUTTON_L | VPAD_BUTTON_R, 0, 0, 0, VPAD_BUTTON_STICK_L, VPAD_BUTTON_STICK_R
 };
+
+const uint32_t ConsoleUI::pointerKeys = VPAD_STICK_R_EMULATION_UP | VPAD_STICK_R_EMULATION_DOWN |
+    VPAD_STICK_R_EMULATION_LEFT | VPAD_STICK_R_EMULATION_RIGHT;
 
 const char *ConsoleUI::keyNames[] {
     "Sync", "Home", "Minus", "Plus", "R", "L", "ZR", "ZL",
@@ -732,6 +736,29 @@ void ConsoleUI::drawFrames(void *tv, void *gamepad) {
         bufOffset += 8 * sizeof(float);
 }
 
+void ConsoleUI::drawOverlay(void *texture, float x, float y, float w, float h, bool gamepad) {
+    // Draw a whole texture on one display, placed in that display's pixels
+    if (!texture) return;
+    float width = gamepad ? 854 : tvWidth, height = gamepad ? 480 : tvHeight;
+    float x1 = x / (width / 2) - 1.0f, y1 = -(y / (height / 2) - 1.0f);
+    float x2 = (x + w) / (width / 2) - 1.0f, y2 = -((y + h) / (height / 2) - 1.0f);
+    float posCoords[] = { x1, y1, x2, y1, x2, y2, x1, y2, x1, y1, x2, y1, x2, y2, x1, y2 };
+    static const float texCoords[] = { 0, 0, 1, 0, 1, 1, 0, 1 };
+    static const float vtxColors[] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+    uploadQuad(posCoords, texCoords, vtxColors);
+
+    if (gamepad) WHBGfxBeginRenderDRC();
+    else WHBGfxBeginRenderTV();
+    GX2RSetAttributeBuffer(&posBuffer, 0, posBuffer.elemSize, bufOffset * 2 + (gamepad ? 8 * sizeof(float) : 0));
+    GX2RSetAttributeBuffer(&texBuffer, 1, texBuffer.elemSize, bufOffset);
+    GX2RSetAttributeBuffer(&colBuffer, 2, colBuffer.elemSize, bufOffset * 2);
+    drawQuad((GX2Texture*)texture, true);
+
+    // Adjust the buffer offset if there's still room
+    if (bufOffset < 8 * sizeof(float) * MAX_DRAWS)
+        bufOffset += 8 * sizeof(float);
+}
+
 uint32_t extToVpad(uint32_t hold, bool pro) {
     // Convert Pro Controller or Classic Controller buttons to GamePad buttons, so key binds apply to both
     // The face buttons, shoulders, d-pad, plus, minus and home use the same bits on both controllers
@@ -811,16 +838,26 @@ void scanInput() {
         KPADStatus status;
         KPADError error;
         if (!KPADReadEx((KPADChan)i, &status, 1, &error)) {
-            if (error == KPAD_ERROR_INVALID_CONTROLLER)
+            if (error == KPAD_ERROR_INVALID_CONTROLLER) {
                 extHeld[i] = 0;
+                extStick[i][0] = extStick[i][1] = 0;
+            }
             continue;
         }
-        if (status.extensionType == WPAD_EXT_PRO_CONTROLLER)
+        if (status.extensionType == WPAD_EXT_PRO_CONTROLLER) {
             extHeld[i] = extToVpad(status.pro.hold, true);
-        else if (status.extensionType == WPAD_EXT_CLASSIC || status.extensionType == WPAD_EXT_MPLUS_CLASSIC)
+            extStick[i][0] = status.pro.rightStick.x;
+            extStick[i][1] = status.pro.rightStick.y;
+        }
+        else if (status.extensionType == WPAD_EXT_CLASSIC || status.extensionType == WPAD_EXT_MPLUS_CLASSIC) {
             extHeld[i] = extToVpad(status.classic.hold, false);
-        else
+            extStick[i][0] = status.classic.rightStick.x;
+            extStick[i][1] = status.classic.rightStick.y;
+        }
+        else {
             extHeld[i] = 0;
+            extStick[i][0] = extStick[i][1] = 0;
+        }
     }
 }
 
@@ -837,6 +874,19 @@ MenuTouch ConsoleUI::getInputTouch() {
     // Return touch data from the GamePad
     scanInput();
     return MenuTouch(touch.touched, touch.x, touch.y);
+}
+
+void ConsoleUI::getInputStick(float &x, float &y) {
+    // Return the right stick that's pushed furthest, from the GamePad or any other controller
+    scanInput();
+    x = vpad.rightStick.x;
+    y = vpad.rightStick.y;
+    for (int i = 0; i < 4; i++) {
+        if (extStick[i][0] * extStick[i][0] + extStick[i][1] * extStick[i][1] > x * x + y * y) {
+            x = extStick[i][0];
+            y = extStick[i][1];
+        }
+    }
 }
 
 // The GamePad's microphone, which the system fills a ring buffer from

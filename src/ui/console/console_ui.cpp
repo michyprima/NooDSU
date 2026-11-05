@@ -24,6 +24,7 @@
 #include <cstring>
 #include <new>
 #include <chrono>
+#include <cmath>
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -71,9 +72,11 @@ extern uint8_t _binary_src_ui_console_images_file_light_bmp_start;
 extern uint8_t _binary_src_ui_console_images_folder_dark_bmp_start;
 extern uint8_t _binary_src_ui_console_images_folder_light_bmp_start;
 extern uint8_t _binary_src_ui_console_images_font_bmp_start;
+extern uint8_t _binary_src_ui_console_images_pointer_bmp_start;
 
 void *ConsoleUI::fileTextures[2];
 void *ConsoleUI::folderTextures[2];
+void *ConsoleUI::pointerTexture;
 void *ConsoleUI::fontTexture;
 
 const uint32_t *ConsoleUI::palette;
@@ -162,6 +165,9 @@ int ConsoleUI::menuTheme = 0;
 int ConsoleUI::frameColor = 1;
 int ConsoleUI::gameLanguage = 0;
 int ConsoleUI::micInput = 1;
+int ConsoleUI::stickPointer = 0;
+float ConsoleUI::pointerX = 128, ConsoleUI::pointerY = 96;
+std::chrono::steady_clock::time_point ConsoleUI::pointerHide;
 void *ConsoleUI::frameTextures[2];
 int ConsoleUI::keyBinds[] = {};
 
@@ -273,6 +279,7 @@ void ConsoleUI::initialize(int width, int height, std::string root, std::string 
     folderTextures[0] = bmpToTexture(&_binary_src_ui_console_images_folder_dark_bmp_start);
     folderTextures[1] = bmpToTexture(&_binary_src_ui_console_images_folder_light_bmp_start);
     fontTexture = bmpToTexture(&_binary_src_ui_console_images_font_bmp_start);
+    pointerTexture = bmpToTexture(&_binary_src_ui_console_images_pointer_bmp_start);
 
     // Set the default input bindings
     for (int i = 0; i < INPUT_MAX; i++)
@@ -285,6 +292,7 @@ void ConsoleUI::initialize(int width, int height, std::string root, std::string 
         Setting("screenFrame", &frameColor, false),
         Setting("gameLanguage", &gameLanguage, false),
         Setting("micInput", &micInput, false),
+        Setting("stickPointer", &stickPointer, false),
         Setting("defaultFolder", &defaultFolder, true),
         Setting("keyA", &keyBinds[INPUT_A], false),
         Setting("keyB", &keyBinds[INPUT_B], false),
@@ -302,7 +310,8 @@ void ConsoleUI::initialize(int width, int height, std::string root, std::string 
         Setting("keyFastHold", &keyBinds[INPUT_FAST_HOLD], false),
         Setting("keyFastToggle", &keyBinds[INPUT_FAST_TOGG], false),
         Setting("keyScreenSwap", &keyBinds[INPUT_SCRN_SWAP], false),
-        Setting("keyMicBlow", &keyBinds[INPUT_MIC_BLOW], false)
+        Setting("keyMicBlow", &keyBinds[INPUT_MIC_BLOW], false),
+        Setting("keyPointerTouch", &keyBinds[INPUT_POINTER_TOUCH], false)
     };
 
     // Add the platform settings
@@ -673,6 +682,14 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         // Scan for key input
         uint32_t pressed = getInputPress();
         uint32_t held = getInputHeld();
+
+        // Move and draw the right stick's pointer, which takes the stick and its touch key from the game while it's on
+        bool pointerTouch = false;
+        if (stickPointer && !gbaMode) {
+            pointerTouch = updatePointer(held, touchLayout);
+            pressed &= ~(pointerKeys | keyBinds[INPUT_POINTER_TOUCH]);
+            held &= ~(pointerKeys | keyBinds[INPUT_POINTER_TOUCH]);
+        }
 #ifdef AUDIO_CAPTURE
         // Mark the audio capture when L, R and Y are pressed, which are ZL, ZR and Y on the GamePad by default
         uint32_t markCombo = keyBinds[INPUT_L] | keyBinds[INPUT_R] | keyBinds[INPUT_Y];
@@ -717,6 +734,11 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
             // Send the touch coordinates to the core
             core->input.pressScreen();
             core->spi.setTouch(touchX, touchY);
+        }
+        else if (pointerTouch) {
+            // Touch where the pointer is
+            core->input.pressScreen();
+            core->spi.setTouch(pointerX, pointerY);
         }
         else { // Released
             // Release the touch screen press
@@ -792,6 +814,62 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
     hiResData = nullptr;
     screenFrame = framebuffer;
     lastFrame = nullptr;
+}
+
+bool ConsoleUI::updatePointer(uint32_t held, ScreenLayout *gamepad) {
+    // Move the pointer with the right stick past a dead zone, faster the further it's pushed
+    // The stick moves it the way it looks on the display, so it's turned with the screens
+    auto now = std::chrono::steady_clock::now();
+    float x, y;
+    getInputStick(x, y);
+    float length = sqrtf(x * x + y * y);
+    if (length > 0.15f) {
+        float push = (std::min(length, 1.0f) - 0.15f) / 0.85f;
+        float speed = 4.5f * push * push / length;
+        float dx = x * speed, dy = -y * speed;
+        switch (ScreenLayout::screenRotation) {
+            case 0: pointerX += dx; pointerY += dy; break; // None
+            case 1: pointerX += dy; pointerY -= dx; break; // Clockwise
+            default: pointerX -= dy; pointerY += dx; break; // Counter-clockwise
+        }
+        pointerX = std::max(0.0f, std::min(255.0f, pointerX));
+        pointerY = std::max(0.0f, std::min(191.0f, pointerY));
+    }
+
+    // Touch for as long as the touch key is held, which drags if the pointer moves meanwhile
+    // Show the pointer while it's used, and hide it once it's left alone for long enough unless it's always shown
+    bool touching = held & keyBinds[INPUT_POINTER_TOUCH];
+    if (length > 0.15f || touching)
+        pointerHide = now + std::chrono::seconds(stickPointer == 1 ? 15 : 30);
+    if (stickPointer != 3 && now >= pointerHide)
+        return touching;
+
+    // Draw the hand with its fingertip on the pointer, on each display that shows the touch screen
+    // Each display shows both screens, or one with single screen arrangement, the TV's as set by screen sizing
+    ScreenLayout *layouts[] = { &layout, gamepad };
+    for (int i = 0; i < 2; i++) {
+        if (!layouts[i]) continue;
+        if (ScreenLayout::arrangement() == 3 && (ScreenLayout::screenSizing == 2) == (i == 1)) continue;
+        ScreenLayout &l = *layouts[i];
+        float px, py;
+        switch (ScreenLayout::screenRotation) {
+            case 0: // None
+                px = l.botX + (pointerX + 0.5f) * l.botWidth / 256;
+                py = l.botY + (pointerY + 0.5f) * l.botHeight / 192;
+                break;
+            case 1: // Clockwise
+                px = l.botX + (191.5f - pointerY) * l.botWidth / 192;
+                py = l.botY + (pointerX + 0.5f) * l.botHeight / 256;
+                break;
+            default: // Counter-clockwise
+                px = l.botX + (pointerY + 0.5f) * l.botWidth / 192;
+                py = l.botY + (255.5f - pointerX) * l.botHeight / 256;
+                break;
+        }
+        float size = std::min(l.botWidth, l.botHeight) * 0.13f;
+        drawOverlay(pointerTexture, px - size * 0.188f, py - size * 0.047f, size, size, i == 1);
+    }
+    return touching;
 }
 
 void ConsoleUI::updateFrames(ScreenLayout *gamepad) {
@@ -1335,6 +1413,7 @@ void ConsoleUI::settingsMenu() {
     const std::vector<std::string> language = { "System Language", "Japanese", "English", "French", "German",
         "Italian", "Spanish" };
     const std::vector<std::string> mic = { "Off", "GamePad" };
+    const std::vector<std::string> pointer = { "Off", "On (Hide After 15s)", "On (Hide After 30s)", "On (Always)" };
     if (Settings::gpuAntiAlias >= (int)antiAlias.size()) Settings::gpuAntiAlias = 0;
 
     int index = 0;
@@ -1362,6 +1441,7 @@ void ConsoleUI::settingsMenu() {
         add("Screen Frame", frameColor, frame);
         add("Game Language", gameLanguage, language);
         add("Microphone", micInput, mic);
+        add("Right Stick Pointer", stickPointer, pointer);
 
         header("Graphics Settings");
         add("GPU 3D Renderer", Settings::hardware3D, toggle);
@@ -1462,7 +1542,7 @@ void ConsoleUI::controlsMenu() {
             "A Button", "B Button", "Select Button", "Start Button",
             "Right Button", "Left Button", "Up Button", "Down Button",
             "R Button", "L Button", "X Button", "Y Button", "Menu Button",
-            "Fast Forward Hold", "Fast Forward Toggle", "Screen Swap Toggle", "Blow into Mic"
+            "Fast Forward Hold", "Fast Forward Toggle", "Screen Swap Toggle", "Blow into Mic", "Pointer Touch"
         };
 
         // Build strings for the input bindings
@@ -1500,7 +1580,8 @@ void ConsoleUI::controlsMenu() {
             MenuItem(names[INPUT_FAST_HOLD], bindings[INPUT_FAST_HOLD]),
             MenuItem(names[INPUT_FAST_TOGG], bindings[INPUT_FAST_TOGG]),
             MenuItem(names[INPUT_SCRN_SWAP], bindings[INPUT_SCRN_SWAP]),
-            MenuItem(names[INPUT_MIC_BLOW], bindings[INPUT_MIC_BLOW])
+            MenuItem(names[INPUT_MIC_BLOW], bindings[INPUT_MIC_BLOW]),
+            MenuItem(names[INPUT_POINTER_TOUCH], bindings[INPUT_POINTER_TOUCH])
         };
 
         // Create the controls menu
