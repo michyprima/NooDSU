@@ -25,7 +25,9 @@
 ; Crack filling: R0 has this pixel's coordinates, and R1 and R2 have those of the neighbors right and left, then down
 ; and up. The attributes texture has the ID and flags, scaled back by C0.x, whose whole part is odd for solid pixels.
 ; A pixel is a crack if no solid polygon drew it, and solid polygons drew both neighbors across it; it's dropped
-; otherwise. Cracks take the color and attributes of the neighbor up, or of the one left if they're not across it
+; otherwise. So is one between solid neighbors up and down that are much nearer, where what's behind a gap was drawn:
+; its depth is above the farther neighbor's times C0.y plus C0.z, with depths left encoded since they're only compared.
+; Cracks take the color and attributes of the neighbor up, or of the one left if they're not across it
 ; that way. Each instruction group has a single instruction, since groups can't read the same channel of different
 ; registers at once, which the assembler doesn't check.
 00 TEX: ADDR(80) CNT(7) VALID_PIX
@@ -36,12 +38,12 @@
     4  SAMPLE R7, R2.zw00, t0, s0
     5  SAMPLE R8, R1.zw00, t1, s1
     6  SAMPLE R9, R2.zw00, t1, s1
-01 ALU: ADDR(32) CNT(33)
+01 ALU: ADDR(32) CNT(38)
     7  x: MUL R12.x, R3.x, C0.x
     8  x: FLOOR R12.x, R12.x
     9  x: MUL R12.x, R12.x, 0.5f
    10  x: FRACT R12.x, R12.x
-   11  x: KILLGT ____, R12.x, (0x3E800000, 0.25f).x
+   11  x: SETE R17.x, R12.x, 0.0f
    12  x: MUL R13.x, R4.x, C0.x
    13  x: FLOOR R13.x, R13.x
    14  x: MUL R13.x, R13.x, 0.5f
@@ -58,16 +60,22 @@
    25  w: FLOOR R13.w, R13.w
    26  w: MUL R13.w, R13.w, 0.5f
    27  w: FRACT R13.w, R13.w
-   28  x: MUL R14.x, R13.x, R13.y
-   29  y: MUL R14.y, R13.z, R13.w
-   30  z: MAX R14.z, R14.x, R14.y
-   31  x: KILLGT ____, (0x3E000000, 0.125f).x, R14.z
-   32  x: CNDGT R15.x, R14.y, R7.x, R5.x
-   33  y: CNDGT R15.y, R14.y, R7.y, R5.y
-   34  x: CNDGT R16.x, R14.y, R9.x, R8.x
-   35  y: CNDGT R16.y, R14.y, R9.y, R8.y
-   36  z: CNDGT R16.z, R14.y, R9.z, R8.z
-   37  w: CNDGT R16.w, R14.y, R9.w, R8.w
+   28  y: MAX R17.y, R6.y, R7.y
+   29  y: MULADD R17.y, R17.y, C0.y, C0.z
+   30  z: SETGT R17.z, R3.y, R17.y
+   31  z: MAX R17.z, R17.z, R17.x
+   32  x: MUL R14.x, R13.x, R13.y
+   33  x: MUL R14.x, R14.x, R17.x
+   34  y: MUL R14.y, R13.z, R13.w
+   35  y: MUL R14.y, R14.y, R17.z
+   36  z: MAX R14.z, R14.x, R14.y
+   37  x: KILLGT ____, (0x3E000000, 0.125f).x, R14.z
+   38  x: CNDGT R15.x, R14.y, R7.x, R5.x
+   39  y: CNDGT R15.y, R14.y, R7.y, R5.y
+   40  x: CNDGT R16.x, R14.y, R9.x, R8.x
+   41  y: CNDGT R16.y, R14.y, R9.y, R8.y
+   42  z: CNDGT R16.z, R14.y, R9.z, R8.z
+   43  w: CNDGT R16.w, R14.y, R9.w, R8.w
 02 EXP: PIX0, R16
 03 EXP_DONE: PIX1, R15
 END_OF_PROGRAM

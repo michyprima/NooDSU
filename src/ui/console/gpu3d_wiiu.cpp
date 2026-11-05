@@ -1279,7 +1279,10 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2SetPixelSampler(&samplers[0], 0);
             GX2SetPixelTexture(&colorTexture, 1);
             GX2SetPixelSampler(&samplers[0], 1);
-            float scale[] = { compact ? 256.0f : 1.0f, 0, 0, 0 };
+            // How much farther than both neighbors up and down makes a pixel a gap: W by a ratio, which adds to its log,
+            // and Z by an amount
+            float scale[] = { compact ? 256.0f : 1.0f, (wBuffer && !compact) ? 1.25f : 1.0f,
+                !wBuffer ? (compact ? float(0x10000) / 0x1000000 : 0x10000) : (compact ? log2f(1.25f) / 32 : 0.0f), 0 };
             GX2SetPixelUniformReg(0, 4, scale);
             GX2SetDepthStencilControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS, TRUE, FALSE,
                 GX2_COMPARE_FUNC_EQUAL, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP,
