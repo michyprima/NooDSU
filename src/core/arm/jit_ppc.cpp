@@ -924,7 +924,8 @@ static uint32_t thumbToArm(uint32_t op) {
             return 0xE8BD0000 | imm | ((op & BIT(8)) ? BIT(15) : 0);
         return none;
     case 0x18: return 0xE8A00000 | (r8 << 16) | imm; // STMIA
-    case 0x19: return 0xE8B00000 | (r8 << 16) | imm; // LDMIA
+    case 0x19: // LDMIA, where a listed base is overwritten by what's loaded, so it's the same without writeback
+        return ((imm & BIT(r8)) ? 0xE8900000 : 0xE8B00000) | (r8 << 16) | imm;
     }
     return none;
 }
