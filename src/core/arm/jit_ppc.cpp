@@ -253,6 +253,9 @@ void Jit::initCodegen() {
     offEventCycles = offsetof(SchedEvent, cycles);
     offUsr = (uint8_t*)&arm.registersUsr[0] - (uint8_t*)&arm;
     offRegs = (uint8_t*)&arm.registers[0] - (uint8_t*)&arm;
+    offIe = (uint8_t*)&arm.ie - (uint8_t*)&arm;
+    offIrf = (uint8_t*)&arm.irf - (uint8_t*)&arm;
+    addrWriteCpsr = (uint32_t)(uintptr_t)&Jit::writeCpsrCall;
     addrCondition = (uint32_t)(uintptr_t)&Interpreter::condition[0];
     addrMemory = (uint32_t)(uintptr_t)&core->memory;
     addrReadMap = (uint32_t)(uintptr_t)(arm7 ? &core->memory.readMap7[0] : &core->memory.readMap9A[0]);
@@ -537,6 +540,63 @@ void Jit::emitStubs(PpcEmitter &e) {
     e.rlwinm(6, 6, 29, 3, 31);
     e.blr();
 
+    // MSR to the CPSR with the value in r4, for the bottom byte and then also the top one
+    // Only the same mode and THUMB state with no interrupt to take are done here, since the interpreter has the rest
+    // User mode can only change the top byte, and bit 4 of the mode is always set
+    for (int top = 0; top < 2; top++) {
+        codeMsr[top] = e.here();
+        e.lwz(6, offCpsr, R_ARM);
+        e.andi_(7, 6, 0x1F);
+        e.cmpwi(7, 0x10);
+        uint32_t *user = e.here();
+        e.beq(nullptr);
+        e.rlwinm(7, 4, 0, 24, 31);
+        e.ori(7, 7, 0x10);
+        e.xor_(8, 7, 6);
+        e.andi_(8, 8, 0x3F);
+        uint32_t *slow1 = e.here();
+        e.bne(nullptr);
+        e.andi_(8, 7, BIT(7));
+        uint32_t *masked = e.here();
+        e.bne(nullptr);
+        e.lwz(8, offIe, R_ARM);
+        e.lwz(9, offIrf, R_ARM);
+        e.and_(8, 8, 9);
+        e.lwz(9, offIe + 4, R_ARM);
+        e.lwz(10, offIrf + 4, R_ARM);
+        e.and_(9, 9, 10);
+        e.or_(8, 8, 9);
+        e.cmpwi(8, 0);
+        uint32_t *slow2 = e.here();
+        e.bne(nullptr);
+        e.patchBc(masked);
+        e.rlwimi(6, 7, 0, 24, 31);
+        e.patchBc(user);
+        if (top) {
+            e.rlwinm(6, 6, 0, 8, 31);
+            e.rlwimi(6, 4, 0, 0, arm7 ? 3 : 4);
+        }
+        e.stw(6, offCpsr, R_ARM);
+        e.blr();
+
+        e.patchBc(slow1);
+        e.patchBc(slow2);
+        e.stwu(1, -16, 1);
+        e.mflr(0);
+        e.stw(0, 20, 1);
+        e.stw(R_CYCLES, 0, R_GLOBAL);
+        e.stw(R_CYCLES, offCycles, R_ARM);
+        e.mr(3, R_ARM);
+        e.mr(5, 4);
+        e.loadConst(4, top ? (BIT(16) | BIT(19)) : BIT(16));
+        e.call(addrWriteCpsr);
+        e.call(codeRefresh);
+        e.lwz(0, 20, 1);
+        e.mtlr(0);
+        e.addi(1, 1, 16);
+        e.blr();
+    }
+
     // Set the sticky Q flag if the sum in r5 of r6 and r7 overflowed
     codeOverflowQ = e.here();
     e.xor_(8, 5, 6);
@@ -691,7 +751,7 @@ enum NativeKind {
     NK_MULTIPLY, // MUL/MLA and long multiplies
     NK_MISC, // CLZ and MRS
     NK_COPROCESSOR, // MCR that only changes the caches, and MRC of the DTCM base
-    NK_MSR, // MSR to the SPSR
+    NK_MSR, // MSR
     NK_BLX, // BLX label
     NK_TRANSFER_PC, // LDR into the program counter
     NK_ALU_PC, // Data processing without flags into the program counter
@@ -746,7 +806,7 @@ static int nativeKind(uint32_t op, bool arm7) {
         }
         if ((op & 0x0FBF0FFF) == 0x010F0000) return (rd == 15) ? NK_NONE : NK_MISC; // MRS
         if (((op & 0x0FB000F0) == 0x01200000 || (op & 0x0FB00000) == 0x03200000) && (op & 0x00090000)) // MSR
-            return (op & BIT(22)) ? NK_MSR : NK_NONE;
+            return NK_MSR;
         if (opc >= 8 && opc <= 11) return s ? NK_ALU : NK_NONE; // Compares and tests, other encodings are misc
         return (rd == 15) ? (s ? NK_NONE : NK_ALU_PC) : NK_ALU;
     }
@@ -1301,7 +1361,7 @@ void Jit::emitCoprocessor(PpcEmitter &e, uint32_t op) {
 }
 
 void Jit::emitMsr(PpcEmitter &e, uint32_t op, uint32_t pc) {
-    // MSR to the SPSR, which only has the top and bottom bytes on a real DS, and nothing happens in modes without one
+    // MSR, where the status registers only have the top and bottom bytes on a real DS
     if (op & BIT(25)) {
         uint32_t shift = (op >> 7) & 0x1E;
         e.loadConst(4, shift ? (((op & 0xFF) << (32 - shift)) | ((op & 0xFF) >> shift)) : (op & 0xFF));
@@ -1309,6 +1369,23 @@ void Jit::emitMsr(PpcEmitter &e, uint32_t op, uint32_t pc) {
     else {
         readReg(e, 4, op & 0xF, pc);
     }
+
+    // Writes to the CPSR's bottom byte use a shared routine, since they can change the CPU's mode or let an interrupt in
+    if (!(op & BIT(22))) {
+        if (op & BIT(16)) {
+            e.call(codeMsr[(op >> 19) & 1]);
+        }
+        else {
+            e.lwz(6, offCpsr, R_ARM);
+            e.rlwinm(6, 6, 0, 8, 31);
+            e.rlwimi(6, 4, 0, 0, arm7 ? 3 : 4);
+            e.stw(6, offCpsr, R_ARM);
+        }
+        e.li(3, 1);
+        return;
+    }
+
+    // Nothing happens for the SPSR in modes without one
     e.lwz(5, offSpsr, R_ARM);
     e.cmpwi(5, 0);
     uint32_t *none = e.here();

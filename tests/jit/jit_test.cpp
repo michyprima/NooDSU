@@ -41,8 +41,8 @@ enum { NK_NONE, NK_ALU, NK_BRANCH, NK_TRANSFER, NK_BRANCH_REG, NK_HALF, NK_BLOCK
 // Addresses in the emulator
 static const uint32_t ARM_STATE = 0x10000, CACHE_FLAG = 0x50000, CACHE = 0x50010, EVENTS = 0x70000, LIMIT = 0x71000,
     GLOBAL = 0x72000, STACK = 0x7F000, END = 0x80000, COND_TABLE = 0x200000, READ_MAP = 0x400000, WRITE_MAP = 0x800000,
-    FAKE = 0x3F0000, FAKE_MEMORY = 0x3F0800, FAKE_HANDLER = 0x3F1000, FAKE_INTERLEAVE = 0x3F2000, DTCM_REG = 0x3F4000, CODE = 0x10000000;
-static const uint32_t OFF_REGS = 0x40, OFF_CPSR = 0x80, OFF_CYCLES = 0x84, OFF_SPSR = 0x88, OFF_BANK = 0xA0, OFF_SPSR_VALUE = 0xC0;
+    FAKE = 0x3F0000, FAKE_MEMORY = 0x3F0800, FAKE_HANDLER = 0x3F1000, FAKE_INTERLEAVE = 0x3F2000, FAKE_MSR = 0x3F1800, DTCM_REG = 0x3F4000, CODE = 0x10000000;
+static const uint32_t OFF_REGS = 0x40, OFF_CPSR = 0x80, OFF_CYCLES = 0x84, OFF_SPSR = 0x88, OFF_BANK = 0xA0, OFF_SPSR_VALUE = 0xC0, OFF_IE = 0xD0, OFF_IRF = 0xD8;
 
 // Guest memory: data, then code, which is real main RAM for the interpreter and a copy in the emulator
 static const uint32_t WINDOW = 0x02100000, WINDOW_SIZE = 0x40000, DATA_START = WINDOW + 0x2000, DATA_END = WINDOW + 0x1E000,
@@ -86,6 +86,8 @@ static struct {
     size_t fakeAt;
     std::string name, description;
     uint32_t inCpsr;
+    uint64_t ie, irf;
+    int msrCalls, msrWanted;
 } now;
 
 static uint32_t swap32(uint32_t v) { return __builtin_bswap32(v); }
@@ -201,6 +203,20 @@ static void hookFake(uc_engine *, uint64_t address, uint32_t, void *) {
         scheduleEvent();
         clobberVolatile(true);
         setReg(UC_PPC_REG_3, FAKE_HANDLER_CYCLES);
+    }
+    else if (address == FAKE_MSR) {
+        // An MSR that does what only the interpreter can, like changing the CPU's mode; the registers don't change here
+        count("msr slow path");
+        now.msrCalls++;
+        uint32_t bits = reg(UC_PPC_REG_4), value = reg(UC_PPC_REG_5), cpsr = readBe(ARM_STATE + OFF_CPSR);
+        if (reg(UC_PPC_REG_3) != ARM_STATE) fail("MSR called without the CPU: %08X", reg(UC_PPC_REG_3));
+        if (readBe(GLOBAL) != reg(UC_PPC_REG_28) || readBe(ARM_STATE + OFF_CYCLES) != reg(UC_PPC_REG_28))
+            fail("MSR called without saved time");
+        if ((bits & BIT(16)) && (cpsr & 0x1F) != 0x10) cpsr = (cpsr & ~0xFF) | (value & 0xFF) | 0x10;
+        if (bits & BIT(19)) cpsr = (cpsr & 0x00FFFFFF) | (value & (now.cpu ? 0xF0000000 : 0xF8000000));
+        writeBe(ARM_STATE + OFF_CPSR, cpsr);
+        scheduleEvent();
+        clobberVolatile(false);
     }
     else if (address == FAKE_INTERLEAVE) {
         // A stop for another CPU or a task, which must see exactly the state after an instruction, flags included
@@ -326,6 +342,20 @@ static bool runOracle(Case &c, State &out, uint32_t &cycles, std::vector<Snapsho
                 }
             }
         }
+        else if (pass && kind == NK_MSR && !(op & BIT(22))) {
+            // The interpreter's way changes which registers are visible and can schedule an interrupt, which the test leaves
+            // out; generated code has to call it whenever that could happen
+            uint32_t before = arm.cpsr, *registers[16], *spsr = arm.spsr;
+            uint8_t ime = arm.ime;
+            memcpy(registers, arm.registers, sizeof(registers));
+            arm.ime = 0;
+            cost = (arm.*Interpreter::armInstrs[((op >> 16) & 0xFF0) | ((op >> 4) & 0xF)])(op);
+            arm.ime = ime;
+            memcpy(arm.registers, registers, sizeof(registers));
+            arm.spsr = spsr;
+            bool control = (op & BIT(16)) && (before & 0x1F) != 0x10;
+            if (control && (((arm.cpsr ^ before) & 0x3F) || (!(arm.cpsr & BIT(7)) && (now.ie & now.irf)))) now.msrWanted++;
+        }
         else if (pass) {
             cost = block->thumb ? (arm.*Interpreter::thumbInstrs[(op >> 6) & 0x3FF])(op) : (op >> 28) == 0xF ? arm.handleReserved(op) :
                 (arm.*Interpreter::armInstrs[((op >> 16) & 0xFF0) | ((op >> 4) & 0xF)])(op);
@@ -389,6 +419,10 @@ static void runCase(Case &c) {
     now.traceAt = 0;
     now.fakes.clear();
     now.fakeAt = 0;
+    now.msrCalls = now.msrWanted = 0;
+    static std::mt19937 interrupts(4321);
+    now.ie = uint64_t(1) << (interrupts() % 64);
+    now.irf = (interrupts() % 4) ? 0 : now.ie;
     JitBlock *first = c.blocks[0];
     char text[256];
     int n = snprintf(text, sizeof(text), "cpu %d %s mode %d mem %d stop %d/%d at %08X:", c.cpu, first->thumb ? "T" : "A", c.in.mode,
@@ -417,6 +451,10 @@ static void runCase(Case &c) {
     words[OFF_SPSR / 4] = swap32(c.in.mode ? (ARM_STATE + OFF_SPSR_VALUE) : 0);
     for (int i = 0; i < 7; i++) words[OFF_BANK / 4 + i] = swap32(c.in.bank[i]);
     words[OFF_SPSR_VALUE / 4] = swap32(c.in.spsr);
+    words[OFF_IE / 4] = swap32(now.ie >> 32);
+    words[OFF_IE / 4 + 1] = swap32(now.ie);
+    words[OFF_IRF / 4] = swap32(now.irf >> 32);
+    words[OFF_IRF / 4 + 1] = swap32(now.irf);
     uc_mem_write(uc, ARM_STATE, words, sizeof(words));
     writeBe(GLOBAL, START_CYCLES);
     writeBe(LIMIT, (c.stopMode == STOP_DEADLINE && c.limitDeadline) ? START_CYCLES + c.deadline : 0xFFFFFFFF);
@@ -465,6 +503,7 @@ static void runCase(Case &c) {
             if (gotCycles != START_CYCLES + cycles) fail("cycles %u want %u", gotCycles - START_CYCLES, cycles);
             if (readBe(GLOBAL) != gotCycles) fail("global cycles %u want %u", readBe(GLOBAL), gotCycles);
             if (now.fakeAt != now.fakes.size()) fail("%d handlers called, want %d", int(now.fakeAt), int(now.fakes.size()));
+            if (now.msrCalls != now.msrWanted) fail("%d MSR calls, want %d", now.msrCalls, now.msrWanted);
         }
     }
 
@@ -800,6 +839,16 @@ static void suiteArmForms() {
         uint32_t reg = fields() & 1;
         ops.push_back(0x04000000 | (reg << 25) | ((fields() & 0x1F) << 20) | (r4() << 16) | (r4() << 12) |
             (reg ? (((fields() & 0x1F) << 7) | ((fields() & 3) << 5) | r4()) : (fields() & 0xFFF)));
+    }
+    for (int i = 0; i < 20000; i++) {
+        // MSR to the CPSR with a value that keeps the mode, which random values rarely do, for every combination of fields
+        if (!mine(index++)) continue;
+        rng.seed(index + 90000);
+        int mode = i % 3, cpu = (i >> 2) & 1;
+        State s = randomState(false, mode);
+        uint32_t rm = rnd(15), fieldBits = (i & 8 ? BIT(16) : 0) | (i & 16 ? BIT(19) : 0);
+        visible(s, rm) = (rng() & 0xFFFFFF00) | (s.cpsr & 0x1F) | (rng() & 0xC0);
+        testOneOp("arm forms", cpu, false, 0xE120F000 | fieldBits | rm, mode, MEMORY_MAPPED, &s);
     }
     for (uint32_t op: ops) {
         if (!mine(index++)) continue;
@@ -1732,6 +1781,9 @@ static void setup(Jit &jit) {
     jit.addrReadMap = READ_MAP;
     jit.addrWriteMap = WRITE_MAP;
     jit.addrDtcmReg = DTCM_REG;
+    jit.addrWriteCpsr = FAKE_MSR;
+    jit.offIe = OFF_IE;
+    jit.offIrf = OFF_IRF;
     jit.addrLoad32 = FAKE;
     jit.addrLoad8 = FAKE + 8;
     jit.addrStore32 = FAKE + 16;

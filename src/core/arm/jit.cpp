@@ -595,6 +595,11 @@ int Jit::interleave(const uint32_t *limit) {
     return Interpreter::runArm7UntilArm9(*core) && !codeChanged;
 }
 
+void Jit::writeCpsrCall(Interpreter *arm, uint32_t opcode, uint32_t value) {
+    // Let generated code write the CPSR the interpreter's way
+    arm->writeCpsr(opcode, value);
+}
+
 int Jit::interleaveCall(Jit *jit, const uint32_t *limit) {
     // Entry point for generated code
     return jit->interleave(limit);

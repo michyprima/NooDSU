@@ -185,15 +185,15 @@ private:
     uint32_t pcBehind = 0; // How far the program counter register will be behind at this point in a block being generated
     bool thumbCode = false; // Whether the block being generated is THUMB
     void *codePost[2][2] = {}, *codeSlowPost[2] = {}; // Indexed by impure, then by storing the program counter
-    void *codeCond[14] = {}, *codeFlags[5] = {}, *codeMemory[6] = {}, *codeShift[4] = {}, *codeShiftCarry[4] = {}, *codeMultiplyCycles = nullptr, *codeOverflowQ = nullptr;
-    int offPc = 0, offCpsr = 0, offSpsr = 0, offCycles = 0, offEventCycles = 0, offUsr = 0, offRegs = 0;
+    void *codeCond[14] = {}, *codeFlags[5] = {}, *codeMemory[6] = {}, *codeShift[4] = {}, *codeShiftCarry[4] = {}, *codeMultiplyCycles = nullptr, *codeOverflowQ = nullptr, *codeMsr[2] = {};
+    int offPc = 0, offCpsr = 0, offSpsr = 0, offCycles = 0, offEventCycles = 0, offUsr = 0, offRegs = 0, offIe = 0, offIrf = 0;
     uint32_t codeCore = 0;
     bool codeFailed = false;
     bool codeFast = false; // Whether code was generated for fast timing, which checks cycles less often
 
     // Addresses that native instructions use, which tests can point elsewhere
     uint32_t addrCondition = 0, addrMemory = 0, addrReadMap = 0, addrWriteMap = 0;
-    uint32_t addrDtcmReg = 0;
+    uint32_t addrDtcmReg = 0, addrWriteCpsr = 0;
     uint32_t addrLoad32 = 0, addrLoad8 = 0, addrStore32 = 0, addrStore8 = 0, addrLoad16 = 0, addrStore16 = 0;
 
     uint8_t **codeMap();
@@ -212,6 +212,7 @@ private:
     void execute(JitBlock *block, const uint32_t *limit);
     int interleave(const uint32_t *limit);
     static int interleaveCall(Jit *jit, const uint32_t *limit);
+    static void writeCpsrCall(Interpreter *arm, uint32_t opcode, uint32_t value);
 
     static bool endsBlock(uint32_t opcode, bool thumb);
 
