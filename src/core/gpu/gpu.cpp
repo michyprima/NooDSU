@@ -141,6 +141,20 @@ void Gpu::loadState(FILE *file) {
     fread(&vCount, sizeof(vCount), 1, file);
     fread(&dispCapCnt, sizeof(dispCapCnt), 1, file);
     fread(&powCnt1, sizeof(powCnt1), 1, file);
+
+    // Drop the 2D threads' frame, since the loaded scanline can be anywhere in it; sleeping threads would never take
+    // the rest of a fast 2D frame, leaving the emulator waiting for them at V-blank
+    // The rest of this frame is drawn here instead, and the threads start again with the next one
+    stopThreads();
+    frameActive.store(false);
+    fastFrame = false;
+    drawing.store(0);
+    drawingB.store(0);
+    for (int i = 0; i < 2; i++) {
+        core->gpu2D[i].setQueue(nullptr);
+        Gpu2DEntry entry;
+        while (queues[i].pop(entry));
+    }
 }
 
 uint32_t Gpu::rgb5ToRgb8(uint32_t color) {
