@@ -27,6 +27,7 @@
 #undef private
 
 #include <unicorn/unicorn.h>
+#include <unicorn/arm.h>
 
 extern void (*rigSetup)(Jit &jit);
 uint32_t rigArm(uint32_t op);
@@ -58,7 +59,7 @@ static uint8_t seed[WINDOW_SIZE];
 static uint8_t *codeBase;
 static int shard, shards;
 static std::map<std::string, uint64_t> counts, fails;
-static std::map<std::string, std::set<std::string>> seen;
+static std::set<uint32_t> ranThumb[2], ranArm[2], ranNativeThumb[2], ranNativeArm[2];
 
 struct State {
     uint32_t usr[16], bank[7], spsr, cpsr;
@@ -700,6 +701,9 @@ static void testOneOp(const std::string &suite, int cpu, bool thumb, uint32_t op
             c.fakeJumps = [&](uint32_t o, bool t) { return o == op && t == thumb; };
         }
         runCase(c);
+        uint32_t position = thumb ? op : (((((op >> 16) & 0xFF0) | ((op >> 4) & 0xF)) << 4) | (op >> 28));
+        (thumb ? ranThumb : ranArm)[cpu].insert(position);
+        if (kind) (thumb ? ranNativeThumb : ranNativeArm)[cpu].insert(position);
         count("suite:" + suite);
         count(std::string(thumb ? "thumb " : "arm ") + kindName(kind));
         if (cpu == 1) count("arm7 cases");
@@ -721,7 +725,6 @@ static void suiteThumbOps() {
         for (uint32_t op = 0; op < 0x10000; op++) {
             if (!mine(op)) continue;
             rng.seed(op * 2 + cpu + 1000);
-            printf("SEEN\tthumb%d\t%04X\n", cpu, op);
             for (int i = 0; i < 6; i++)
                 testOneOp("thumb ops", cpu, true, op, i % 3, i < 3 ? MEMORY_MAPPED : (i == 3 ? MEMORY_SLOW : MEMORY_ODD_PAGES), nullptr);
         }
@@ -738,7 +741,6 @@ static void suiteArmOps() {
                 rng.seed((index * 16 + cond) * 2 + cpu + 5000);
                 for (int fill = 0; fill < fills; fill++) {
                     uint32_t op = (cond << 28) | ((index & 0xFF0) << 16) | ((index & 0xF) << 4) | (rng() & 0x000FFF0F);
-                    printf("SEEN\tarm%d\t%03X%X\n", cpu, index, cond);
                     for (int i = 0; i < 6; i++)
                         testOneOp("arm ops", cpu, false, op, i % 3, i < 3 ? MEMORY_MAPPED : (i == 3 ? MEMORY_SLOW : MEMORY_ODD_PAGES), nullptr);
                 }
@@ -893,6 +895,18 @@ static void suiteBlockLists() {
         uint32_t list = (rng() & 0xFFFF) >> rnd(14);
         uint32_t bits = 0xE8000000 | (rnd(16) << 16) | (rnd(16) << 20) | (rnd(16) << 21 & 0x01800000);
         forms.push_back({ false, (bits & ~0x00400000u) | list });
+    }
+    // Every LDM/STM table position, with a base that isn't in the list so both CPUs have native code for it
+    std::mt19937 lists(4321);
+    for (uint32_t position = 0; position < 0x200; position++) {
+        for (int i = 0; i < 8; i++) {
+            uint32_t low = position & 0xF, top = position >> 4;
+            uint32_t rn = lists() % 11; // Not one of the registers this position's list needs
+            rn = (rn < 4) ? rn : (rn + 4);
+            uint32_t list = ((lists() & 0xFF0F) | (low << 4)) & ~BIT(rn);
+            if (!list) list = BIT((rn + 1) % 4);
+            forms.push_back({ false, 0xE8000000 | (top << 20) | (rn << 16) | list });
+        }
     }
     for (auto &entry: forms) {
         if (!mine(index++)) continue;
@@ -1209,6 +1223,487 @@ static void suiteLinks() {
     }
 }
 
+// The interpreter's handlers against Unicorn's ARM946, an independent model of the same CPU
+// CP15, SWI, undefined encodings and timing are left out, since it doesn't model the DS for those
+
+static uc_engine *ucArm;
+static const uint32_t REF_MODES[] = { 0x10, 0x11, 0x12, 0x13, 0x17, 0x1B, 0x1F };
+
+struct RefState {
+    uint32_t usr[16], fiq[7], svc[2], abt[2], irq[2], und[2];
+    uint32_t spsrFiq, spsrSvc, spsrAbt, spsrIrq, spsrUnd, cpsr;
+};
+
+static uint32_t *refBank(RefState &s, uint32_t mode, int reg) {
+    // Where a register visible in a mode is kept
+    switch (mode & 0x1F) {
+        case 0x11: if (reg >= 8 && reg <= 14) return &s.fiq[reg - 8]; break;
+        case 0x13: if (reg >= 13 && reg <= 14) return &s.svc[reg - 13]; break;
+        case 0x17: if (reg >= 13 && reg <= 14) return &s.abt[reg - 13]; break;
+        case 0x12: if (reg >= 13 && reg <= 14) return &s.irq[reg - 13]; break;
+        case 0x1B: if (reg >= 13 && reg <= 14) return &s.und[reg - 13]; break;
+    }
+    return &s.usr[reg];
+}
+
+static uint32_t *refSpsr(RefState &s, uint32_t mode) {
+    switch (mode & 0x1F) {
+        case 0x11: return &s.spsrFiq;
+        case 0x13: return &s.spsrSvc;
+        case 0x17: return &s.spsrAbt;
+        case 0x12: return &s.spsrIrq;
+        case 0x1B: return &s.spsrUnd;
+    }
+    return nullptr;
+}
+
+static void loadInterpreter(Interpreter &arm, RefState &s) {
+    for (int i = 0; i < 16; i++) arm.registers[i] = &arm.registersUsr[i];
+    arm.cpsr = 0x1F;
+    arm.spsr = nullptr;
+    arm.lazyPipeline = true;
+    arm.ime = 0;
+    arm.swapRegisters(s.cpsr);
+    arm.cpsr = s.cpsr;
+    memcpy(arm.registersUsr, s.usr, sizeof(s.usr));
+    memcpy(arm.registersFiq, s.fiq, sizeof(s.fiq));
+    memcpy(arm.registersSvc, s.svc, sizeof(s.svc));
+    memcpy(arm.registersAbt, s.abt, sizeof(s.abt));
+    memcpy(arm.registersIrq, s.irq, sizeof(s.irq));
+    memcpy(arm.registersUnd, s.und, sizeof(s.und));
+    arm.spsrFiq = s.spsrFiq; arm.spsrSvc = s.spsrSvc; arm.spsrAbt = s.spsrAbt; arm.spsrIrq = s.spsrIrq; arm.spsrUnd = s.spsrUnd;
+}
+
+static void saveInterpreter(Interpreter &arm, RefState &s) {
+    memcpy(s.usr, arm.registersUsr, sizeof(s.usr));
+    memcpy(s.fiq, arm.registersFiq, sizeof(s.fiq));
+    memcpy(s.svc, arm.registersSvc, sizeof(s.svc));
+    memcpy(s.abt, arm.registersAbt, sizeof(s.abt));
+    memcpy(s.irq, arm.registersIrq, sizeof(s.irq));
+    memcpy(s.und, arm.registersUnd, sizeof(s.und));
+    s.spsrFiq = arm.spsrFiq; s.spsrSvc = arm.spsrSvc; s.spsrAbt = arm.spsrAbt; s.spsrIrq = arm.spsrIrq; s.spsrUnd = arm.spsrUnd;
+    s.cpsr = arm.cpsr;
+}
+
+static void armReg(int r, uint32_t value) { uc_reg_write(ucArm, r, &value); }
+static uint32_t armRead(int r) { uint32_t value = 0; uc_reg_read(ucArm, r, &value); return value; }
+static int armR(int i) { return i == 13 ? UC_ARM_REG_R13 : i == 14 ? UC_ARM_REG_R14 : i == 15 ? UC_ARM_REG_R15 : UC_ARM_REG_R0 + i; }
+
+static void loadUnicorn(RefState &s) {
+    for (uint32_t mode: REF_MODES) {
+        armReg(UC_ARM_REG_CPSR, mode | 0xC0);
+        for (int i = 8; i <= 14; i++) armReg(armR(i), *refBank(s, mode, i));
+        if (uint32_t *spsr = refSpsr(s, mode)) armReg(UC_ARM_REG_SPSR, *spsr);
+    }
+    armReg(UC_ARM_REG_CPSR, s.cpsr);
+    for (int i = 0; i < 8; i++) armReg(armR(i), s.usr[i]);
+}
+
+static void saveUnicorn(RefState &s, uint32_t &next) {
+    next = armRead(UC_ARM_REG_R15);
+    uint32_t cpsr = armRead(UC_ARM_REG_CPSR);
+    s.cpsr = cpsr;
+    for (int i = 0; i < 8; i++) s.usr[i] = armRead(armR(i));
+    s.usr[15] = 0;
+    for (uint32_t mode: REF_MODES) {
+        armReg(UC_ARM_REG_CPSR, mode | 0xC0);
+        for (int i = 8; i <= 14; i++) *refBank(s, mode, i) = armRead(armR(i));
+        if (uint32_t *spsr = refSpsr(s, mode)) *spsr = armRead(UC_ARM_REG_SPSR);
+    }
+}
+
+static const uint32_t REF_CPSR_MASK = 0xF80000FF; // NZCVQ, IFT and the mode, which are all the ARM946 has
+
+static std::string diffRef(const RefState &got, const RefState &want) {
+    char text[900];
+    int n = 0;
+    auto one = [&](const char *name, uint32_t a, uint32_t b) {
+        if (a != b && n < 800) n += snprintf(text + n, sizeof(text) - n, "%s interp %08X, unicorn %08X; ", name, a, b);
+    };
+    static const char *names[] = { "r0","r1","r2","r3","r4","r5","r6","r7","r8","r9","r10","r11","r12","r13","r14" };
+    for (int i = 0; i < 15; i++) one(names[i], got.usr[i], want.usr[i]);
+    for (int i = 0; i < 7; i++) one(names[8 + i], got.fiq[i], want.fiq[i]);
+    for (int i = 0; i < 2; i++) { one(i ? "svc r14" : "svc r13", got.svc[i], want.svc[i]); one(i ? "abt r14" : "abt r13", got.abt[i], want.abt[i]);
+        one(i ? "irq r14" : "irq r13", got.irq[i], want.irq[i]); one(i ? "und r14" : "und r13", got.und[i], want.und[i]); }
+    // Reserved bits may or may not be kept
+    one("spsr fiq", got.spsrFiq & REF_CPSR_MASK, want.spsrFiq & REF_CPSR_MASK); one("spsr svc", got.spsrSvc & REF_CPSR_MASK, want.spsrSvc & REF_CPSR_MASK);
+    one("spsr abt", got.spsrAbt & REF_CPSR_MASK, want.spsrAbt & REF_CPSR_MASK);
+    one("spsr irq", got.spsrIrq & REF_CPSR_MASK, want.spsrIrq & REF_CPSR_MASK); one("spsr und", got.spsrUnd & REF_CPSR_MASK, want.spsrUnd & REF_CPSR_MASK);
+    one("cpsr", got.cpsr & REF_CPSR_MASK, want.cpsr & REF_CPSR_MASK);
+    text[n] = 0;
+    return text;
+}
+
+static int refKind(uint32_t a) {
+    // How an ARM instruction touches memory, going by what the interpreter's table decodes
+    if ((a & 0x0C000000) == 0x04000000) return NK_TRANSFER;
+    if ((a & 0x0E000000) == 0x08000000) return NK_BLOCK;
+    if ((a & 0x0FB000F0) == 0x01000090) return NK_SWAP;
+    if ((a & 0x0E000090) == 0x00000090 && (a & 0x60)) return NK_HALF;
+    return NK_NONE;
+}
+
+static std::string refClass(uint32_t op, bool thumb) {
+    // The group a disagreement is listed under
+    uint32_t a = thumb ? rigArm(op) : op;
+    if (thumb) {
+        if ((op & 0xF000) == 0xD000) return "THUMB conditional branch";
+        if ((op & 0xF800) == 0xE000) return "THUMB B";
+        if ((op & 0xF000) == 0xF000 || (op & 0xF800) == 0xE800) return "THUMB BL/BLX label";
+        if ((op & 0xFF00) == 0x4700) return "THUMB BX/BLX";
+        if (a >> 28 == 0xF) return "THUMB other";
+    }
+    const char *prefix = thumb ? "THUMB as " : "";
+    if (a >> 28 == 0xF) return std::string(prefix) + "reserved condition";
+    if ((a & 0x0E000000) == 0x0A000000) return std::string(prefix) + "B/BL";
+    if ((a & 0x0FF000F0) == 0x01200010 || (a & 0x0FF000F0) == 0x01200030) return std::string(prefix) + "BX/BLX register";
+    if ((a & 0x0FF000F0) == 0x01600010) return std::string(prefix) + "CLZ";
+    if ((a & 0x0F9000F0) == 0x01000050) return std::string(prefix) + "QADD/QSUB";
+    if ((a & 0x0F900090) == 0x01000080) return std::string(prefix) + "SMLAxy/SMULxy";
+    if ((a & 0x0F900000) == 0x01000000 && (a & 0xF0) == 0) return std::string(prefix) + (((a >> 21) & 1) ? "MSR register" : "MRS");
+    if ((a & 0x0FB00000) == 0x03200000) return std::string(prefix) + "MSR immediate";
+    if ((a & 0x0F8000F0) == 0x00800090) return std::string(prefix) + "long multiply";
+    if ((a & 0x0FC000F0) == 0x00000090) return std::string(prefix) + "MUL/MLA";
+    int kind = refKind(a);
+    if (kind == NK_SWAP) return std::string(prefix) + "SWP";
+    if (kind == NK_BLOCK) return std::string(prefix) + ((a & BIT(20)) ? "LDM" : "STM") + ((a & BIT(22)) ? " with S" : "");
+    if (kind == NK_TRANSFER) return std::string(prefix) + ((a & BIT(20)) ? "LDR" : "STR") + ((a & BIT(22)) ? "B" : "");
+    if (kind == NK_HALF) {
+        uint32_t type = (a >> 5) & 3;
+        if (!(a & BIT(20))) return std::string(prefix) + (type == 1 ? "STRH" : type == 2 ? "LDRD" : "STRD");
+        return std::string(prefix) + (type == 1 ? "LDRH" : type == 2 ? "LDRSB" : "LDRSH");
+    }
+    if ((a & 0x0C000000) == 0) {
+        static const char *names[] = { "AND","EOR","SUB","RSB","ADD","ADC","SBC","RSC","TST","TEQ","CMP","CMN","ORR","MOV","BIC","MVN" };
+        return std::string(prefix) + names[(a >> 21) & 0xF] + ((a & BIT(20)) ? "S" : "");
+    }
+    return std::string(prefix) + "other";
+}
+
+static std::string refFlags(uint32_t a, bool thumb, const RefState &s, int kind, uint32_t ea, bool taken) {
+    // Forms where the architecture doesn't promise a result or a real DS's bus differs, listed apart so they can be judged apart
+    std::string text;
+    uint32_t rn = (a >> 16) & 0xF, rd = (a >> 12) & 0xF, rm = a & 0xF, rs = (a >> 8) & 0xF;
+    bool load = a & BIT(20);
+    bool writeback = !(a & BIT(24)) || (a & BIT(21));
+    if (kind == NK_TRANSFER && (ea & 3) && !(a & BIT(22))) text += ", misaligned";
+    if (kind == NK_HALF && (ea & 1)) text += ", misaligned";
+    if (kind == NK_HALF && !load && ((a >> 5) & 3) != 1 && (ea & 3)) text += ", misaligned";
+    if (kind == NK_HALF && load && ((a >> 5) & 3) == 2 && !(a & BIT(20))) text += ", misaligned";
+    if (kind == NK_HALF && !load && ((a >> 5) & 3) != 1 && rd >= 14) text += ", uses PC";
+    if (kind == NK_HALF && !load && ((a >> 5) & 3) != 1 && writeback && (rn == rd || rn == rd + 1)) text += ", writeback over the data";
+    if (kind == NK_HALF && !load && ((a >> 5) & 3) == 2 && !(a & BIT(22)) && (rm == rd || rm == rd + 1)) text += ", offset loaded over";
+    if (kind == NK_SWAP && (ea & 3)) text += ", misaligned";
+    if (kind == NK_BLOCK && (ea & 3)) text += ", misaligned";
+    if (kind == NK_TRANSFER && writeback && (rn == rd || rn == 15)) text += ", writeback over the data";
+    if (kind == NK_HALF && writeback && (rn == rd || rn == 15)) text += ", writeback over the data";
+    if (kind == NK_HALF && (rd == 15 || rm == 15)) text += ", uses PC";
+    if (kind == NK_SWAP && (rn == 15 || rd == 15 || rm == 15 || rn == rd || rn == rm)) text += ", unpredictable registers";
+    if (kind == NK_BLOCK) {
+        uint32_t list = a & 0xFFFF;
+        if (!list) text += ", empty list";
+        if ((a & BIT(21)) && (list & BIT(rn))) text += ", base in list";
+        if (rn == 15) text += ", PC base";
+        if ((a & BIT(22)) && ((s.cpsr & 0x1F) == 0x10 || (s.cpsr & 0x1F) == 0x1F)) text += ", S without an SPSR";
+    }
+    if (kind == NK_NONE && !thumb && (a & 0x0C000000) == 0 && (a & BIT(20)) && rd == 15 && !(((a >> 21) & 0xF) >= 8 && ((a >> 21) & 0xF) <= 11) &&
+        ((s.cpsr & 0x1F) == 0x10 || (s.cpsr & 0x1F) == 0x1F)) text += ", S to PC without an SPSR";
+    if ((a & 0x0E000090) == 0x00000090 && !(a & 0x60) && (rn == 15 || rd == 15 || rm == 15 || rs == 15)) text += ", uses PC";
+    if ((a & 0x0E000090) == 0x00000010 && (rn == 15 || rm == 15 || rs == 15 || rd == 15)) text += ", PC with a register shift";
+    if (kind == NK_TRANSFER && !load && rd == 15) text += ", stores PC";
+    if (kind == NK_HALF && !load && rd == 15) text += ", stores PC";
+    if (kind == NK_BLOCK && !load && (a & BIT(15))) text += ", stores PC";
+
+    // ARMv5 additions don't promise anything with the PC, and only some instructions in Unicorn return from exceptions
+    if ((a & 0x0F900090) == 0x01000080 && (rn == 15 || rd == 15 || rm == 15 || rs == 15)) text += ", uses PC";
+    if ((a & 0x0F9000F0) == 0x01000050 && (rn == 15 || rd == 15 || rm == 15)) text += ", uses PC";
+    if (!thumb && (a & 0x0C000000) == 0 && (a & BIT(20)) && rd == 15) {
+        uint32_t opc = (a >> 21) & 0xF;
+        if (opc < 8 || opc > 11) {
+            bool isMul = !(a & BIT(25)) && (a & 0x90) == 0x90;
+            if (!isMul && opc != 2 && opc != 13) text += ", S to PC that Unicorn doesn't treat as a return";
+        }
+    }
+
+    // There's no SPSR to read or write in these modes
+    uint32_t cpuMode = s.cpsr & 0x1F;
+    if ((cpuMode == 0x10 || cpuMode == 0x1F) && (a & 0x0FF00000) == 0x03600000) text += ", SPSR without one";
+    if ((cpuMode == 0x10 || cpuMode == 0x1F) && (a & 0x0FF000F0) == 0x01400000) text += ", SPSR without one";
+    if ((cpuMode == 0x10 || cpuMode == 0x1F) && (a & 0x0FF000F0) == 0x01600000) text += ", SPSR without one";
+
+    // MSR with an invalid mode, which Unicorn refuses to enter, or changing the THUMB bit, which it ignores
+    bool msrImmediate = (a & 0x0FB00000) == 0x03200000, msrRegister = (a & 0x0FB000F0) == 0x01200000;
+    if ((msrImmediate || msrRegister) && (a & BIT(16))) {
+        uint32_t value = msrImmediate ? (((a & 0xFF) >> ((a >> 7) & 0x1E)) | ((a & 0xFF) << (32 - ((a >> 7) & 0x1E)))) : s.usr[0];
+        if (msrImmediate && !((a >> 7) & 0x1E)) value = a & 0xFF;
+        if (msrRegister) value = rm < 8 ? s.usr[rm] : 0;
+        uint32_t mode = value & 0x1F;
+        if (!(a & BIT(22)) && msrImmediate && (value & 0x20)) text += ", MSR changing the THUMB bit";
+        if (!(a & BIT(22)) && msrRegister && rm < 8 && (value & 0x20)) text += ", MSR changing the THUMB bit";
+        if (msrRegister && rm >= 8) text += ", invalid mode";
+        else if (mode != 0x10 && mode != 0x11 && mode != 0x12 && mode != 0x13 && mode != 0x17 && mode != 0x1B && mode != 0x1F) text += ", invalid mode";
+    }
+    return text;
+}
+
+static bool refSharedWithArm7(uint32_t op, bool thumb) {
+    // ARM7 behavior that's the same as the ARM946's: not ARMv5 additions, and not loads of the PC, which differ
+    uint32_t a = thumb ? rigArm(op) : op;
+    if (thumb) {
+        if ((op & 0xF800) == 0xE800 || (op & 0xFF80) == 0x4780) return false; // BLX
+        if ((op & 0xFF00) == 0xBD00) return false; // POP PC
+        if ((op & 0xF000) == 0xD000 || (op & 0xF000) == 0xE000 || (op & 0xF000) == 0xF000 || (op & 0xFF00) == 0x4700) return true;
+    }
+    if (a >> 28 == 0xF) return false;
+    std::string name = refClass(op, false);
+    if ((a & 0x0E000090) == 0x00000090 && (a & 0x60) && ((a >> 5) & 3) != 1 && !(a & BIT(20))) return false; // LDRD/STRD
+    if ((a & 0x0FF000F0) == 0x01600010 || (a & 0x0FF000F0) == 0x01200030) return false; // CLZ, BLX
+    if ((a & 0x0F900090) == 0x01000080 || (a & 0x0F9000F0) == 0x01000050) return false; // ARMv5 DSP additions
+    if ((a & 0x0E108000) == 0x08108000) return false; // LDM with the PC
+    if ((a & 0x0C10F000) == 0x0410F000) return false; // LDR into the PC
+    return true;
+}
+
+static uint32_t refAddress(uint32_t a, int kind, State &t, uint32_t pc) {
+    // Where a fitted load or store starts
+    uint32_t rn = (a >> 16) & 0xF, rm = a & 0xF;
+    uint32_t from = rn == 15 ? pc : visible(t, rn);
+    if (kind == NK_BLOCK || kind == NK_SWAP) return from;
+    uint32_t offset;
+    if (kind == NK_TRANSFER) {
+        offset = !(a & BIT(25)) ? (a & 0xFFF) : shifted(rm == 15 ? pc : visible(t, rm), (a >> 5) & 3, (a >> 7) & 0x1F, t.cpsr);
+    }
+    else {
+        offset = (a & BIT(22)) ? (((a >> 4) & 0xF0) | (a & 0xF)) : (rm == 15 ? pc : visible(t, rm));
+    }
+    if (!(a & BIT(24))) return from;
+    return (a & BIT(23)) ? from + offset : from - offset;
+}
+
+static uint32_t refNormalize(uint32_t op) {
+    // Random bits fill fields the architecture says to leave as 0 or 1, which real code doesn't do and Unicorn rejects
+    if ((op & 0x0C000000) == 0 && !((op & 0x02000000) == 0 && (op & 0x90) == 0x90)) {
+        uint32_t opc = (op >> 21) & 0xF;
+        if ((op & BIT(20)) || (opc < 8 || opc > 11)) {
+            if (opc == 13 || opc == 15) op &= ~0x000F0000; // MOV, MVN
+            if (opc >= 8 && opc <= 11) op &= ~0x0000F000; // TST, TEQ, CMP, CMN
+        }
+        else if ((op & 0x0FBF0000) == 0x010F0000 && !(op & 0xF0)) op &= 0xFFFFF000 | (op & 0xF000); // MRS
+        else if ((op & 0x0FB00000) == 0x01200000 && !(op & 0xF0)) op = (op & 0xFFFF000F) | 0xF000; // MSR register
+        else if ((op & 0x0FB00000) == 0x03200000) op |= 0xF000; // MSR immediate
+        else if ((op & 0x0FF000D0) == 0x01200010) op = (op & 0xF00000FF) | 0x012FFF00; // BX, BLX
+        else if ((op & 0x0FF000F0) == 0x01600010) op = (op & 0xF000F00F) | 0x016F0F00; // CLZ
+    }
+    if ((op & 0x0FB000F0) == 0x01000090) op &= ~0x00000F00; // SWP
+    if ((op & 0x0E400090) == 0x00000090 && (op & 0x60)) op &= ~0x00000F00; // Halfword transfers at a register offset
+    if ((op & 0x0F9000F0) == 0x01000050) op &= ~0x00000F00; // QADD, QSUB
+    if ((op & 0x0E000000) == 0x08000000) {} // LDM, STM have nothing to clear
+    return op;
+}
+
+static void testReference(uint32_t op, bool thumb, int cpu, uint32_t second = 0) {
+    bool pair = second != 0;
+    Interpreter &arm = core->interpreter[cpu];
+    if (!thumb) op = refNormalize(op);
+    uint32_t a = thumb ? rigArm(op) : op;
+
+    // Leave out what Unicorn can't speak for
+    if (thumb) {
+        if (Interpreter::thumbInstrs[(op >> 6) & 0x3FF] == &Interpreter::unkThumb) { count("reference skipped: undefined"); return; }
+        if ((op & 0xFF00) == 0xDF00) { count("reference skipped: SWI"); return; }
+        if (!pair && ((op & 0xF800) == 0xF800 || (op & 0xF800) == 0xE800)) { count("reference skipped: second half of BL alone"); return; }
+    }
+    else {
+        if ((op >> 28) == 0xF && (op & 0x0E000000) != 0x0A000000) { count("reference skipped: reserved condition"); return; }
+        if ((op >> 28) != 0xF && Interpreter::armInstrs[((op >> 16) & 0xFF0) | ((op >> 4) & 0xF)] == &Interpreter::unkArm) { count("reference skipped: undefined"); return; }
+        if ((op & 0x0C000000) == 0x0C000000) { count("reference skipped: coprocessor and SWI"); return; }
+    }
+    if (cpu && !refSharedWithArm7(op, thumb)) { count("reference skipped: differs on the ARM7"); return; }
+
+    uint32_t step = thumb ? 2 : 4;
+    uint32_t address = codeAddress(thumb), pc = address + step * 2;
+    if (thumb && a >> 28 != 0xF) {}
+    RefState in;
+    uint32_t *words = (uint32_t*)&in;
+    for (size_t i = 0; i < sizeof(in) / 4; i++) words[i] = interesting();
+    static const uint32_t modes[] = { 0x1F, 0x1F, 0x13, 0x12, 0x11, 0x10, 0x17, 0x1B };
+    uint32_t mode = modes[rnd(8)];
+    in.cpsr = (rnd(16) << 28) | (cpu ? 0 : (rnd(2) << 27)) | (rnd(4) << 6) | (thumb ? 0x20 : 0) | mode;
+    in.spsrFiq = (in.spsrFiq & 0xF80000C0) | modes[rnd(8)];
+    in.spsrSvc = (in.spsrSvc & 0xF80000C0) | modes[rnd(8)];
+    in.spsrAbt = (in.spsrAbt & 0xF80000C0) | modes[rnd(8)];
+    in.spsrIrq = (in.spsrIrq & 0xF80000C0) | modes[rnd(8)];
+    in.spsrUnd = (in.spsrUnd & 0xF80000C0) | modes[rnd(8)];
+    in.usr[15] = pc;
+
+    // Fit a load or store into the window, using the fitting from the other suites
+    int kind = refKind(a);
+    uint32_t ea = 0;
+    if (a >> 28 != 0xF && kind != NK_NONE) {
+        State t;
+        t.mode = (mode == 0x11) ? 2 : (mode == 0x10 || mode == 0x1F) ? 0 : 1;
+        t.cpsr = in.cpsr;
+        uint32_t temporary[16];
+        for (int i = 0; i < 15; i++) visible(t, i) = *refBank(in, mode, i);
+        for (int i = 0; i < 16; i++) t.usr[i] = i < 8 || !banked(t.mode, i) ? *refBank(in, mode, i) : t.usr[i];
+        t.usr[15] = pc;
+        uint32_t wordPc = (thumb && ((op >> 11) == 0x09)) ? (pc & ~3u) : pc;
+        if (!fitAddress(a, kind == NK_SWAP ? NK_SWAP : kind, t, wordPc, false)) { count("reference skipped: no address fits"); return; }
+        for (int i = 0; i < 15; i++) *refBank(in, mode, i) = visible(t, i);
+        ea = refAddress(a, kind, t, wordPc);
+        if (ea < WINDOW + 0x100 || ea >= WINDOW + WINDOW_SIZE - 0x200) { count("reference skipped: no address fits"); return; }
+    }
+
+    // Forms where the architecture doesn't promise a result, or where QEMU is known not to act like a DS, aren't compared
+    std::string flags = refFlags(a, thumb, in, a >> 28 == 0xF ? NK_NONE : kind, ea, true);
+    if (!flags.empty()) {
+        size_t comma = flags.find(',', 2);
+        count("reference skipped:" + flags.substr(1, comma == std::string::npos ? std::string::npos : comma - 1));
+        return;
+    }
+
+    // The instruction, in both memories, which go back to the seed afterwards
+    // A NOP follows, since Unicorn runs a THUMB BL as one instruction if its second half is next
+    uint8_t *ramCode = ram + (address & 0x3FFFFF);
+    uint32_t nop = 0x46C0;
+    memcpy(ramCode, &op, step);
+    if (thumb) memcpy(ramCode + 2, &nop, 2);
+    if (pair) memcpy(ramCode + 2, &second, 2);
+    uc_mem_write(ucArm, address, ramCode, step * 2);
+    uc_ctl_remove_cache(ucArm, address, address + step * 2);
+
+    // The interpreter
+    bool pass = thumb || (op >> 28) == 0xF || Interpreter::condition[((op >> 24) & 0xF0) | (in.cpsr >> 28)] == 1;
+    loadInterpreter(arm, in);
+    if (pass) {
+        if (thumb) (arm.*Interpreter::thumbInstrs[(op >> 6) & 0x3FF])(op);
+        else if ((op >> 28) == 0xF) arm.handleReserved(op);
+        else (arm.*Interpreter::armInstrs[((op >> 16) & 0xFF0) | ((op >> 4) & 0xF)])(op);
+    }
+    RefState got;
+    saveInterpreter(arm, got);
+    bool newThumb = got.cpsr & BIT(5);
+    uint32_t gotNext = got.usr[15] != pc ? got.usr[15] - (newThumb ? 2 : 4) : address + step;
+    if (pair) {
+        // Both halves of BL are one instruction to Unicorn
+        arm.registersUsr[15] = pc + 2;
+        (arm.*Interpreter::thumbInstrs[(second >> 6) & 0x3FF])(second);
+        saveInterpreter(arm, got);
+        newThumb = got.cpsr & BIT(5);
+        gotNext = got.usr[15] - (newThumb ? 2 : 4);
+    }
+
+    // Unicorn
+    loadUnicorn(in);
+    uc_err err = uc_emu_start(ucArm, address | (thumb ? 1 : 0), 0xFFFFFFF0, 0, 1);
+
+    // Unicorn runs the two halves of BL as one instruction, but BLX as two
+    if (pair && err == UC_ERR_OK && armRead(UC_ARM_REG_R15) == address + 2)
+        err = uc_emu_start(ucArm, (address + 2) | 1, 0xFFFFFFF0, 0, 1);
+    now.inCpsr = in.cpsr;
+    std::string name = (cpu ? "ARM7 " : "ARM9 ") + refClass(op, thumb) + refFlags(a, thumb, in, kind, ea, pass);
+    char text[160];
+    snprintf(text, sizeof(text), "%s %08X mode %02X r0-3 %08X %08X %08X %08X", thumb ? "T" : "A", op, mode, in.usr[0], in.usr[1], in.usr[2], in.usr[3]);
+    now.description = text;
+    now.name = "reference: " + name;
+    count("suite:reference");
+    count(std::string("reference ") + (cpu ? "ARM7 " : "ARM9 ") + (thumb ? "THUMB" : "ARM"));
+    if (err == UC_ERR_INSN_INVALID) {
+        // It doesn't accept this encoding, so there's nothing to compare with
+        count("reference skipped: Unicorn rejects it");
+        armReg(UC_ARM_REG_CPSR, 0x1F | 0xC0);
+        count("reference rejected: " + name);
+    }
+    else if (err != UC_ERR_OK && err != UC_ERR_FETCH_UNMAPPED && err != UC_ERR_FETCH_PROT) {
+        fail("Unicorn stopped: %s", uc_strerror(err));
+        armReg(UC_ARM_REG_CPSR, 0x1F | 0xC0);
+    }
+    else {
+        // A branch out of the window is fine: the instruction ran, and it's only the next fetch that failed
+        RefState want;
+        memcpy(&want, &in, sizeof(want));
+        uint32_t wantNext;
+        saveUnicorn(want, wantNext);
+
+        // The ARM7 doesn't have the Q flag that Unicorn's ARM946 does
+        if (cpu) {
+            for (RefState *state: { &got, &want }) {
+                state->cpsr &= ~BIT(27);
+                state->spsrFiq &= ~BIT(27); state->spsrSvc &= ~BIT(27); state->spsrAbt &= ~BIT(27);
+                state->spsrIrq &= ~BIT(27); state->spsrUnd &= ~BIT(27);
+            }
+        }
+        std::string difference = diffRef(got, want);
+        // ARM ignores the low bits of a jump, while Unicorn keeps them in its program counter
+        uint32_t nextMask = (want.cpsr & BIT(5)) ? ~1u : ~3u;
+        if ((gotNext & nextMask) != (wantNext & nextMask)) difference += "next address interp " + std::to_string(gotNext) + ", unicorn " + std::to_string(wantNext) + "; ";
+        if (!difference.empty()) fail("%s", difference.c_str());
+
+        // Memory, only when something could have been written
+        if (kind != NK_NONE && !(a & BIT(20)) && a >> 28 != 0xF) {
+            static uint8_t window[WINDOW_SIZE];
+            uc_mem_read(ucArm, WINDOW, window, WINDOW_SIZE);
+            uint8_t *host = ram + (WINDOW & 0x3FFFFF);
+            if (memcmp(window, host, WINDOW_SIZE)) {
+                for (uint32_t x = 0; x < WINDOW_SIZE; x += 4) {
+                    if (memcmp(window + x, host + x, 4)) {
+                        uint32_t one, two;
+                        memcpy(&one, host + x, 4);
+                        memcpy(&two, window + x, 4);
+                        fail("memory at %08X interp %08X, unicorn %08X", WINDOW + x, one, two);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (kind == NK_SWAP || (kind != NK_NONE && a >> 28 != 0xF && !(a & BIT(20))))
+        uc_mem_write(ucArm, WINDOW, seed, WINDOW_SIZE);
+    else
+        uc_mem_write(ucArm, address, seed + (address - WINDOW), step * 2);
+    restoreRam();
+}
+
+static void suiteReference() {
+    // Earlier suites leave pages unmapped for writes, as if they had code, so map everything back
+    finishBlocks(0);
+    finishBlocks(1);
+    core->memory.updateMap9(0x00000000, 0x04000000);
+    core->memory.updateMap7(0x02000000, 0x04000000);
+    core->jit.codePages = 0;
+    core->jit7.codePages = 0;
+
+    uc_open(UC_ARCH_ARM, UC_MODE_ARM, &ucArm);
+    uc_ctl_set_cpu_model(ucArm, UC_CPU_ARM_946);
+    uc_mem_map(ucArm, WINDOW, WINDOW_SIZE, UC_PROT_ALL);
+    uc_mem_write(ucArm, WINDOW, seed, WINDOW_SIZE);
+    restoreRam();
+    armReg(UC_ARM_REG_CPSR, 0xDF);
+
+    for (int cpu = 0; cpu < 2; cpu++) {
+        for (uint32_t op = 0; op < 0x10000; op++) {
+            if (!mine(op)) continue;
+            rng.seed(op * 2 + cpu + 80000);
+            for (int i = 0; i < 4; i++) testReference(op, true, cpu);
+            if ((op & 0xF800) == 0xF000) {
+                // Whole BLs, and BLXs on the ARM9, which is the only way Unicorn accepts their second halves
+                testReference(op, true, cpu, 0xF800 | (rng() & 0x7FF));
+                if (!cpu) testReference(op, true, cpu, 0xE800 | (rng() & 0x7FE));
+            }
+        }
+        for (uint32_t index = 0; index < 0x1000; index++) {
+            for (uint32_t cond = 0; cond < 16; cond++) {
+                if (!mine(index * 16 + cond)) continue;
+                rng.seed((index * 16 + cond) * 2 + cpu + 90000);
+                for (int fill = 0; fill < 4; fill++) {
+                    uint32_t op = (cond << 28) | ((index & 0xFF0) << 16) | ((index & 0xF) << 4) | (rng() & 0x000FFF0F);
+                    for (int i = 0; i < 2; i++) testReference(op, false, cpu);
+                }
+            }
+        }
+    }
+}
+
 static void setup(Jit &jit) {
     // Everything generated code reads from outside itself goes to a known place in the emulator
     jit.offUsr = 0;
@@ -1310,7 +1805,15 @@ int main(int argc, char **argv) {
     run("lists", suiteBlockLists);
     run("blocks", suiteBlocks);
     run("links", suiteLinks);
+    run("reference", suiteReference);
 
+    for (int cpu = 0; cpu < 2; cpu++) {
+        const char *name = cpu ? "ARM7" : "ARM9";
+        for (uint32_t x: ranThumb[cpu]) printf("RAN\tTHUMB encodings run, %s\t%X\n", name, x);
+        for (uint32_t x: ranNativeThumb[cpu]) printf("RAN\tTHUMB encodings with native code run, %s\t%X\n", name, x);
+        for (uint32_t x: ranArm[cpu]) printf("RAN\tARM table positions by condition run, %s\t%X\n", name, x);
+        for (uint32_t x: ranNativeArm[cpu]) printf("RAN\tARM table positions by condition with native code run, %s\t%X\n", name, x);
+    }
     for (auto &entry: counts) printf("COUNT\t%s\t%llu\n", entry.first.c_str(), (unsigned long long)entry.second);
     for (auto &entry: fails) printf("FAILS\t%s\t%llu\n", entry.first.c_str(), (unsigned long long)entry.second);
     printf("DONE\n");

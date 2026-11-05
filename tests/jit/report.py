@@ -8,7 +8,7 @@ for path in sys.argv[1:]:
         word = line.rstrip('\n').split('\t')
         if not word[0]: continue
         if word[0] == 'COUNT': counts[word[1]] += int(word[2])
-        elif word[0] == 'SEEN': seen.setdefault(word[1], set()).update(word[2].split(','))
+        elif word[0] == 'RAN': seen.setdefault(word[1], set()).add(word[2])
         elif word[0] == 'FAILS': fails[word[1]] += int(word[2])
         elif word[0] == 'FAIL':
             samples.setdefault(word[1], [])
@@ -19,7 +19,7 @@ print('%-28s %12s' % ('Covered', 'Cases'))
 for name in sorted(counts): print('%-28s %12d' % (name, counts[name]))
 print('Total cases %d' % sum(v for k, v in counts.items() if k.startswith('suite:')))
 for name in sorted(seen):
-    print('Encodings seen, %s: %d' % (name, len(seen[name])))
+    print('%s: %d of 65536' % (name, len(seen[name])))
 print('Mismatches: %d' % sum(fails.values()))
 for name in sorted(fails):
     print('  %s: %d' % (name, fails[name]))
