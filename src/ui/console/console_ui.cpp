@@ -40,6 +40,7 @@
 static OSThread *emuThread = nullptr;
 #include "../nds_icon.h"
 #include "../../core/settings.h"
+#include "../../core/file_lock.h"
 #include "../../core/heartbeat.h"
 #include "../../core/worker_thread.h"
 #include "../../core/emu_profile.h"
@@ -1289,13 +1290,15 @@ bool ConsoleUI::fileBrowser() {
     // Return whether the browser was closed for good, or false if going back to a paused game's menu
     int index = 0;
     while (true) {
-        // Open the current directory to list files from
+        // Open the current directory to list files from, keeping other file access out until the list is built, like
+        // a ROM still loading in the background
         std::vector<MenuItem> files;
+        std::unique_lock<FileLock> listLock(fileLock());
         DIR *dir = opendir(curPath.c_str());
         dirent *entry;
 
         // Build a list of directories and ROMs
-        while ((entry = readdir(dir))) {
+        while (dir && (entry = readdir(dir))) {
             // Get information on a file
             std::string name = entry->d_name;
             std::string subpath = curPath + "/" + name;
@@ -1320,7 +1323,8 @@ bool ConsoleUI::fileBrowser() {
 
         // Sort the files alphabetically
         sort(files.begin(), files.end());
-        closedir(dir);
+        if (dir) closedir(dir);
+        listLock.unlock();
 
         // Create the file browser menu
         uint32_t pressed = menu("NooDS U", files, index, "Settings", "Exit", true,
