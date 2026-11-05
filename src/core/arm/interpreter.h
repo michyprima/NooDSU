@@ -118,6 +118,7 @@ private:
     void refillPipeline();
     void swapRegisters(uint32_t value);
     void setCpsr(uint32_t value, bool save = false);
+    void restoreCpsr(uint32_t before);
     int handleReserved(uint32_t opcode);
     int finishHleIrq();
 

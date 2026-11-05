@@ -1167,7 +1167,7 @@ void Jit::emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc) {
 }
 
 void Jit::emitMisc(PpcEmitter &e, uint32_t op, uint32_t pc) {
-    // CLZ, or MRS, which leaves the register alone if the current mode has no SPSR
+    // CLZ, or MRS
     if (op & BIT(4)) {
         readReg(e, 3, op & 0xF, pc);
         e.cntlzw(5, 3);
@@ -1180,8 +1180,23 @@ void Jit::emitMisc(PpcEmitter &e, uint32_t op, uint32_t pc) {
         uint32_t *none = e.here();
         e.beq(nullptr);
         e.lwz(5, 0, 5);
-        writeReg(e, 5, (op >> 12) & 0xF);
+        uint32_t *store1 = e.here();
+        e.b(nullptr);
+
+        // In modes with none, a real DS reads the current ones, except the condition flags in the ARM9's system mode
         e.patchBc(none);
+        e.lwz(5, offCpsr, R_ARM);
+        uint32_t *store2 = nullptr;
+        if (!arm7) {
+            e.andi_(6, 5, 0x1F);
+            e.cmpwi(6, 0x10);
+            store2 = e.here();
+            e.beq(nullptr);
+            e.rlwinm(5, 5, 0, 24, 31);
+            e.patchBc(store2);
+        }
+        e.patchB(store1);
+        writeReg(e, 5, (op >> 12) & 0xF);
         e.li(3, arm7 ? 1 : 2);
     }
     else {
