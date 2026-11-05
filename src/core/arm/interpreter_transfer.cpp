@@ -1090,8 +1090,9 @@ int Interpreter::stmibUW(uint32_t opcode) { // STMIB Rn!, <Rlist>^
 void Interpreter::writeCpsr(uint32_t opcode, uint32_t value) {
     // Write the status flags that MSR selects, which are only the top and bottom bytes on a real DS
     // User mode can only change the top byte, and the ARM7 doesn't have the Q flag
+    // A real DS always has bit 4 of the CPU mode set, which turns some invalid modes into valid ones
     if ((opcode & BIT(16)) && (cpsr & 0x1F) != 0x10)
-        setCpsr((cpsr & ~0xFF) | (value & 0xFF));
+        setCpsr((cpsr & ~0xFF) | (value & 0xFF) | 0x10);
     if (opcode & BIT(19))
         cpsr = (cpsr & 0x00FFFFFF) | (value & (arm7 ? 0xF0000000 : 0xF8000000));
 }
