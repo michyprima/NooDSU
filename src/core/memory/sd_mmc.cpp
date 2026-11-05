@@ -19,9 +19,11 @@
 
 #include <cstring>
 #include "../core.h"
+#include "../file_lock.h"
 
 SdMmc::~SdMmc() {
     // Close the NAND and SD files
+    std::lock_guard<FileLock> guard(fileLock());
     fclose(nand);
     fclose(sd);
 }
@@ -80,6 +82,7 @@ void SdMmc::loadState(FILE *file) {
 
 uint32_t *SdMmc::init() {
     // Check the SD's capacity so cards over 2GB can be handled differently
+    std::lock_guard<FileLock> guard(fileLock());
     if (sd = fopen(Settings::sdImagePath.c_str(), "rb+")) {
         fseek(sd, 0, SEEK_END);
         sdhc = (ftell(sd) > 0x40000000);
@@ -207,6 +210,7 @@ void SdMmc::readBlock() {
     // Read a block of data from the SD or MMC if present, in 512- or 1-byte units
     uint8_t data[0x200];
     if (FILE *src = (sdPortSelect & BIT(0)) ? nand : sd) {
+        std::lock_guard<FileLock> guard(fileLock());
         fseek(src, hc ? (int64_t(curAddress) << 9) : curAddress, SEEK_SET);
         fread(data, sizeof(uint32_t), len, src);
     }
@@ -238,6 +242,7 @@ void SdMmc::writeBlock() {
 
     // Write the data to the SD or MMC if present, in 512- or 1-byte units
     if (FILE *dst = (sdPortSelect & BIT(0)) ? nand : sd) {
+        std::lock_guard<FileLock> guard(fileLock());
         fseek(dst, hc ? (int64_t(curAddress) << 9) : curAddress, SEEK_SET);
         fread(data, sizeof(uint32_t), len, dst);
     }
