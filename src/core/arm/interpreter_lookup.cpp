@@ -286,14 +286,14 @@ int (Interpreter::*Interpreter::armInstrs[])(uint32_t) = {
     &Interpreter::ldrPtim, &Interpreter::ldrPtim, &Interpreter::ldrPtim, &Interpreter::ldrPtim, // 0x414-0x417
     &Interpreter::ldrPtim, &Interpreter::ldrPtim, &Interpreter::ldrPtim, &Interpreter::ldrPtim, // 0x418-0x41B
     &Interpreter::ldrPtim, &Interpreter::ldrPtim, &Interpreter::ldrPtim, &Interpreter::ldrPtim, // 0x41C-0x41F
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x420-0x423
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x424-0x427
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x428-0x42B
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x42C-0x42F
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x430-0x433
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x434-0x437
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x438-0x43B
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x43C-0x43F
+    &Interpreter::strPtim, &Interpreter::strPtim, &Interpreter::strPtim, &Interpreter::strPtim, // 0x420-0x423
+    &Interpreter::strPtim, &Interpreter::strPtim, &Interpreter::strPtim, &Interpreter::strPtim, // 0x424-0x427
+    &Interpreter::strPtim, &Interpreter::strPtim, &Interpreter::strPtim, &Interpreter::strPtim, // 0x428-0x42B
+    &Interpreter::strPtim, &Interpreter::strPtim, &Interpreter::strPtim, &Interpreter::strPtim, // 0x42C-0x42F
+    &Interpreter::ldrPtim, &Interpreter::ldrPtim, &Interpreter::ldrPtim, &Interpreter::ldrPtim, // 0x430-0x433
+    &Interpreter::ldrPtim, &Interpreter::ldrPtim, &Interpreter::ldrPtim, &Interpreter::ldrPtim, // 0x434-0x437
+    &Interpreter::ldrPtim, &Interpreter::ldrPtim, &Interpreter::ldrPtim, &Interpreter::ldrPtim, // 0x438-0x43B
+    &Interpreter::ldrPtim, &Interpreter::ldrPtim, &Interpreter::ldrPtim, &Interpreter::ldrPtim, // 0x43C-0x43F
     &Interpreter::strbPtim, &Interpreter::strbPtim, &Interpreter::strbPtim, &Interpreter::strbPtim, // 0x440-0x443
     &Interpreter::strbPtim, &Interpreter::strbPtim, &Interpreter::strbPtim, &Interpreter::strbPtim, // 0x444-0x447
     &Interpreter::strbPtim, &Interpreter::strbPtim, &Interpreter::strbPtim, &Interpreter::strbPtim, // 0x448-0x44B
@@ -302,14 +302,14 @@ int (Interpreter::*Interpreter::armInstrs[])(uint32_t) = {
     &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, // 0x454-0x457
     &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, // 0x458-0x45B
     &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, // 0x45C-0x45F
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x460-0x463
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x464-0x467
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x468-0x46B
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x46C-0x46F
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x470-0x473
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x474-0x477
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x478-0x47B
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x47C-0x47F
+    &Interpreter::strbPtim, &Interpreter::strbPtim, &Interpreter::strbPtim, &Interpreter::strbPtim, // 0x460-0x463
+    &Interpreter::strbPtim, &Interpreter::strbPtim, &Interpreter::strbPtim, &Interpreter::strbPtim, // 0x464-0x467
+    &Interpreter::strbPtim, &Interpreter::strbPtim, &Interpreter::strbPtim, &Interpreter::strbPtim, // 0x468-0x46B
+    &Interpreter::strbPtim, &Interpreter::strbPtim, &Interpreter::strbPtim, &Interpreter::strbPtim, // 0x46C-0x46F
+    &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, // 0x470-0x473
+    &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, // 0x474-0x477
+    &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, // 0x478-0x47B
+    &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, &Interpreter::ldrbPtim, // 0x47C-0x47F
     &Interpreter::strPtip, &Interpreter::strPtip, &Interpreter::strPtip, &Interpreter::strPtip, // 0x480-0x483
     &Interpreter::strPtip, &Interpreter::strPtip, &Interpreter::strPtip, &Interpreter::strPtip, // 0x484-0x487
     &Interpreter::strPtip, &Interpreter::strPtip, &Interpreter::strPtip, &Interpreter::strPtip, // 0x488-0x48B
@@ -318,14 +318,14 @@ int (Interpreter::*Interpreter::armInstrs[])(uint32_t) = {
     &Interpreter::ldrPtip, &Interpreter::ldrPtip, &Interpreter::ldrPtip, &Interpreter::ldrPtip, // 0x494-0x497
     &Interpreter::ldrPtip, &Interpreter::ldrPtip, &Interpreter::ldrPtip, &Interpreter::ldrPtip, // 0x498-0x49B
     &Interpreter::ldrPtip, &Interpreter::ldrPtip, &Interpreter::ldrPtip, &Interpreter::ldrPtip, // 0x49C-0x49F
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x4A0-0x4A3
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x4A4-0x4A7
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x4A8-0x4AB
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x4AC-0x4AF
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x4B0-0x4B3
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x4B4-0x4B7
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x4B8-0x4BB
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x4BC-0x4BF
+    &Interpreter::strPtip, &Interpreter::strPtip, &Interpreter::strPtip, &Interpreter::strPtip, // 0x4A0-0x4A3
+    &Interpreter::strPtip, &Interpreter::strPtip, &Interpreter::strPtip, &Interpreter::strPtip, // 0x4A4-0x4A7
+    &Interpreter::strPtip, &Interpreter::strPtip, &Interpreter::strPtip, &Interpreter::strPtip, // 0x4A8-0x4AB
+    &Interpreter::strPtip, &Interpreter::strPtip, &Interpreter::strPtip, &Interpreter::strPtip, // 0x4AC-0x4AF
+    &Interpreter::ldrPtip, &Interpreter::ldrPtip, &Interpreter::ldrPtip, &Interpreter::ldrPtip, // 0x4B0-0x4B3
+    &Interpreter::ldrPtip, &Interpreter::ldrPtip, &Interpreter::ldrPtip, &Interpreter::ldrPtip, // 0x4B4-0x4B7
+    &Interpreter::ldrPtip, &Interpreter::ldrPtip, &Interpreter::ldrPtip, &Interpreter::ldrPtip, // 0x4B8-0x4BB
+    &Interpreter::ldrPtip, &Interpreter::ldrPtip, &Interpreter::ldrPtip, &Interpreter::ldrPtip, // 0x4BC-0x4BF
     &Interpreter::strbPtip, &Interpreter::strbPtip, &Interpreter::strbPtip, &Interpreter::strbPtip, // 0x4C0-0x4C3
     &Interpreter::strbPtip, &Interpreter::strbPtip, &Interpreter::strbPtip, &Interpreter::strbPtip, // 0x4C4-0x4C7
     &Interpreter::strbPtip, &Interpreter::strbPtip, &Interpreter::strbPtip, &Interpreter::strbPtip, // 0x4C8-0x4CB
@@ -334,14 +334,14 @@ int (Interpreter::*Interpreter::armInstrs[])(uint32_t) = {
     &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, // 0x4D4-0x4D7
     &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, // 0x4D8-0x4DB
     &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, // 0x4DC-0x4DF
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x4E0-0x4E3
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x4E4-0x4E7
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x4E8-0x4EB
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x4EC-0x4EF
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x4F0-0x4F3
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x4F4-0x4F7
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x4F8-0x4FB
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x4FC-0x4FF
+    &Interpreter::strbPtip, &Interpreter::strbPtip, &Interpreter::strbPtip, &Interpreter::strbPtip, // 0x4E0-0x4E3
+    &Interpreter::strbPtip, &Interpreter::strbPtip, &Interpreter::strbPtip, &Interpreter::strbPtip, // 0x4E4-0x4E7
+    &Interpreter::strbPtip, &Interpreter::strbPtip, &Interpreter::strbPtip, &Interpreter::strbPtip, // 0x4E8-0x4EB
+    &Interpreter::strbPtip, &Interpreter::strbPtip, &Interpreter::strbPtip, &Interpreter::strbPtip, // 0x4EC-0x4EF
+    &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, // 0x4F0-0x4F3
+    &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, // 0x4F4-0x4F7
+    &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, // 0x4F8-0x4FB
+    &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, &Interpreter::ldrbPtip, // 0x4FC-0x4FF
     &Interpreter::strOfim, &Interpreter::strOfim, &Interpreter::strOfim, &Interpreter::strOfim, // 0x500-0x503
     &Interpreter::strOfim, &Interpreter::strOfim, &Interpreter::strOfim, &Interpreter::strOfim, // 0x504-0x507
     &Interpreter::strOfim, &Interpreter::strOfim, &Interpreter::strOfim, &Interpreter::strOfim, // 0x508-0x50B
@@ -414,14 +414,14 @@ int (Interpreter::*Interpreter::armInstrs[])(uint32_t) = {
     &Interpreter::ldrPtrmar, &Interpreter::unkArm, &Interpreter::ldrPtrmrr, &Interpreter::unkArm, // 0x614-0x617
     &Interpreter::ldrPtrmll, &Interpreter::unkArm, &Interpreter::ldrPtrmlr, &Interpreter::unkArm, // 0x618-0x61B
     &Interpreter::ldrPtrmar, &Interpreter::unkArm, &Interpreter::ldrPtrmrr, &Interpreter::unkArm, // 0x61C-0x61F
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x620-0x623
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x624-0x627
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x628-0x62B
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x62C-0x62F
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x630-0x633
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x634-0x637
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x638-0x63B
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x63C-0x63F
+    &Interpreter::strPtrmll, &Interpreter::unkArm, &Interpreter::strPtrmlr, &Interpreter::unkArm, // 0x620-0x623
+    &Interpreter::strPtrmar, &Interpreter::unkArm, &Interpreter::strPtrmrr, &Interpreter::unkArm, // 0x624-0x627
+    &Interpreter::strPtrmll, &Interpreter::unkArm, &Interpreter::strPtrmlr, &Interpreter::unkArm, // 0x628-0x62B
+    &Interpreter::strPtrmar, &Interpreter::unkArm, &Interpreter::strPtrmrr, &Interpreter::unkArm, // 0x62C-0x62F
+    &Interpreter::ldrPtrmll, &Interpreter::unkArm, &Interpreter::ldrPtrmlr, &Interpreter::unkArm, // 0x630-0x633
+    &Interpreter::ldrPtrmar, &Interpreter::unkArm, &Interpreter::ldrPtrmrr, &Interpreter::unkArm, // 0x634-0x637
+    &Interpreter::ldrPtrmll, &Interpreter::unkArm, &Interpreter::ldrPtrmlr, &Interpreter::unkArm, // 0x638-0x63B
+    &Interpreter::ldrPtrmar, &Interpreter::unkArm, &Interpreter::ldrPtrmrr, &Interpreter::unkArm, // 0x63C-0x63F
     &Interpreter::strbPtrmll, &Interpreter::unkArm, &Interpreter::strbPtrmlr, &Interpreter::unkArm, // 0x640-0x643
     &Interpreter::strbPtrmar, &Interpreter::unkArm, &Interpreter::strbPtrmrr, &Interpreter::unkArm, // 0x644-0x647
     &Interpreter::strbPtrmll, &Interpreter::unkArm, &Interpreter::strbPtrmlr, &Interpreter::unkArm, // 0x648-0x64B
@@ -430,14 +430,14 @@ int (Interpreter::*Interpreter::armInstrs[])(uint32_t) = {
     &Interpreter::ldrbPtrmar, &Interpreter::unkArm, &Interpreter::ldrbPtrmrr, &Interpreter::unkArm, // 0x654-0x657
     &Interpreter::ldrbPtrmll, &Interpreter::unkArm, &Interpreter::ldrbPtrmlr, &Interpreter::unkArm, // 0x658-0x65B
     &Interpreter::ldrbPtrmar, &Interpreter::unkArm, &Interpreter::ldrbPtrmrr, &Interpreter::unkArm, // 0x65C-0x65F
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x660-0x663
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x664-0x667
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x668-0x66B
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x66C-0x66F
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x670-0x673
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x674-0x677
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x678-0x67B
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x67C-0x67F
+    &Interpreter::strbPtrmll, &Interpreter::unkArm, &Interpreter::strbPtrmlr, &Interpreter::unkArm, // 0x660-0x663
+    &Interpreter::strbPtrmar, &Interpreter::unkArm, &Interpreter::strbPtrmrr, &Interpreter::unkArm, // 0x664-0x667
+    &Interpreter::strbPtrmll, &Interpreter::unkArm, &Interpreter::strbPtrmlr, &Interpreter::unkArm, // 0x668-0x66B
+    &Interpreter::strbPtrmar, &Interpreter::unkArm, &Interpreter::strbPtrmrr, &Interpreter::unkArm, // 0x66C-0x66F
+    &Interpreter::ldrbPtrmll, &Interpreter::unkArm, &Interpreter::ldrbPtrmlr, &Interpreter::unkArm, // 0x670-0x673
+    &Interpreter::ldrbPtrmar, &Interpreter::unkArm, &Interpreter::ldrbPtrmrr, &Interpreter::unkArm, // 0x674-0x677
+    &Interpreter::ldrbPtrmll, &Interpreter::unkArm, &Interpreter::ldrbPtrmlr, &Interpreter::unkArm, // 0x678-0x67B
+    &Interpreter::ldrbPtrmar, &Interpreter::unkArm, &Interpreter::ldrbPtrmrr, &Interpreter::unkArm, // 0x67C-0x67F
     &Interpreter::strPtrpll, &Interpreter::unkArm, &Interpreter::strPtrplr, &Interpreter::unkArm, // 0x680-0x683
     &Interpreter::strPtrpar, &Interpreter::unkArm, &Interpreter::strPtrprr, &Interpreter::unkArm, // 0x684-0x687
     &Interpreter::strPtrpll, &Interpreter::unkArm, &Interpreter::strPtrplr, &Interpreter::unkArm, // 0x688-0x68B
@@ -446,14 +446,14 @@ int (Interpreter::*Interpreter::armInstrs[])(uint32_t) = {
     &Interpreter::ldrPtrpar, &Interpreter::unkArm, &Interpreter::ldrPtrprr, &Interpreter::unkArm, // 0x694-0x697
     &Interpreter::ldrPtrpll, &Interpreter::unkArm, &Interpreter::ldrPtrplr, &Interpreter::unkArm, // 0x698-0x69B
     &Interpreter::ldrPtrpar, &Interpreter::unkArm, &Interpreter::ldrPtrprr, &Interpreter::unkArm, // 0x69C-0x69F
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x6A0-0x6A3
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x6A4-0x6A7
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x6A8-0x6AB
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x6AC-0x6AF
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x6B0-0x6B3
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x6B4-0x6B7
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x6B8-0x6BB
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x6BC-0x6BF
+    &Interpreter::strPtrpll, &Interpreter::unkArm, &Interpreter::strPtrplr, &Interpreter::unkArm, // 0x6A0-0x6A3
+    &Interpreter::strPtrpar, &Interpreter::unkArm, &Interpreter::strPtrprr, &Interpreter::unkArm, // 0x6A4-0x6A7
+    &Interpreter::strPtrpll, &Interpreter::unkArm, &Interpreter::strPtrplr, &Interpreter::unkArm, // 0x6A8-0x6AB
+    &Interpreter::strPtrpar, &Interpreter::unkArm, &Interpreter::strPtrprr, &Interpreter::unkArm, // 0x6AC-0x6AF
+    &Interpreter::ldrPtrpll, &Interpreter::unkArm, &Interpreter::ldrPtrplr, &Interpreter::unkArm, // 0x6B0-0x6B3
+    &Interpreter::ldrPtrpar, &Interpreter::unkArm, &Interpreter::ldrPtrprr, &Interpreter::unkArm, // 0x6B4-0x6B7
+    &Interpreter::ldrPtrpll, &Interpreter::unkArm, &Interpreter::ldrPtrplr, &Interpreter::unkArm, // 0x6B8-0x6BB
+    &Interpreter::ldrPtrpar, &Interpreter::unkArm, &Interpreter::ldrPtrprr, &Interpreter::unkArm, // 0x6BC-0x6BF
     &Interpreter::strbPtrpll, &Interpreter::unkArm, &Interpreter::strbPtrplr, &Interpreter::unkArm, // 0x6C0-0x6C3
     &Interpreter::strbPtrpar, &Interpreter::unkArm, &Interpreter::strbPtrprr, &Interpreter::unkArm, // 0x6C4-0x6C7
     &Interpreter::strbPtrpll, &Interpreter::unkArm, &Interpreter::strbPtrplr, &Interpreter::unkArm, // 0x6C8-0x6CB
@@ -462,14 +462,14 @@ int (Interpreter::*Interpreter::armInstrs[])(uint32_t) = {
     &Interpreter::ldrbPtrpar, &Interpreter::unkArm, &Interpreter::ldrbPtrprr, &Interpreter::unkArm, // 0x6D4-0x6D7
     &Interpreter::ldrbPtrpll, &Interpreter::unkArm, &Interpreter::ldrbPtrplr, &Interpreter::unkArm, // 0x6D8-0x6DB
     &Interpreter::ldrbPtrpar, &Interpreter::unkArm, &Interpreter::ldrbPtrprr, &Interpreter::unkArm, // 0x6DC-0x6DF
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x6E0-0x6E3
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x6E4-0x6E7
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x6E8-0x6EB
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x6EC-0x6EF
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x6F0-0x6F3
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x6F4-0x6F7
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x6F8-0x6FB
-    &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, &Interpreter::unkArm, // 0x6FC-0x6FF
+    &Interpreter::strbPtrpll, &Interpreter::unkArm, &Interpreter::strbPtrplr, &Interpreter::unkArm, // 0x6E0-0x6E3
+    &Interpreter::strbPtrpar, &Interpreter::unkArm, &Interpreter::strbPtrprr, &Interpreter::unkArm, // 0x6E4-0x6E7
+    &Interpreter::strbPtrpll, &Interpreter::unkArm, &Interpreter::strbPtrplr, &Interpreter::unkArm, // 0x6E8-0x6EB
+    &Interpreter::strbPtrpar, &Interpreter::unkArm, &Interpreter::strbPtrprr, &Interpreter::unkArm, // 0x6EC-0x6EF
+    &Interpreter::ldrbPtrpll, &Interpreter::unkArm, &Interpreter::ldrbPtrplr, &Interpreter::unkArm, // 0x6F0-0x6F3
+    &Interpreter::ldrbPtrpar, &Interpreter::unkArm, &Interpreter::ldrbPtrprr, &Interpreter::unkArm, // 0x6F4-0x6F7
+    &Interpreter::ldrbPtrpll, &Interpreter::unkArm, &Interpreter::ldrbPtrplr, &Interpreter::unkArm, // 0x6F8-0x6FB
+    &Interpreter::ldrbPtrpar, &Interpreter::unkArm, &Interpreter::ldrbPtrprr, &Interpreter::unkArm, // 0x6FC-0x6FF
     &Interpreter::strOfrmll, &Interpreter::unkArm, &Interpreter::strOfrmlr, &Interpreter::unkArm, // 0x700-0x703
     &Interpreter::strOfrmar, &Interpreter::unkArm, &Interpreter::strOfrmrr, &Interpreter::unkArm, // 0x704-0x707
     &Interpreter::strOfrmll, &Interpreter::unkArm, &Interpreter::strOfrmlr, &Interpreter::unkArm, // 0x708-0x70B
