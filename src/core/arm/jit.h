@@ -231,6 +231,7 @@ private:
     void emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool &ok);
     void emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitBranch(PpcEmitter &e, uint32_t op, uint32_t pc);
+    void emitBlx(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitThumbBranch(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitTransfer(PpcEmitter &e, uint32_t op, uint32_t pc);
     bool emitShift(PpcEmitter &e, uint32_t op, uint32_t pc, bool setCarry);

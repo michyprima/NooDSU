@@ -680,7 +680,8 @@ enum NativeKind {
     NK_MULTIPLY, // MUL/MLA and long multiplies
     NK_MISC, // CLZ and MRS
     NK_COPROCESSOR, // MCR that only changes the caches, and MRC of the DTCM base
-    NK_MSR // MSR to the SPSR
+    NK_MSR, // MSR to the SPSR
+    NK_BLX // BLX label
 };
 
 static bool cacheControl(uint32_t op) {
@@ -694,7 +695,7 @@ static int nativeKind(uint32_t op, bool arm7) {
     // Anything that writes the program counter, other than branches, is left to the interpreter
     // The ARM7 leaves BLX to the interpreter, which ignores it, and stores with writeback of a listed base, which
     // store the new base unless it's first
-    if ((op >> 28) == 0xF) return NK_NONE;
+    if ((op >> 28) == 0xF) return (!arm7 && (op & 0x0E000000) == 0x0A000000) ? NK_BLX : NK_NONE;
     uint32_t rd = (op >> 12) & 0xF, rn = (op >> 16) & 0xF, rm = op & 0xF;
     if ((op & 0x0C000000) == 0x00000000) {
         if (!(op & BIT(25)) && (op & BIT(4))) {
@@ -753,9 +754,14 @@ static int nativeKind(uint32_t op, bool arm7) {
     return NK_NONE;
 }
 
+static uint32_t blxTarget(uint32_t op, uint32_t pc) {
+    // Get the THUMB address that BLX label goes to, using the condition's place for bit 1
+    return pc + ((int32_t)(op << 8) >> 6) + ((op & BIT(24)) >> 23);
+}
+
 static bool nativeJumps(int kind) {
     // Check if a native instruction kind can change the program counter
-    return kind == NK_BRANCH || kind == NK_BRANCH_REG || kind == NK_BLOCK_PC;
+    return kind == NK_BRANCH || kind == NK_BRANCH_REG || kind == NK_BLOCK_PC || kind == NK_BLX;
 }
 
 static uint32_t thumbToArm(uint32_t op) {
@@ -863,9 +869,9 @@ bool Jit::emitNative(PpcEmitter &e, uint32_t op, uint32_t pc) {
     int kind = nativeKind(op, arm7);
     if (!kind) return false;
 
-    // Skip the instruction if its condition fails, which takes 1 cycle
+    // Skip the instruction if its condition fails, which takes 1 cycle; BLX label has no condition
     uint32_t *skip = nullptr;
-    if ((op >> 28) != 0xE) {
+    if ((op >> 28) < 0xE) {
         e.call(codeCond[op >> 28]);
         skip = e.here();
         e.bne(nullptr);
@@ -883,6 +889,7 @@ bool Jit::emitNative(PpcEmitter &e, uint32_t op, uint32_t pc) {
         case NK_MISC: emitMisc(e, op, pc); break;
         case NK_COPROCESSOR: emitCoprocessor(e, op); break;
         case NK_MSR: emitMsr(e, op, pc); break;
+        case NK_BLX: emitBlx(e, op, pc); break;
     }
 
     if (skip) {
@@ -1016,6 +1023,18 @@ void Jit::emitBranch(PpcEmitter &e, uint32_t op, uint32_t pc) {
     e.li(3, 3);
 }
 
+void Jit::emitBlx(PpcEmitter &e, uint32_t op, uint32_t pc) {
+    // Branch with link to THUMB, setting the program counter as if the pipeline was flushed
+    e.loadConst(5, pc - 4);
+    writeReg(e, 5, 14);
+    e.lwz(5, offCpsr, R_ARM);
+    e.ori(5, 5, BIT(5));
+    e.stw(5, offCpsr, R_ARM);
+    e.loadConst(5, blxTarget(op, pc) + 2);
+    e.stw(5, offPc, R_ARM);
+    e.li(3, 3);
+}
+
 bool Jit::emitShift(PpcEmitter &e, uint32_t op, uint32_t pc, bool setCarry) {
     // Load a register shifted by an immediate into r4, like the interpreter's operand helpers
     // If requested, also put the shifter carry in r7, returning whether the carry changes
@@ -1126,8 +1145,9 @@ void Jit::emitHalf(PpcEmitter &e, uint32_t op, uint32_t pc) {
     else {
         readReg(e, 3, rn, pc);
         readReg(e, 4, op & 0xF, pc);
-        up ? e.add(9, 3, 4) : e.subf(9, 4, 3);
-        e.mr(5, (pre || !writeback) ? 9 : 3);
+        int sum = writeback ? 9 : 5;
+        up ? e.add(sum, 3, 4) : e.subf(sum, 4, 3);
+        if (writeback) e.mr(5, pre ? 9 : 3);
     }
 
     if (load) {
@@ -1633,6 +1653,10 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
         block->links.push_back({ e.here(), target, nullptr });
         e.b(codeDispatch);
         if (same) e.patchBc(same);
+    }
+    else if (!block->thumb && native && nativeKind(op, arm7) == NK_BLX) {
+        block->links.push_back({ e.here(), blxTarget(op, pc) | 1, nullptr });
+        e.b(codeDispatch);
     }
     else if (i + 1 < block->instrs.size() && mayJump(raw, block->thumb)) {
         e.lwz(4, offPc, R_ARM);

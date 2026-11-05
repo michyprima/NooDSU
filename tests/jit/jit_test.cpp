@@ -36,7 +36,7 @@ bool rigMayJump(uint32_t op, bool thumb);
 bool rigKindJumps(int kind);
 
 enum { NK_NONE, NK_ALU, NK_BRANCH, NK_TRANSFER, NK_BRANCH_REG, NK_HALF, NK_BLOCK, NK_BLOCK_PC, NK_SWAP, NK_MULTIPLY, NK_MISC,
-    NK_COPROCESSOR, NK_MSR, NK_THUMB_BRANCH = 100 };
+    NK_COPROCESSOR, NK_MSR, NK_BLX, NK_THUMB_BRANCH = 100 };
 
 // Addresses in the emulator
 static const uint32_t ARM_STATE = 0x10000, CACHE_FLAG = 0x50000, CACHE = 0x50010, EVENTS = 0x70000, LIMIT = 0x71000,
@@ -327,7 +327,7 @@ static bool runOracle(Case &c, State &out, uint32_t &cycles, std::vector<Snapsho
             }
         }
         else if (pass) {
-            cost = block->thumb ? (arm.*Interpreter::thumbInstrs[(op >> 6) & 0x3FF])(op) :
+            cost = block->thumb ? (arm.*Interpreter::thumbInstrs[(op >> 6) & 0x3FF])(op) : (op >> 28) == 0xF ? arm.handleReserved(op) :
                 (arm.*Interpreter::armInstrs[((op >> 16) & 0xFF0) | ((op >> 4) & 0xF)])(op);
             bool thumbJump = block->thumb && kind == NK_THUMB_BRANCH && (op & 0xF800) != 0xF000 &&
                 ((op & 0xF000) != 0xD000 || cost == 3);
@@ -654,6 +654,7 @@ static const char *kindName(int kind) {
         case NK_MISC: return "misc";
         case NK_COPROCESSOR: return "coprocessor";
         case NK_MSR: return "msr";
+        case NK_BLX: return "blx";
         default: return "thumb branch";
     }
 }
@@ -1119,7 +1120,7 @@ static void suiteLinks() {
             for (int tries = 0; ; tries++) {
                 uint32_t op = thumb ? randomThumbOp() : randomArmOp(cpu);
                 int kind = rigKind(op, thumb, cpu);
-                bool jumps = (kind == NK_BRANCH || kind == NK_BRANCH_REG || kind == NK_BLOCK_PC || kind == NK_THUMB_BRANCH);
+                bool jumps = rigKindJumps(kind) || kind == NK_THUMB_BRANCH;
                 if (!jumps && !jitOf(cpu).endsBlock(op, thumb) && !rigMayJump(op, thumb)) return op;
             }
         };
@@ -1156,7 +1157,7 @@ static void suiteLinks() {
             b.clear();
             for (uint32_t op: bOther) {
                 int kind = rigKind(op, !thumb, cpu);
-                if (kind != NK_BRANCH && kind != NK_BRANCH_REG && kind != NK_BLOCK_PC && kind != NK_THUMB_BRANCH &&
+                if (!rigKindJumps(kind) && kind != NK_THUMB_BRANCH &&
                     !jitOf(cpu).endsBlock(op, !thumb) && !rigMayJump(op, !thumb)) b.push_back(op);
             }
             uint32_t stepB = thumb ? 4 : 2;
