@@ -816,7 +816,6 @@ int Interpreter::ldmdaU(uint32_t opcode) { // LDMDA Rn, <Rlist>^
     // Handle pipelining and mode/THUMB switching
     if (~opcode & BIT(15)) return m + (arm7 ? 2 : (m < 2));
     if (spsr) setCpsr(*spsr);
-    cpsr |= (*registers[15] & !arm7) << 5;
     flushPipeline();
     return m + 4;
 }
@@ -846,7 +845,6 @@ int Interpreter::ldmiaU(uint32_t opcode) { // LDMIA Rn, <Rlist>^
     // Handle pipelining and mode/THUMB switching
     if (~opcode & BIT(15)) return m + (arm7 ? 2 : (m < 2));
     if (spsr) setCpsr(*spsr);
-    cpsr |= (*registers[15] & !arm7) << 5;
     flushPipeline();
     return m + 4;
 }
@@ -877,7 +875,6 @@ int Interpreter::ldmdbU(uint32_t opcode) { // LDMDB Rn, <Rlist>^
     // Handle pipelining and mode/THUMB switching
     if (~opcode & BIT(15)) return m + (arm7 ? 2 : (m < 2));
     if (spsr) setCpsr(*spsr);
-    cpsr |= (*registers[15] & !arm7) << 5;
     flushPipeline();
     return m + 4;
 }
@@ -907,7 +904,6 @@ int Interpreter::ldmibU(uint32_t opcode) { // LDMIB Rn, <Rlist>^
     // Handle pipelining and mode/THUMB switching
     if (~opcode & BIT(15)) return m + (arm7 ? 2 : (m < 2));
     if (spsr) setCpsr(*spsr);
-    cpsr |= (*registers[15] & !arm7) << 5;
     flushPipeline();
     return m + 4;
 }
@@ -941,7 +937,6 @@ int Interpreter::ldmdaUW(uint32_t opcode) { // LDMDA Rn!, <Rlist>^
     // Handle pipelining and mode/THUMB switching
     if (~opcode & BIT(15)) return m + (arm7 ? 2 : (m < 2));
     if (spsr) setCpsr(*spsr);
-    cpsr |= (*registers[15] & !arm7) << 5;
     flushPipeline();
     return m + 4;
 }
@@ -982,7 +977,6 @@ int Interpreter::ldmiaUW(uint32_t opcode) { // LDMIA Rn!, <Rlist>^
     // Handle pipelining and mode/THUMB switching
     if (~opcode & BIT(15)) return m + (arm7 ? 2 : (m < 2));
     if (spsr) setCpsr(*spsr);
-    cpsr |= (*registers[15] & !arm7) << 5;
     flushPipeline();
     return m + 4;
 }
@@ -1024,7 +1018,6 @@ int Interpreter::ldmdbUW(uint32_t opcode) { // LDMDB Rn!, <Rlist>^
     // Handle pipelining and mode/THUMB switching
     if (~opcode & BIT(15)) return m + (arm7 ? 2 : (m < 2));
     if (spsr) setCpsr(*spsr);
-    cpsr |= (*registers[15] & !arm7) << 5;
     flushPipeline();
     return m + 4;
 }
@@ -1065,7 +1058,6 @@ int Interpreter::ldmibUW(uint32_t opcode) { // LDMIB Rn!, <Rlist>^
     // Handle pipelining and mode/THUMB switching
     if (~opcode & BIT(15)) return m + (arm7 ? 2 : (m < 2));
     if (spsr) setCpsr(*spsr);
-    cpsr |= (*registers[15] & !arm7) << 5;
     flushPipeline();
     return m + 4;
 }
