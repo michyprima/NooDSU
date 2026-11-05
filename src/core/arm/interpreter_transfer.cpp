@@ -371,8 +371,9 @@ FORCE_INLINE int Interpreter::strdPr(uint32_t opcode, uint32_t op2) { // STRD Rd
     uint8_t op0 = (opcode >> 12) & 0xF;
     if (arm7 || op0 == 15) return 1; // ARM9 exclusive
     uint32_t *op1 = registers[(opcode >> 16) & 0xF];
-    core->memory.write<uint32_t>(arm7, *op1 += op2, *registers[op0]);
-    core->memory.write<uint32_t>(arm7, *op1 + 4, *registers[op0 + 1]);
+    uint32_t low = *registers[op0], high = *registers[op0 + 1]; // A base being stored is stored as it was
+    core->memory.write<uint32_t>(arm7, *op1 += op2, low);
+    core->memory.write<uint32_t>(arm7, *op1 + 4, high);
     return 2;
 }
 
