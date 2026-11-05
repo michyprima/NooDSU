@@ -65,14 +65,26 @@ MUTATIONS = [
     ('        e.stw(R_CYCLES, 0, R_GLOBAL);\n        e.stw(R_CYCLES, offCycles, R_ARM);\n        e.mr(3, R_ARM);\n', '        e.mr(3, R_ARM);\n'), # 22: handlers don't see the time
     ('    if (block->thumb && (raw & 0xF800) == 0xE000) {\n        // Unconditional branches jump straight to their target like ARM ones\n        block->links.push_back({ e.here(), (pc + ((int32_t)(raw << 21) >> 20)) | 1, nullptr });\n        e.b(codeDispatch);\n    }\n    else if', '    if'), # 23: THUMB B doesn't link
     ('            e.rlwinm(5, 5, 0, 24, 31);\n            e.patchBc(store2);', '            e.patchBc(store2);'), # 24: MRS of a missing SPSR keeps the flags on the ARM9
+    (' && reg != 0x070004 && reg != 0x070802;', ';'), # 25: MCR that halts has no effect
+    ('e.rlwinm(6, 6, 0, 8, 31);\n        e.rlwimi(6, 4, 0, 0, arm7 ? 3 : 4);\n    }\n    e.stw(6, 0, 5);', 'e.rlwimi(6, 4, 0, 0, arm7 ? 3 : 4);\n    }\n    e.stw(6, 0, 5);'), # 26: MSR SPSR keeps bits that don't exist
+    ('e.andi_(8, 8, 0x3F);', 'e.andi_(8, 8, 0x1F);'), # 27: MSR setting THUMB stays out of the interpreter
+    ('e.and_(9, 9, 10);\n        e.or_(8, 8, 9);', 'e.and_(9, 9, 10);'), # 28: MSR doesn't see all interrupts
+    ('e.cmpwi(7, 0x10);\n        uint32_t *user', 'e.cmpwi(7, 0x11);\n        uint32_t *user'), # 29: User mode MSR changes control bits
+    ('    if (load) {\n        if (writeback) writeReg(e, 9, rn);\n', '    if (load) {\n'), # 30: Halfword loads lose writeback
+    ('blxTarget(op, pc) | 1, nullptr', 'blxTarget(op, pc), nullptr'), # 31: BLX links to ARM
+    ('e.li(3, 5);\n        return;', 'e.li(3, 3);\n        return;'), # 32: LDR into the PC is too quick
+    ('+ (jump ? 2 : 0)', ''), # 33: ALU writes to the PC are too quick
+    ('e.rlwinm(8, 8, 28, 4, 4);', 'e.li(8, 0);'), # 34: SMLA doesn't set Q
+    ('e.addc(5, 5, 7);\n        e.adde(6, 6, 8);\n        writeReg(e, 5, rn);', 'e.add(5, 5, 7);\n        e.adde(6, 6, 8);\n        writeReg(e, 5, rn);'), # 35: SMLAL loses the carry
+    ('e.srawi(5, 3, 31);\n        e.loadConst(6, 0x7FFFFFFF);', 'e.srawi(5, 4, 31);\n        e.loadConst(6, 0x7FFFFFFF);'), # 36: QSUB saturates the wrong way
 ]
 # Bugs in the interpreter, which only the reference suite can see if the JIT has no native code for them
 INTERPRETER_MUTATIONS = [
-    ('arm/interpreter_alu.cpp', 'cpsr = (cpsr & ~0xF0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&', 'cpsr = (cpsr & ~0xC0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&'), # 25: RSCS can't clear C or V
-    ('arm/interpreter_alu.cpp', ' | ((*op0 <= 0) << 29) |\n        ((op2 & *op0 & BIT(31)) >> 3);', ' | ((*op0 <= 0) << 29);'), # 26: NEG always clears V
-    ('arm/interpreter_transfer.cpp', 'int Interpreter::ldmiaU(uint32_t opcode) { // LDMIA Rn, <Rlist>^\n    // User block load, post-increment without writeback; normal registers if branching\n    uint8_t m = bitCount[opcode & 0xFF] + bitCount[(opcode >> 8) & 0xFF];\n    uint32_t op0 = *registers[(opcode >> 16) & 0xF];\n    uint32_t **regs = &registers[(~opcode & BIT(15)) >> 11];', 'int Interpreter::ldmiaU(uint32_t opcode) { // LDMIA Rn, <Rlist>^\n    // User block load, post-increment without writeback; normal registers if branching\n    uint8_t m = bitCount[opcode & 0xFF] + bitCount[(opcode >> 8) & 0xFF];\n    uint32_t op0 = *registers[(opcode >> 16) & 0xF];\n    uint32_t **regs = &registers[0];'), # 27: LDM with S doesn't use user registers
-    ('arm/interpreter_transfer.cpp', 'if ((opcode & BIT(16)) && (cpsr & 0x1F) != 0x10)\n        setCpsr', 'if (opcode & BIT(16))\n        setCpsr'), # 28: User mode MSR changes control bits
-    ('arm/interpreter_transfer.cpp', '    if (spsr) setCpsr(*spsr);\n    flushPipeline();', '    if (spsr) setCpsr(*spsr);\n    cpsr |= (*registers[15] & !arm7) << 5;\n    flushPipeline();'), # 29: LDM with S takes THUMB from the PC
+    ('arm/interpreter_alu.cpp', 'cpsr = (cpsr & ~0xF0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&', 'cpsr = (cpsr & ~0xC0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&'), # 37: RSCS can't clear C or V
+    ('arm/interpreter_alu.cpp', ' | ((*op0 <= 0) << 29) |\n        ((op2 & *op0 & BIT(31)) >> 3);', ' | ((*op0 <= 0) << 29);'), # 38: NEG always clears V
+    ('arm/interpreter_transfer.cpp', 'int Interpreter::ldmiaU(uint32_t opcode) { // LDMIA Rn, <Rlist>^\n    // User block load, post-increment without writeback; normal registers if branching\n    uint8_t m = bitCount[opcode & 0xFF] + bitCount[(opcode >> 8) & 0xFF];\n    uint32_t op0 = *registers[(opcode >> 16) & 0xF];\n    uint32_t **regs = &registers[(~opcode & BIT(15)) >> 11];', 'int Interpreter::ldmiaU(uint32_t opcode) { // LDMIA Rn, <Rlist>^\n    // User block load, post-increment without writeback; normal registers if branching\n    uint8_t m = bitCount[opcode & 0xFF] + bitCount[(opcode >> 8) & 0xFF];\n    uint32_t op0 = *registers[(opcode >> 16) & 0xF];\n    uint32_t **regs = &registers[0];'), # 39: LDM with S doesn't use user registers
+    ('arm/interpreter_transfer.cpp', 'if ((opcode & BIT(16)) && (cpsr & 0x1F) != 0x10)\n        setCpsr', 'if (opcode & BIT(16))\n        setCpsr'), # 40: User mode MSR changes control bits
+    ('arm/interpreter_transfer.cpp', '    if (spsr) setCpsr(*spsr);\n    flushPipeline();', '    if (spsr) setCpsr(*spsr);\n    cpsr |= (*registers[15] & !arm7) << 5;\n    flushPipeline();'), # 41: LDM with S takes THUMB from the PC
 ]
 if mutation > len(MUTATIONS):
     file, old, new = INTERPRETER_MUTATIONS[mutation - len(MUTATIONS) - 1]

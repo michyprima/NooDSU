@@ -801,6 +801,12 @@ static void suiteArmOps() {
 static void suiteArmForms() {
     // ARM instructions with exact encodings, which random bits rarely make, with every combination of registers
     uint64_t index = 0;
+
+    // The test can't see a halt or a remap, so check that what does those stays with the interpreter
+    now.name = "arm forms";
+    now.description = "kinds";
+    for (uint32_t op: { 0xEE070F90, 0xEE070F58, 0xEE010F10, 0xEE090F11, 0xEE090F31 })
+        if (rigKind(op, false, false) != NK_NONE) fail("%08X isn't left to the interpreter", op);
     std::vector<uint32_t> ops;
     for (uint32_t rm = 0; rm < 16; rm++) {
         ops.push_back(0x012FFF10 | rm); // BX
@@ -1284,6 +1290,33 @@ static void suiteLinks() {
         run(both, "links: target compiled first");
 
         finishBlocks(cpu);
+    }
+
+    // ARM BLX label only links to THUMB, so an ARM block at its target has to be left alone, and a THUMB one used
+    for (uint64_t index = 0; index < 4000; index++) {
+        if (!mine(index)) continue;
+        rng.seed(index + 65000);
+        uint32_t page = CODE_START + 0x1000 * rnd(12), addressA = page + 0x100, addressB = page + 0x180;
+        clearCode(page, 0x1000);
+        uint32_t blx = 0xFA000000 | (((addressB - (addressA + 8)) >> 2) & 0xFFFFFF);
+        uint32_t target[3] = { 0xE3A01000 | rnd(256), 0xE1A00000, terminator(false, addressB + 8, 32) };
+        putCode(addressA, &blx, 1, false);
+        putCode(addressB, target, 3, false);
+        bool thumbTarget = index & 1;
+        JitBlock *blockB = compileAt(0, addressB, thumbTarget);
+        JitBlock *blockA = compileAt(0, addressA, false);
+        if (!blockA || !blockB) continue;
+        Case c;
+        c.name = "links: BLX";
+        c.cpu = 0;
+        c.in = randomState(false, rnd(3));
+        c.blocks = { blockA, blockB };
+        c.memoryMode = MEMORY_MAPPED;
+        c.compareMemory = false;
+        runCase(c);
+        count("suite:links");
+        restoreRam();
+        finishBlocks(0);
     }
 }
 
