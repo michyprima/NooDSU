@@ -1096,9 +1096,9 @@ void Interpreter::writeCpsr(uint32_t opcode, uint32_t value) {
 }
 
 void Interpreter::writeSpsr(uint32_t opcode, uint32_t value) {
-    // Write the saved status flags that MSR selects, which have the same bits as the current ones
+    // Write the saved status flags that MSR selects, which have the same bits as the current ones, with bit 4 of the mode set
     if (opcode & BIT(16))
-        *spsr = (*spsr & ~0xFF) | (value & 0xFF);
+        *spsr = (*spsr & ~0xFF) | (value & 0xFF) | 0x10;
     if (opcode & BIT(19))
         *spsr = (*spsr & 0x00FFFFFF) | (value & (arm7 ? 0xF0000000 : 0xF8000000));
 }

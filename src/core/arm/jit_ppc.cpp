@@ -1391,7 +1391,10 @@ void Jit::emitMsr(PpcEmitter &e, uint32_t op, uint32_t pc) {
     uint32_t *none = e.here();
     e.beq(nullptr);
     e.lwz(6, 0, 5);
-    if (op & BIT(16)) e.rlwimi(6, 4, 0, 24, 31);
+    if (op & BIT(16)) {
+        e.rlwimi(6, 4, 0, 24, 31);
+        e.ori(6, 6, 0x10);
+    }
     if (op & BIT(19)) {
         e.rlwinm(6, 6, 0, 8, 31);
         e.rlwimi(6, 4, 0, 0, arm7 ? 3 : 4);
