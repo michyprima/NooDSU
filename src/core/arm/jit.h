@@ -240,6 +240,7 @@ private:
     void emitMultiply(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitMisc(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitCoprocessor(PpcEmitter &e, uint32_t op);
+    void emitMsr(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitBranchReg(PpcEmitter &e, uint32_t op, uint32_t pc);
     void emitJump(PpcEmitter &e, int rs, bool interwork);
     void readReg(PpcEmitter &e, int rt, int reg, uint32_t pc);

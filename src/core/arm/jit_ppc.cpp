@@ -107,6 +107,9 @@ public:
     void rlwnm(int ra, int rs, int rb, int mb, int me) {
         emit((23 << 26) | (rs << 21) | (ra << 16) | (rb << 11) | (mb << 6) | (me << 1));
     }
+    void rlwimi(int ra, int rs, int sh, int mb, int me) {
+        emit((20 << 26) | (rs << 21) | (ra << 16) | (sh << 11) | (mb << 6) | (me << 1));
+    }
     void mr(int ra, int rs) { or_(ra, rs, rs); }
     void lbzx(int rt, int ra, int rb) { x(rt, ra, rb, 87); }
     void cmpw(int ra, int rb) { x(0, ra, rb, 0); }
@@ -676,7 +679,8 @@ enum NativeKind {
     NK_SWAP, // SWP/SWPB
     NK_MULTIPLY, // MUL/MLA and long multiplies
     NK_MISC, // CLZ and MRS
-    NK_COPROCESSOR // MCR that only changes the caches, and MRC of the DTCM base
+    NK_COPROCESSOR, // MCR that only changes the caches, and MRC of the DTCM base
+    NK_MSR // MSR to the SPSR
 };
 
 static bool cacheControl(uint32_t op) {
@@ -718,6 +722,8 @@ static int nativeKind(uint32_t op, bool arm7) {
         uint32_t opc = (op >> 21) & 0xF;
         bool s = op & BIT(20);
         if ((op & 0x0FBF0FFF) == 0x010F0000) return (rd == 15) ? NK_NONE : NK_MISC; // MRS
+        if (((op & 0x0FB000F0) == 0x01200000 || (op & 0x0FB00000) == 0x03200000) && (op & 0x00090000)) // MSR
+            return (op & BIT(22)) ? NK_MSR : NK_NONE;
         if (opc >= 8 && opc <= 11) return s ? NK_ALU : NK_NONE; // Compares and tests, other encodings are misc
         return (rd == 15) ? NK_NONE : NK_ALU;
     }
@@ -875,6 +881,7 @@ bool Jit::emitNative(PpcEmitter &e, uint32_t op, uint32_t pc) {
         case NK_MULTIPLY: emitMultiply(e, op, pc); break;
         case NK_MISC: emitMisc(e, op, pc); break;
         case NK_COPROCESSOR: emitCoprocessor(e, op); break;
+        case NK_MSR: emitMsr(e, op, pc); break;
     }
 
     if (skip) {
@@ -1227,6 +1234,30 @@ void Jit::emitCoprocessor(PpcEmitter &e, uint32_t op) {
         e.lwz(5, 0, 5);
         writeReg(e, 5, (op >> 12) & 0xF);
     }
+    e.li(3, 1);
+}
+
+void Jit::emitMsr(PpcEmitter &e, uint32_t op, uint32_t pc) {
+    // MSR to the SPSR, which only has the top and bottom bytes on a real DS, and nothing happens in modes without one
+    if (op & BIT(25)) {
+        uint32_t shift = (op >> 7) & 0x1E;
+        e.loadConst(4, shift ? (((op & 0xFF) << (32 - shift)) | ((op & 0xFF) >> shift)) : (op & 0xFF));
+    }
+    else {
+        readReg(e, 4, op & 0xF, pc);
+    }
+    e.lwz(5, offSpsr, R_ARM);
+    e.cmpwi(5, 0);
+    uint32_t *none = e.here();
+    e.beq(nullptr);
+    e.lwz(6, 0, 5);
+    if (op & BIT(16)) e.rlwimi(6, 4, 0, 24, 31);
+    if (op & BIT(19)) {
+        e.rlwinm(6, 6, 0, 8, 31);
+        e.rlwimi(6, 4, 0, 0, arm7 ? 3 : 4);
+    }
+    e.stw(6, 0, 5);
+    e.patchBc(none);
     e.li(3, 1);
 }
 

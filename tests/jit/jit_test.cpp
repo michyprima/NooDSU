@@ -36,7 +36,7 @@ bool rigMayJump(uint32_t op, bool thumb);
 bool rigKindJumps(int kind);
 
 enum { NK_NONE, NK_ALU, NK_BRANCH, NK_TRANSFER, NK_BRANCH_REG, NK_HALF, NK_BLOCK, NK_BLOCK_PC, NK_SWAP, NK_MULTIPLY, NK_MISC,
-    NK_COPROCESSOR, NK_THUMB_BRANCH = 100 };
+    NK_COPROCESSOR, NK_MSR, NK_THUMB_BRANCH = 100 };
 
 // Addresses in the emulator
 static const uint32_t ARM_STATE = 0x10000, CACHE_FLAG = 0x50000, CACHE = 0x50010, EVENTS = 0x70000, LIMIT = 0x71000,
@@ -653,6 +653,7 @@ static const char *kindName(int kind) {
         case NK_MULTIPLY: return "multiply";
         case NK_MISC: return "misc";
         case NK_COPROCESSOR: return "coprocessor";
+        case NK_MSR: return "msr";
         default: return "thumb branch";
     }
 }
