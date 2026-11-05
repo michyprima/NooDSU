@@ -18,6 +18,7 @@
 */
 
 #include "../core.h"
+#include "../file_lock.h"
 
 void ActionReplay::setPath(std::string path) {
     // Set the cheat path
@@ -39,7 +40,8 @@ FILE *ActionReplay::openFile(const char *mode) {
 }
 
 bool ActionReplay::loadCheats() {
-    // Attempt to open the cheat file
+    // Attempt to open the cheat file, keeping other file access out until it's closed
+    std::lock_guard<FileLock> guard(fileLock());
     FILE *file = openFile("r");
     if (!file) return false;
     char data[512];
@@ -73,7 +75,8 @@ bool ActionReplay::loadCheats() {
 }
 
 bool ActionReplay::saveCheats() {
-    // Attempt to open the cheat file
+    // Attempt to open the cheat file, keeping other file access out until it's closed
+    std::lock_guard<FileLock> guard(fileLock());
     FILE *file = openFile("w");
     if (!file) return false;
     mutex.lock();
