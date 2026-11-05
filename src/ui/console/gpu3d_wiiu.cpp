@@ -1080,7 +1080,13 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             auto convert = [&](GpuVertex &out, int k) {
                 Vertex &v = vertex(k);
                 float w = (v.w > 0) ? float(v.w) : 1.0f;
-                float depth = wBuffer ? (minW / w) : (float(v.z) / 0x1000000);
+                // The DS passes the equal depth test within a margin, so those polygons are drawn that much closer,
+                // which shadows and other decals on the ground rely on, since their depth isn't exactly the ground's
+                float depth;
+                if (polygon->depthTestEqual)
+                    depth = wBuffer ? (minW / std::max(w - 0xFF, minW)) : (float(std::max(v.z - 0x200, 0)) / 0x1000000);
+                else
+                    depth = wBuffer ? (minW / w) : (float(v.z) / 0x1000000);
                 out.pos[0] = ((float(v.x) + 0.5f - EDGE_BIAS) * xScale - 1) * w;
                 out.pos[1] = (1 - (float(v.y) + 0.5f - EDGE_BIAS) * yScale) * w;
                 out.pos[2] = depth * w;
