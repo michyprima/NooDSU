@@ -174,8 +174,8 @@ int ConsoleUI::stickPointer = 0;
 float ConsoleUI::pointerX = 128, ConsoleUI::pointerY = 96;
 std::chrono::steady_clock::time_point ConsoleUI::pointerHide;
 void *ConsoleUI::frameTextures[2];
-void *ConsoleUI::lightTexture;
-int ConsoleUI::lightRect[4];
+ScreenFrame::LightPatch ConsoleUI::lightPatches[ScreenFrame::LIGHT_COUNT];
+int ConsoleUI::lightsShown[3] = { -1, -1, -1 };
 int ConsoleUI::keyBinds[] = {};
 
 const uint32_t ConsoleUI::themeColors[] = {
@@ -525,8 +525,8 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
 
         // Draw the screen frames first, so the screens go over them
         if (frameTextures[0] || frameTextures[1]) {
+            updateLights();
             drawFrames(frameTextures[0], frameTextures[1]);
-            drawWirelessLight();
         }
 
         if (gbaMode) {
@@ -885,22 +885,54 @@ bool ConsoleUI::updatePointer(uint32_t held, ScreenLayout *gamepad) {
     return touching;
 }
 
-void ConsoleUI::drawWirelessLight() {
-    // Blink the TV frame's wireless light while the DS is sending over Wi-Fi, about 4 times a second like the real
-    // light, by covering it with its unlit surroundings half the time; it's lit in the frame itself otherwise
-    if (!lightTexture || !core) return;
+void ConsoleUI::updateLights() {
+    // Light up the TV frame's lights by writing them into its texture, only when they change
+    if (!core || !frameTextures[0]) return;
+    auto now = std::chrono::steady_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    bool lit[ScreenFrame::LIGHT_COUNT] = {};
+
+    // Light the wireless light while Wi-Fi is on, blinking it while the DS is sending, about 4 times a second like
+    // the real light
     static uint32_t lastActivity = 0;
     static std::chrono::steady_clock::time_point lastActive;
-    auto now = std::chrono::steady_clock::now();
     uint32_t activity = core->wifi.activity.load(std::memory_order_relaxed);
     if (activity != lastActivity) {
         lastActivity = activity;
         lastActive = now;
     }
-    if (now - lastActive > std::chrono::milliseconds(250)) return;
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-    if ((ms / 125) & 1)
-        drawOverlay(lightTexture, lightRect[0], lightRect[1], lightRect[2], lightRect[3], false);
+    lit[ScreenFrame::LIGHT_WIRELESS] = Settings::wifi &&
+        !(now - lastActive <= std::chrono::milliseconds(250) && ((ms / 125) & 1));
+
+    // Show the GamePad's battery like a DSi's charge and power lights; its states are:
+    // -1: disconnected (charge light off, power light blue)
+    // 0: charging (charge light orange)
+    // 1: charged, while still plugged in (charge light off)
+    // 2: critical (power light blinking red, about once a second)
+    // 3: low (power light red)
+    // 4-5: partly charged (power light blue)
+    // 6: fully charged (power light blue)
+    int battery = getGamepadBattery();
+    lit[ScreenFrame::LIGHT_CHARGE] = (battery == 0);
+    lit[ScreenFrame::LIGHT_POWER] = (battery != 2 && battery != 3);
+    lit[ScreenFrame::LIGHT_LOW_BATTERY] = (battery == 3 || (battery == 2 && !((ms / 500) & 1)));
+
+    // Write each place's light into the frame if it changed, lit or unlit; each place has one light, except the
+    // power light's, which is blue or red, and the unlit one comes from the light numbered like the place
+    static const int places[ScreenFrame::LIGHT_COUNT] = { 0, 1, 2, 2 };
+    int shown[3] = { -1, -1, -1 };
+    for (int i = 0; i < ScreenFrame::LIGHT_COUNT; i++) {
+        if (lit[i]) shown[places[i]] = i;
+    }
+    for (int place = 0; place < 3; place++) {
+        if (shown[place] == lightsShown[place]) continue;
+        lightsShown[place] = shown[place];
+        const ScreenFrame::LightPatch &patch = lightPatches[(shown[place] < 0) ? place : shown[place]];
+        if (patch.width) {
+            writeTexture(frameTextures[0], (shown[place] < 0) ? patch.unlit.data() : patch.lit.data(), patch.x,
+                patch.y, patch.width, patch.height);
+        }
+    }
 }
 
 void ConsoleUI::updateFrames(ScreenLayout *gamepad) {
@@ -917,13 +949,13 @@ void ConsoleUI::updateFrames(ScreenLayout *gamepad) {
     }
 
     // Only draw them again if something changed, since this also runs for changes that don't affect them
-    // That includes Wi-Fi being turned on or off, which lights the wireless light
-    static float last[2 + 2 * 2 * 5];
-    float next[2 + 2 * 2 * 5] = { float(frameColor), float(Settings::wifi) };
+    // Their lights don't count, since they're written into them
+    static float last[1 + 2 * 2 * 5];
+    float next[1 + 2 * 2 * 5] = { float(frameColor) };
     for (int i = 0; i < 4; i++) {
         const ScreenFrame::Screen &screen = screens[i / 2][i & 1];
         const float values[] = { screen.x, screen.y, screen.width, screen.height, float(screen.bottom + count * 2) };
-        memcpy(&next[2 + i * 5], values, sizeof(values));
+        memcpy(&next[1 + i * 5], values, sizeof(values));
     }
     if (!memcmp(last, next, sizeof(next))) return;
     memcpy(last, next, sizeof(next));
@@ -932,8 +964,8 @@ void ConsoleUI::updateFrames(ScreenLayout *gamepad) {
         releaseTexture(frameTextures[i]);
         frameTextures[i] = nullptr;
     }
-    releaseTexture(lightTexture);
-    lightTexture = nullptr;
+    for (int i = 0; i < 3; i++)
+        lightsShown[i] = -1;
     if (!frameColor) return;
 
     // Draw each display's frame in memory, leaving black bars if there isn't enough for it
@@ -944,20 +976,10 @@ void ConsoleUI::updateFrames(ScreenLayout *gamepad) {
         int width = (i == 0) ? uiWidth : 854, height = (i == 0) ? uiHeight : 480;
         uint32_t *pixels = new (std::nothrow) uint32_t[width * height];
         if (!pixels) continue;
-        ScreenFrame::LightPatch patch;
-        ScreenFrame::draw(pixels, width, height, frameColor - 1, screens[i], count, i == 0, Settings::wifi, &patch,
-            &_binary_src_ui_console_images_font_bmp_start, charWidths);
+        ScreenFrame::draw(pixels, width, height, frameColor - 1, screens[i], count, i == 0,
+            (i == 0) ? lightPatches : nullptr, &_binary_src_ui_console_images_font_bmp_start, charWidths);
         frameTextures[i] = createTexture(pixels, width, height);
         delete[] pixels;
-
-        // Keep the wireless light's surroundings with it off, for blinking it
-        if (i == 0 && patch.width) {
-            lightTexture = createTexture(patch.pixels.data(), patch.width, patch.height);
-            lightRect[0] = patch.x;
-            lightRect[1] = patch.y;
-            lightRect[2] = patch.width;
-            lightRect[3] = patch.height;
-        }
     }
 #ifdef FRAME_ART_TEST
     // Log how long that took

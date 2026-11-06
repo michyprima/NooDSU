@@ -35,16 +35,19 @@ namespace ScreenFrame {
         bool bottom; // Whether this is the bottom screen, which has the buttons beside it instead of the speakers
     };
 
-    // The part of a display around the wireless light as it looks with the light off, so the light can be made to blink
-    // over a frame drawn with it on; it's left empty if the light isn't drawn
+    // The hinge's lights in each color they can be lit in, all drawn unlit in the frame itself
+    enum Light { LIGHT_WIRELESS, LIGHT_CHARGE, LIGHT_POWER, LIGHT_LOW_BATTERY, LIGHT_COUNT };
+
+    // The part of a display around a light with it lit and unlit, written into the frame to change the light without
+    // drawing the frame again; it's left empty if the lights aren't drawn
     struct LightPatch {
         int x = 0, y = 0, width = 0, height = 0;
-        std::vector<uint32_t> pixels;
+        std::vector<uint32_t> lit, unlit;
     };
 
     // Draw a frame for a display showing one or two screens, with its pixels in the same format as the screen textures
     // The hinge's lights and camera are only drawn if asked for, since the real system only has one hinge to show them on
-    // The wireless light is on if asked for, and then the patch to turn it off is filled in
+    // The lights are drawn unlit, with a patch for each of them lit filled in, in the order of Light
     void draw(uint32_t *pixels, int width, int height, int color, const Screen *screens, int count, bool lights,
-        bool wireless, LightPatch *patch, const uint8_t *fontBmp, const uint8_t *charWidths);
+        LightPatch *patches, const uint8_t *fontBmp, const uint8_t *charWidths);
 }

@@ -83,6 +83,7 @@ bool firstScreen;
 
 VPADStatus vpad;
 VPADTouchData touch;
+int gamepadBattery = -1; // The GamePad's battery byte from its last read, or -1 while it's not connected
 uint32_t extHeld[4];
 float extStick[4][2]; // Right stick positions of the other controllers
 KPADStatus kpad[4]; // The other controllers' last reads, for the system keyboard
@@ -714,6 +715,19 @@ void ConsoleUI::drawTexture(void *texture, float tx, float ty, float tw, float t
         bufOffset += 8 * sizeof(float);
 }
 
+void ConsoleUI::writeTexture(void *texture, const uint32_t *data, int x, int y, int width, int height) {
+    // Write part of a texture in place, for small changes that aren't worth a new texture
+    if (!texture) return;
+    GX2Surface &surface = ((GX2Texture*)texture)->surface;
+    uint32_t *dst = (uint32_t*)surface.image + y * surface.pitch + x;
+    for (int row = 0; row < height; row++)
+        memcpy(dst + row * surface.pitch, &data[row * width], width * sizeof(uint32_t));
+    // Invalidating adds a GPU command, so hold GX2 for it if this is outside a frame
+    if (!uiHoldsGx2) gx2Mutex.lock();
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, dst, ((height - 1) * surface.pitch + width) * sizeof(uint32_t));
+    if (!uiHoldsGx2) gx2Mutex.unlock();
+}
+
 void ConsoleUI::drawFrames(void *tv, void *gamepad) {
     // Fill each display with its own frame, without counting as a screen for the gamepad's layout
     static const float posCoords[] = { -1, 1, 1, 1, 1, -1, -1, -1, -1, 1, 1, 1, 1, -1, -1, -1 };
@@ -827,6 +841,8 @@ void scanInput() {
     // connected or disconnected for half a second, so a brief signal loss doesn't move the screens around
     static int gamepadFrames = 0;
     bool gamepad = (vpadError != VPAD_READ_INVALID_CONTROLLER);
+    if (!gamepad) gamepadBattery = -1;
+    else if (vpadError == VPAD_READ_SUCCESS) gamepadBattery = vpad.battery;
     if (gamepad == ScreenLayout::splitDisplays) {
         gamepadFrames = 0;
     }
@@ -873,6 +889,12 @@ uint32_t ConsoleUI::getInputHeld() {
     for (int i = 0; i < 4; i++)
         held |= extHeld[i];
     return held & 0x7FFFFFFF;
+}
+
+int ConsoleUI::getGamepadBattery() {
+    // Return the GamePad's battery byte, or -1 if it isn't connected
+    scanInput();
+    return gamepadBattery;
 }
 
 MenuTouch ConsoleUI::getInputTouch() {

@@ -283,8 +283,31 @@ namespace ScreenFrame {
         return 20 * std::min(hingeLeft / 160, 1.3f);
     }
 
+    static void drawLightPatch(Canvas &canvas, float x, float y, float u, Color color, LightPatch &patch) {
+        // Fill in a patch of one of the hinge's lights, by lighting it up and putting back what was there after
+        float lx = x - 2 * u, ly = y - 7 * u, lw = 4 * u, lh = 14 * u;
+        int x0 = std::max(0, int(std::floor(lx)) - 1), y0 = std::max(0, int(std::floor(ly)) - 1);
+        int x1 = std::min(canvas.width, int(std::ceil(lx + lw)) + 1);
+        int y1 = std::min(canvas.height, int(std::ceil(ly + lh)) + 1);
+        if (x1 <= x0 || y1 <= y0) return;
+        patch.x = x0;
+        patch.y = y0;
+        patch.width = x1 - x0;
+        patch.height = y1 - y0;
+        patch.lit.resize(patch.width * patch.height);
+        patch.unlit.resize(patch.width * patch.height);
+        for (int row = 0; row < patch.height; row++)
+            std::copy_n(&canvas.pixels[(y0 + row) * canvas.width + x0], patch.width, &patch.unlit[row * patch.width]);
+        canvas.rounded(lx, ly, lw, lh, 2 * u, color);
+        for (int row = 0; row < patch.height; row++) {
+            uint32_t *line = &canvas.pixels[(y0 + row) * canvas.width + x0];
+            std::copy_n(line, patch.width, &patch.lit[row * patch.width]);
+            std::copy_n(&patch.unlit[row * patch.width], patch.width, line);
+        }
+    }
+
     static void drawHinge(Canvas &canvas, const Palette &palette, float y, float t, float s,
-        float leftRoom, float rightRoom, bool lights, bool wireless, LightPatch *patch) {
+        float leftRoom, float rightRoom, bool lights, LightPatch *patches) {
         // Draw the hinge across the display, with a soft shadow around it
         Color base = rgb(palette.color), ink = rgb(palette.ink);
         float w = canvas.width;
@@ -298,31 +321,15 @@ namespace ScreenFrame {
             drawHingeBar(canvas, base, 0, end, y, t, 0.04f);
             canvas.rect(end, y - t, seam, t * 2, { 0, 0, 0 }, 0.45f);
             if (lights) {
+                // Draw the wireless, charge, and power lights unlit, with patches of them lit in their colors
                 float u = std::min(leftRoom / 160, 1.3f), x = leftRoom * 0.28f, gap = lightGap(leftRoom);
-                for (int i = -1; i <= 1; i++) {
-                    Color light = (i == 1) ? Color{ 0x5F, 0xB8, 0xFF } : shade(base, -0.4f);
-                    canvas.rounded(x + i * gap - 2 * u, y - 7 * u, 4 * u, 14 * u, 2 * u, light);
-                }
-
-                // Light up the wireless light, the leftmost, keeping what's around it unlit for blinking it
-                if (wireless) {
-                    float lx = x - gap - 2 * u, ly = y - 7 * u, lw = 4 * u, lh = 14 * u;
-                    if (patch) {
-                        int x0 = std::max(0, int(std::floor(lx)) - 1), y0 = std::max(0, int(std::floor(ly)) - 1);
-                        int x1 = std::min(canvas.width, int(std::ceil(lx + lw)) + 1);
-                        int y1 = std::min(canvas.height, int(std::ceil(ly + lh)) + 1);
-                        if (x1 > x0 && y1 > y0) {
-                            patch->x = x0;
-                            patch->y = y0;
-                            patch->width = x1 - x0;
-                            patch->height = y1 - y0;
-                            patch->pixels.resize(patch->width * patch->height);
-                            for (int row = 0; row < patch->height; row++)
-                                std::copy_n(&canvas.pixels[(y0 + row) * canvas.width + x0], patch->width,
-                                    &patch->pixels[row * patch->width]);
-                        }
-                    }
-                    canvas.rounded(lx, ly, lw, lh, 2 * u, Color{ 0xFF, 0xA0, 0x1E });
+                for (int i = -1; i <= 1; i++)
+                    canvas.rounded(x + i * gap - 2 * u, y - 7 * u, 4 * u, 14 * u, 2 * u, shade(base, -0.4f));
+                if (patches) {
+                    drawLightPatch(canvas, x - gap, y, u, Color{ 0xFF, 0xA0, 0x1E }, patches[LIGHT_WIRELESS]);
+                    drawLightPatch(canvas, x, y, u, Color{ 0xFF, 0x7A, 0x10 }, patches[LIGHT_CHARGE]);
+                    drawLightPatch(canvas, x + gap, y, u, Color{ 0x5F, 0xB8, 0xFF }, patches[LIGHT_POWER]);
+                    drawLightPatch(canvas, x + gap, y, u, Color{ 0xFF, 0x3B, 0x30 }, patches[LIGHT_LOW_BATTERY]);
                 }
             }
         }
@@ -424,7 +431,7 @@ namespace ScreenFrame {
     }
 
     void draw(uint32_t *pixels, int width, int height, int color, const Screen *screens, int count, bool lights,
-        bool wireless, LightPatch *patch, const uint8_t *fontBmp, const uint8_t *charWidths) {
+        LightPatch *patches, const uint8_t *fontBmp, const uint8_t *charWidths) {
         Canvas canvas = { pixels, width, height, fontBmp, charWidths };
         const Palette &palette = palettes[color];
 
@@ -473,8 +480,8 @@ namespace ScreenFrame {
             hingeLeft = std::min(hingeLeft, screens[i].x);
             hingeRight = std::min(hingeRight, width - (screens[i].x + screens[i].width));
         }
-        if (patch) *patch = LightPatch();
-        if (hasHinge) drawHinge(canvas, palette, hinge, t, s, hingeLeft, hingeRight, lights, wireless, patch);
+        if (patches) std::fill(patches, patches + LIGHT_COUNT, LightPatch());
+        if (hasHinge) drawHinge(canvas, palette, hinge, t, s, hingeLeft, hingeRight, lights, patches);
 
         // Draw what's beside each screen, leaving out any side without room for it
         for (int i = 0; i < count; i++) {

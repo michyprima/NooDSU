@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 
+#include "screen_frame.h"
 #include "../screen_layout.h"
 #include "../../core/core.h"
 #include "../../core/defines.h"
@@ -121,6 +122,7 @@ public:
     static void startFrame(uint32_t color);
     static void endFrame();
     static void *createTexture(uint32_t *data, int width, int height);
+    static void writeTexture(void *texture, const uint32_t *data, int x, int y, int width, int height);
     static void destroyTexture(void *texture);
     static void releaseTexture(void *texture);
     static void drawFrames(void *tv, void *gamepad);
@@ -131,13 +133,14 @@ public:
     static void drawOverlay(void *texture, float x, float y, float w, float h, bool gamepad);
     static uint32_t getInputHeld();
     static MenuTouch getInputTouch();
+    static int getGamepadBattery(); // -1 if it isn't connected
     static void getInputStick(float &x, float &y);
     static size_t getMicSamples(int16_t *out, size_t max);
     static void closeMic();
     static std::u16string getMiiName(); // Empty if it can't be read
     static bool editText(std::u16string &text, int maxLength, int language, bool numpad = false); // False if canceled
 
-    static void drawWirelessLight();
+    static void updateLights();
     static void drawRectangle(float x, float y, float w, float h, uint32_t color = 0xFFFFFFFF);
     static void drawString(std::string string, float x, float y,
         float size, uint32_t color = 0xFFFFFFFF, bool alignRight = false);
@@ -173,8 +176,8 @@ private:
     static std::string basePath, curPath, defaultFolder;
     static bool changed;
     static void *frameTextures[2]; // The screen frame for the TV and the gamepad
-    static void *lightTexture; // The TV frame around its wireless light with the light off, drawn over it to blink
-    static int lightRect[4];
+    static ScreenFrame::LightPatch lightPatches[ScreenFrame::LIGHT_COUNT]; // The TV frame's lights, lit and unlit
+    static int lightsShown[3]; // The light lit in each of the TV frame's places for them, or -1 if it's unlit
     static void updateFrames(ScreenLayout *gamepad);
 
     // The right stick's pointer, in touch screen pixels, and when it hides
