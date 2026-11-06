@@ -31,7 +31,7 @@ public:
     void saveState(FILE *file);
     void loadState(FILE *file);
 
-    uint16_t readDivCnt() { return divCnt; }
+    uint16_t readDivCnt() { if (divDirty) divide(); return divCnt; }
     uint32_t readDivNumerL() { return divNumer; }
     uint32_t readDivNumerH() { return divNumer >> 32; }
     uint32_t readDivDenomL() { return divDenom; }
