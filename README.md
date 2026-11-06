@@ -43,12 +43,21 @@ It's licensed under the GPL version 3, like NooDS.
 - The GamePad can be turned on and off during a game
 - Pro Controller and Classic Controller support
 - HOME menu support
+- GamePad microphone input, with a Blow into Mic hotkey for games that check for blowing
+- Right stick pointer for the touch screen, with a rebindable touch hotkey
+- Game Language setting, which defaults to the Wii U's system language
+- Nickname setting, which defaults to the Wii U user's Mii name and is typed with the system keyboard
+
+#### Wi-Fi
+- Online play through the Wii U's internet connection, with an emulated access point (Experimental, off by default)
+- Nintendo WFC games connect to replacement services such as Wiimmfi, through an editable DNS Server setting
 
 #### Interface
 - Simpler settings menu, with the fast options on by default
 - File browser: set a default folder (Y), and open a ROM's launch options (−) to run it with a chosen save type
 - Pause menu rearranged, and Restart asks for confirmation
-- Optional Screen Frame setting: the space around the screens looks like a DSi, in any of its eight colours
+- Optional Screen Frame setting: the space around the screens looks like a DSi, in any of its eight colours, with
+  working lights: wireless for Wi-Fi, and charge and power for the GamePad's battery
 - Version shown in the menus, and an About screen
 - A new icon
 
