@@ -164,6 +164,7 @@ public:
     void endFrame();
 
 private:
+    friend class SaveStates; // Picks which CPUs run after loading their states
     bool realGbaBios;
     void (*runFunc)(Core&) = &Interpreter::runCoreNds;
     std::chrono::steady_clock::time_point lastFpsTime;

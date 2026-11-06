@@ -154,5 +154,9 @@ bool SaveStates::loadState() {
     core->timers[1].loadState(file);
     core->wifi.loadState(file);
     fclose(file);
+
+    // Pick which CPUs run again now that their halt states are loaded; the core picked it before loading them, from
+    // the halt states before the load, which could leave CPUs that should run stopped until something halted one
+    core->updateRun();
     return true;
 }
