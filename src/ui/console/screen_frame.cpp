@@ -278,6 +278,11 @@ namespace ScreenFrame {
         }
     }
 
+    static float lightGap(float hingeLeft) {
+        // Give the distance between the hinge's lights, which their icons above use too
+        return 20 * std::min(hingeLeft / 160, 1.3f);
+    }
+
     static void drawHinge(Canvas &canvas, const Palette &palette, float y, float t, float s,
         float leftRoom, float rightRoom, bool lights, bool wireless, LightPatch *patch) {
         // Draw the hinge across the display, with a soft shadow around it
@@ -293,15 +298,15 @@ namespace ScreenFrame {
             drawHingeBar(canvas, base, 0, end, y, t, 0.04f);
             canvas.rect(end, y - t, seam, t * 2, { 0, 0, 0 }, 0.45f);
             if (lights) {
-                float u = std::min(leftRoom / 160, 1.3f), x = leftRoom * 0.28f;
+                float u = std::min(leftRoom / 160, 1.3f), x = leftRoom * 0.28f, gap = lightGap(leftRoom);
                 for (int i = -1; i <= 1; i++) {
                     Color light = (i == 1) ? Color{ 0x5F, 0xB8, 0xFF } : shade(base, -0.4f);
-                    canvas.rounded(x + i * 16 * u - 2 * u, y - 7 * u, 4 * u, 14 * u, 2 * u, light);
+                    canvas.rounded(x + i * gap - 2 * u, y - 7 * u, 4 * u, 14 * u, 2 * u, light);
                 }
 
                 // Light up the wireless light, the leftmost, keeping what's around it unlit for blinking it
                 if (wireless) {
-                    float lx = x - 16 * u - 2 * u, ly = y - 7 * u, lw = 4 * u, lh = 14 * u;
+                    float lx = x - gap - 2 * u, ly = y - 7 * u, lw = 4 * u, lh = 14 * u;
                     if (patch) {
                         int x0 = std::max(0, int(std::floor(lx)) - 1), y0 = std::max(0, int(std::floor(ly)) - 1);
                         int x1 = std::min(canvas.width, int(std::ceil(lx + lw)) + 1);
@@ -404,18 +409,18 @@ namespace ScreenFrame {
         canvas.text("POWER", x - 16 * u, y, 10 * u, rgb(palette.ink), 1);
     }
 
-    static void drawStatusIcons(Canvas &canvas, Color ink, float x, float y, float u) {
-        // Draw the wireless, charging, and power icons above the hinge's lights
+    static void drawStatusIcons(Canvas &canvas, Color ink, float x, float y, float u, float gap) {
+        // Draw the wireless, charging, and power icons above the hinge's lights, gap apart, all ending at y + 6
         const float PI = 3.1415927f;
-        float wireless = x - 16 * u, thick = 1.4f * u;
+        float wireless = x - gap, thick = 1.4f * u;
         for (int radius = 3; radius <= 9; radius += 3)
-            canvas.arc(wireless, y + 5 * u, radius * u, -PI * 0.75f, PI * 0.5f, thick, ink);
-        canvas.circle(wireless, y + 5 * u, 1.2f * u, ink);
+            canvas.arc(wireless, y + 4.8f * u, radius * u, -PI * 0.75f, PI * 0.5f, thick, ink);
+        canvas.circle(wireless, y + 4.8f * u, 1.2f * u, ink);
         canvas.rounded(x - 3 * u, y - 4 * u, 6 * u, 6 * u, 1.5f * u, ink);
         canvas.rect(x - 0.8f * u, y + 2 * u, 1.6f * u, 4 * u, ink);
         canvas.rect(x - 2 * u, y - 7 * u, 1.2f * u, 3 * u, ink);
         canvas.rect(x + 0.8f * u, y - 7 * u, 1.2f * u, 3 * u, ink);
-        drawPowerIcon(canvas, x + 16 * u, y, 4.6f * u, thick, ink);
+        drawPowerIcon(canvas, x + gap, y + 0.7f * u, 4.6f * u, thick, ink);
     }
 
     void draw(uint32_t *pixels, int width, int height, int color, const Screen *screens, int count, bool lights,
@@ -488,7 +493,8 @@ namespace ScreenFrame {
                 if (left) {
                     drawSpeaker(canvas, leftStart + leftRoom / 2, slot, leftU);
                     drawPad(canvas, base, leftStart + leftRoom / 2, y0 + 30 * leftU, leftU);
-                    if (hasHinge) drawStatusIcons(canvas, ink, hingeLeft * 0.28f, y1 - 13 * leftU, leftU);
+                    if (hasHinge) drawStatusIcons(canvas, ink, hingeLeft * 0.28f, y1 - 13 * leftU, leftU,
+                        lightGap(hingeLeft));
                 }
                 if (right) {
                     drawSpeaker(canvas, rightStart + rightRoom / 2, slot, rightU);
