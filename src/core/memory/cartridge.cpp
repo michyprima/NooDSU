@@ -759,9 +759,35 @@ void CartridgeNds::loadDsiCode(bool arm7) {
         ensureLoaded(offset, size);
     }
 
-    // Copy the initial DSi code into memory
+    // Get the initial DSi code
+    std::vector<uint32_t> code;
     for (uint32_t i = 0; i < size && offset2 + i < romSize; i += 4)
-        core->memory.write<uint32_t>(arm7, address + i, U8TO32(rom, offset + i));
+        code.push_back(U8TO32(rom, offset + i));
+
+    // Decrypt the parts in modcrypt areas, which the DSi's launcher does with AES-CTR before starting a game
+    // The key comes from "Nintendo" and the game code twice, and the start of the ARM9i hash; the IV is the start of the
+    // ARM9 or ARM7 hash, for the first or second area
+    if (romFile) loadRomSection(0, 0x400);
+    if (rom[0x1C] & BIT(1)) {
+        uint32_t code9 = U8TO32(rom, 0xC);
+        uint32_t keyX[4] = { 0x746E694E, 0x6F646E65, code9, __builtin_bswap32(code9) };
+        uint32_t keyY[4], iv[4];
+        for (int area = 0; area < 2; area++) {
+            uint32_t start = U8TO32(rom, 0x220 + area * 8), end = start + U8TO32(rom, 0x224 + area * 8);
+            uint32_t from = std::max(start, offset2), to = std::min(end, offset2 + uint32_t(code.size() * 4));
+            if (from >= to) continue;
+            for (int i = 0; i < 4; i++) {
+                keyY[i] = U8TO32(rom, 0x350 + i * 4);
+                iv[i] = U8TO32(rom, 0x300 + area * 0x14 + i * 4);
+            }
+            LOG_INFO("Decrypting modcrypt area %d of the ARM%di code: 0x%X bytes\n", area + 1, arm7 ? 7 : 9, to - from);
+            core->aes.decryptCtr(keyX, keyY, iv, (from - start) >> 4, &code[(from - offset2) >> 2], (to - from) >> 2);
+        }
+    }
+
+    // Copy the initial DSi code into memory
+    for (uint32_t i = 0; i < code.size(); i++)
+        core->memory.write<uint32_t>(arm7, address + i * 4, code[i]);
 }
 
 void CartridgeNds::directBoot() {

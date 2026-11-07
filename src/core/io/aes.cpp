@@ -157,6 +157,49 @@ void Aes::cryptBlock(uint32_t *src, uint32_t *dst) {
     dst[3] = rKey[43] ^ scatter8(fsBox, y0, y1, y2, y3);
 }
 
+void Aes::expandKey(const uint32_t *key) {
+    // Initialize the ring key values from a key
+    for (int i = 0, x = 1; i < 44; i += 4) {
+        uint32_t y;
+        for (int j = 3; j >= 0; j--)
+            rKey[i + j] = y = (i ? (y ^ rKey[i + j - 4]) : key[j]);
+        y = scatter8(fsBox, y, y, y, y);
+        y = ROL32(y, 8) ^ (x << 24);
+        x = (x << 1) ^ ((x & 0x80) ? 0x11B : 0);
+    }
+}
+
+void Aes::scrambleKey(uint32_t *key, const uint32_t *x, const uint32_t *y) {
+    // Generate a key from X and Y like the hardware's key scrambler
+    uint32_t seed[4] = { 0x1A4F3E79, 0x2A680F5F, 0x29590258, 0xFFFEFB4E };
+    for (int i = 0; i < 4; i++)
+        key[i] = x[i] ^ y[i];
+    addKey(key, seed);
+    rolKey(key, 42);
+}
+
+void Aes::decryptCtr(const uint32_t *keyX, const uint32_t *keyY, const uint32_t *iv, uint32_t block, uint32_t *data,
+        uint32_t words) {
+    // Decrypt words in CTR mode with a key from X and Y, starting at a block after the IV, like the DSi's launcher does
+    // for code it loads; the engine's own state is left as it was
+    uint32_t saved[44], key[4], ctr[4], start[4] = { block, 0, 0, 0 };
+    memcpy(saved, rKey, sizeof(rKey));
+    scrambleKey(key, keyX, keyY);
+    expandKey(key);
+    memcpy(ctr, iv, sizeof(ctr));
+    addKey(ctr, start);
+    for (uint32_t i = 0; i + 4 <= words; i += 4) {
+        uint32_t pad[4];
+        cryptBlock(ctr, pad);
+        for (int j = 0, c = 1; j < 4; j++) {
+            data[i + j] ^= pad[j];
+            ctr[j] += c;
+            c &= (ctr[j] == 0);
+        }
+    }
+    memcpy(rKey, saved, sizeof(rKey));
+}
+
 void Aes::initFifo() {
     // Get the current AES mode and reload block counters
     uint8_t mode = (aesCnt >> 28) & 0x3;
@@ -166,14 +209,7 @@ void Aes::initFifo() {
     LOG_INFO("AES FIFO starting in mode %d\n", mode);
 
     // Initialize the ring key values
-    for (int i = 0, x = 1; i < 44; i += 4) {
-        uint32_t y;
-        for (int j = 3; j >= 0; j--)
-            rKey[i + j] = y = (i ? (y ^ rKey[i + j - 4]) : keys[curKey][j]);
-        y = scatter8(fsBox, y, y, y, y);
-        y = ROL32(y, 8) ^ (x << 24);
-        x = (x << 1) ^ ((x & 0x80) ? 0x11B : 0);
-    }
+    expandKey(keys[curKey]);
 
     // Initialize encryption/decryption based on the mode
     switch (mode) {
@@ -377,9 +413,5 @@ void Aes::writeKeyy(int i, int j, uint32_t mask, uint32_t value) {
 
     // Generate a key using X and Y when the last word is written to
     if (j < 3) return;
-    memcpy(keys[i], keysX[i], sizeof(keys[0]));
-    uint32_t seed[4] = { 0x1A4F3E79, 0x2A680F5F, 0x29590258, 0xFFFEFB4E };
-    xorKey(keys[i], keysY[i]);
-    addKey(keys[i], seed);
-    rolKey(keys[i], 42);
+    scrambleKey(keys[i], keysX[i], keysY[i]);
 }

@@ -42,6 +42,8 @@ public:
     void writeKey(int i, int j, uint32_t mask, uint32_t value);
     void writeKeyx(int i, int j, uint32_t mask, uint32_t value);
     void writeKeyy(int i, int j, uint32_t mask, uint32_t value);
+    void decryptCtr(const uint32_t *keyX, const uint32_t *keyY, const uint32_t *iv, uint32_t block, uint32_t *data,
+        uint32_t words);
 
 private:
     Core *core;
@@ -79,6 +81,8 @@ private:
     static void addKey(uint32_t *dst, uint32_t *src);
 
     void cryptBlock(uint32_t *src, uint32_t *dst);
+    void scrambleKey(uint32_t *key, const uint32_t *x, const uint32_t *y);
+    void expandKey(const uint32_t *key);
     void initFifo();
     void triggerFifo();
 };
