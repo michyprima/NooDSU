@@ -78,6 +78,6 @@ point to is shared; anywhere else gets a null pointer, which sends accesses thro
 to C++, like interpreter handlers and the interleave helper, run for real. Each CPU has its own emulator, since ARM7 code
 can run during a stop in ARM9 code.
 
-Mario Kart DS with `press=40` reaches a race by about frame 1500, and DSi mode with no ROM and `touch=97 press=61` gets past
-the health and safety screen. Pokemon Black 2 in DSi mode with `press=37` names the rival by frame 4400. With generated
-code in Unicorn, these run at 10 to 35 frames a second.
+Mario Kart DS with `press=40` reaches a race by about frame 1500. DSi mode with no ROM and `press=1250` is at the DSi menu
+by frame 1300; the next press, at frame 2500, starts the DSi Browser, which ends at an error screen. Pokemon Black 2 in DSi
+mode with `press=37` names the rival by frame 4400. With generated code in Unicorn, these run at 10 to 35 frames a second.
