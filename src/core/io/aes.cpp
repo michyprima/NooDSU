@@ -369,9 +369,14 @@ void Aes::writeCnt(uint32_t mask, uint32_t value) {
     if (value & mask & BIT(11)) readFifo = {}; // Empty read FIFO
     if (value & mask & BIT(24)) curKey = (aesCnt >> 26) & 0x3; // Apply key slot
 
-    // Start processing a new set of FIFO blocks if triggered
+    // Start processing a new set of FIFO blocks if triggered; with none to process, it's finished right away, like in
+    // melonDS (the DSi's launcher starts one like that after decrypting a DSi title's modcrypt areas)
     if (!start) return;
     initFifo();
+    if (!curBlock && !curExtra) {
+        aesCnt &= ~BIT(31);
+        return;
+    }
     triggerFifo();
 }
 
