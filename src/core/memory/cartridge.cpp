@@ -679,6 +679,12 @@ bool CartridgeNds::loadRom() {
     // Save the ROM code, which is mainly used for encryption
     romCode = U8TO32(rom, 0x0C);
 
+    // ROM dumps don't provide a chip ID, so make one up from the ROM's size like melonDS, marking DSi titles with a
+    // region; the DSi menu doesn't show a card whose ID doesn't fit it
+    uint32_t size = std::max(romMask + 1, 0x100000U);
+    chipId = 0xC2 | (((size <= 0x8000000) ? ((size >> 20) - 1) : (0x100 - (size >> 28))) << 8);
+    if ((rom[0x12] & BIT(1)) && U8TO32(rom, 0x1B0)) chipId |= BIT(30);
+
     // Check if the ROM is encrypted
     if (romSize >= 0x8000) { // ROM has secure area
         // Decrypt the 'encryObj' string
@@ -1403,8 +1409,7 @@ uint32_t CartridgeNds::readRomDataIn(bool cpu) {
 
     case CMD_CHIP:
         // Read the chip ID, repeated every 4 bytes
-        // ROM dumps don't provide a chip ID, so use a fake one
-        return 0x00001FC2;
+        return chipId;
 
     case CMD_SECURE:
         // Encrypt the first 2KB of the secure area

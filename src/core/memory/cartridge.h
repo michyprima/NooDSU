@@ -168,6 +168,7 @@ public:
     void flushWord();
     void resetCycles();
 
+    uint32_t getChipId() { return chipId; }
     uint16_t readAuxSpiCnt(bool cpu) { return auxSpiCnt[cpu]; }
     uint8_t readAuxSpiData(bool cpu) { return auxSpiData[cpu]; }
     uint32_t readRomCtrl(bool cpu);
@@ -180,7 +181,7 @@ public:
     void writeRomCmdOutH(bool cpu, uint32_t mask, uint32_t value);
 
 private:
-    uint32_t romCode = 0;
+    uint32_t romCode = 0, chipId = 0x00001FC2;
     bool romEncrypted = false;
     NdsCmdMode cmdMode = CMD_NONE;
 
