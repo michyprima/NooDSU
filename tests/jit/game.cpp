@@ -30,7 +30,7 @@ static const uint32_t
     COND_TABLE = 0x200000,
     FAKE_HANDLERS = 0x3E0000, FAKE = 0x3F0000, FAKE_MEMORY = 0x3F0800, FAKE_MSR = 0x3F1800, FAKE_INTERLEAVE = 0x3F2000,
     READ_MAP = 0x400000, WRITE_MAP = 0x800000, // Live: memory maps, with host pointers turned into emulator addresses
-    CODE = 0x10000000, CODE_SIZE = 0x4000000,
+    CODE = 0x10000000, CODE_SIZE = 0x2000000,
     RAM = 0x20000000, // Main RAM, shared with the core
     CORE = 0x40000000; // The whole core object, shared, for every other memory the maps point to
 
@@ -376,11 +376,11 @@ static uint64_t hash(const void *data, size_t size, uint64_t h = 0xCBF29CE484222
 int main(int argc, char **argv) {
     if (argc < 5) {
         printf("Usage: game <system files folder> <rom, or - for none> <interp|portable|native> <frames> [fast] [dsi] [press=N] "
-            "[touch=N] [ppm=path]\n");
+            "[touch=N] [trace=frame] [ppm=path]\n");
         return 2;
     }
     std::string files = argv[1], mode = argv[3];
-    int frames = atoi(argv[4]), press = 0, touch = 0;
+    int frames = atoi(argv[4]), press = 0, touch = 0, traceFrom = -1;
     bool fast = false, dsi = false;
     std::string ppm;
     for (int i = 5; i < argc; i++) {
@@ -389,6 +389,7 @@ int main(int argc, char **argv) {
         else if (arg == "dsi") dsi = true;
         else if (arg.rfind("press=", 0) == 0) press = atoi(arg.c_str() + 6);
         else if (arg.rfind("touch=", 0) == 0) touch = atoi(arg.c_str() + 6);
+        else if (arg.rfind("trace=", 0) == 0) traceFrom = atoi(arg.c_str() + 6);
         else if (arg.rfind("ppm=", 0) == 0) ppm = arg.substr(4);
         else fatal("unknown option %s", arg.c_str());
     }
@@ -438,11 +439,28 @@ int main(int argc, char **argv) {
     startEngine(engines[1], true);
     if (mode == "portable") core->jit.codeFailed = core->jit7.codeFailed = true;
 
+    // From the frame to trace, also print the CPUs' registers at the start of each scanline, to narrow down a difference
+    static int frameNow = 0;
+    static std::function<void()> scanline = core->tasks[NDS_SCANLINE256];
+    if (traceFrom >= 0) core->tasks[NDS_SCANLINE256] = [traceFrom]() {
+        if (frameNow >= traceFrom) {
+            for (int c = 0; c < 2; c++) {
+                Interpreter &arm = core->interpreter[c];
+                printf("line %d arm%d cycles %u/%u cpsr %08X", core->gpu.vCount, c ? 7 : 9, core->globalCycles, arm.cycles,
+                    arm.cpsr);
+                for (int r = 0; r < 16; r++) printf(" %08X", *arm.registers[r]);
+                printf("\n");
+            }
+        }
+        scanline();
+    };
+
     // Print a line per frame that the runs can be compared by
     static uint32_t frame[256 * 192 * 2 * 4];
     uint64_t last = 0;
     auto start = std::chrono::steady_clock::now();
     for (int i = 0; i < frames; i++) {
+        frameNow = i;
         if (press && i % press == 0) core->input.pressKey(0);
         if (press && i % press == 2) core->input.releaseKey(0);
         if (touch && i % touch == 0) { core->input.pressScreen(); core->spi.setTouch(128, 96); }

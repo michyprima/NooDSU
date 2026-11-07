@@ -59,8 +59,9 @@ for DSi mode. Each way of running is given by `--modes`: `interp` without the JI
 and `native` with generated code. Each prints a line per frame with a hash of the screens, the cycle counts and both CPUs'
 program counters, then hashes of RAM and WRAM, and every way is compared with the first. Options are `fast` for fast timing,
 `dsi` for DSi mode, `press=N` to press A every N frames, `touch=N` to touch the middle of the bottom screen every N frames,
-and `ppm=file` to save the last frame. It builds in `$TMPDIR/noodsu-jit-test-game`, and leaves each run's output in a
-`run-<mode>` folder there.
+`trace=N` to also print both CPUs' registers at the start of every scanline from frame N, and `ppm=file` to save the last
+frame. It builds in `$TMPDIR/noodsu-jit-test-game`, and leaves each run's output in a `run-<mode>` folder there; set
+`JIT_TEST_CFLAGS` to build with more flags, like `-fsanitize=address,undefined -g`.
 
 Fast timing lets generated code count cycles in batches, so its runs differ from the interpreter's by design; it can still be
 run alone to see that a game works. With exact timing, any difference is a bug.
@@ -73,4 +74,4 @@ to C++, like interpreter handlers and the interleave helper, run for real. Each 
 can run during a stop in ARM9 code.
 
 Mario Kart DS with `press=40` reaches a race by about frame 1500, and DSi mode with no ROM and `touch=97 press=61` gets past
-the health and safety screen.
+the health and safety screen. With generated code in Unicorn, these run at 15 to 35 frames a second.

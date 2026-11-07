@@ -22,7 +22,7 @@ uni=$(ls -d "$base"/venv/lib/python*/site-packages/unicorn)
 rm -rf "$build/new"; mkdir -p "$build/new"; cp -R "$here/../../src/core/" "$build/new/"
 python3 -I "$here/patch.py" "$build/new" "$mutation" game
 if rsync -rci --delete "$build/new/" "$build/src/" | grep -q '\.h$'; then rm -f "$build"/obj/*.o; fi
-flags="-std=c++17 -O2 -w -I$here/shim -I$build/src -I$build/src/gpu -I$build/src/io -I$uni/include -DNO_FDOPEN"
+flags="-std=c++17 -O2 -w $JIT_TEST_CFLAGS -I$here/shim -I$build/src -I$build/src/gpu -I$build/src/io -I$uni/include -DNO_FDOPEN"
 for f in $(cd "$build/src"; find . -name '*.cpp'); do
     o="$build/obj/$(echo "${f#./}" | tr '/' '_').o"
     if [ ! -e "$o" ] || [ "$build/src/$f" -nt "$o" ]; then clang++ $flags -c "$build/src/$f" -o "$o" & fi
@@ -33,7 +33,7 @@ if [ ! -e "$build/obj/game.o" ] || [ "$here/game.cpp" -nt "$build/obj/game.o" ] 
 fi
 clang -O2 -c "$here/shim/slirp.c" -o "$build/obj/slirp.o" &
 wait
-clang++ "$build"/obj/*.o -L"$uni/lib" -lunicorn -Wl,-rpath,"$uni/lib" -o "$build/game"
+clang++ $JIT_TEST_CFLAGS "$build"/obj/*.o -L"$uni/lib" -lunicorn -Wl,-rpath,"$uni/lib" -o "$build/game"
 
 # Run each way in its own folder, since saves and the DSi NAND get written, then compare each with the first
 pids=()

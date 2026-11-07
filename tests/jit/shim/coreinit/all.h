@@ -24,4 +24,5 @@ inline bool OSCompareAndSwapAtomicEx(uint32_t*p,uint32_t e,uint32_t n,uint32_t*o
 inline void DCFlushRange(void*,uint32_t){} inline void DCInvalidateRange(void*,uint32_t){} inline void ICInvalidateRange(void*,uint32_t){} inline void DCStoreRange(void*,uint32_t){}
 inline void OSFatal(const char*m){puts(m);abort();}
 inline uint32_t OSGetCodegenCore(){return 1;} inline uint32_t OSGetCodegenMode(){return 0;} inline uint32_t OSGetSecCodeGenMode(){return 0;} enum {CODEGEN_RW_=0,CODEGEN_R_X=1}; inline int OSSwitchSecCodeGenMode(int){return 1;}
-inline void OSGetCodegenVirtAddrRange(void**a,uint32_t*s){static void*b=malloc(0x4000000);*a=b;*s=0x4000000;}
+// 32MB like the console, so generated code can always reach the shared routines with a relative branch
+inline void OSGetCodegenVirtAddrRange(void**a,uint32_t*s){static void*b=malloc(0x2000000);*a=b;*s=0x2000000;}
