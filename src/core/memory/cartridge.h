@@ -181,7 +181,8 @@ public:
     void writeRomCmdOutH(bool cpu, uint32_t mask, uint32_t value);
 
 private:
-    uint32_t romCode = 0, chipId = 0x00001FC2;
+    uint32_t romCode = 0, chipId = 0x00001FC2, dsiBase = 0;
+    bool dsiCart = false;
     bool romEncrypted = false;
     NdsCmdMode cmdMode = CMD_NONE;
 
@@ -197,7 +198,7 @@ private:
     uint32_t wordTime = 0;
     void scheduleWord(bool cpu);
     void checkWord();
-    bool encrypted[2] = {};
+    bool encrypted[2] = {}, dsiKey[2] = {};
 
     uint8_t auxCommand[2] = {};
     uint32_t auxAddress[2] = {};
@@ -214,7 +215,7 @@ private:
 
     uint64_t encrypt64(uint64_t value);
     uint64_t decrypt64(uint64_t value);
-    void initKeycode(int level);
+    void initKeycode(int level, bool dsi = false);
     void applyKeycode();
 };
 

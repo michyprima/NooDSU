@@ -598,6 +598,7 @@ void CartridgeNds::saveState(FILE *file) {
     fwrite(readCount, 2, sizeof(readCount) / 2, file);
     fwrite(wordCycles, 4, sizeof(wordCycles) / 4, file);
     fwrite(encrypted, sizeof(bool), sizeof(encrypted) / sizeof(bool), file);
+    fwrite(dsiKey, sizeof(bool), sizeof(dsiKey) / sizeof(bool), file);
     fwrite(auxCommand, 1, sizeof(auxCommand), file);
     fwrite(auxAddress, 4, sizeof(auxAddress) / 4, file);
     fwrite(auxWriteCount, 4, sizeof(auxWriteCount) / 4, file);
@@ -620,6 +621,7 @@ void CartridgeNds::loadState(FILE *file) {
     fread(readCount, 2, sizeof(readCount) / 2, file);
     fread(wordCycles, 4, sizeof(wordCycles) / 4, file);
     fread(encrypted, sizeof(bool), sizeof(encrypted) / sizeof(bool), file);
+    fread(dsiKey, sizeof(bool), sizeof(dsiKey) / sizeof(bool), file);
     fread(auxCommand, 1, sizeof(auxCommand), file);
     fread(auxAddress, 4, sizeof(auxAddress) / 4, file);
     fread(auxWriteCount, 4, sizeof(auxWriteCount) / 4, file);
@@ -683,7 +685,11 @@ bool CartridgeNds::loadRom() {
     // region; the DSi menu doesn't show a card whose ID doesn't fit it
     uint32_t size = std::max(romMask + 1, 0x100000U);
     chipId = 0xC2 | (((size <= 0x8000000) ? ((size >> 20) - 1) : (0x100 - (size >> 28))) << 8);
-    if ((rom[0x12] & BIT(1)) && U8TO32(rom, 0x1B0)) chipId |= BIT(30);
+    dsiCart = (rom[0x12] & BIT(1)) && U8TO32(rom, 0x1B0);
+    if (dsiCart) chipId |= BIT(30);
+
+    // DSi cards keep their DSi code in an area of its own, given in 512KB units
+    dsiBase = U8TO16(rom, 0x92) << 19;
 
     // Check if the ROM is encrypted
     if (romSize >= 0x8000) { // ROM has secure area
@@ -801,6 +807,9 @@ void CartridgeNds::directBoot() {
     if (romFile) loadRomSection(0, 0x1000);
     bool dsi = core->dsiMode && (rom[0x12] & BIT(1));
 
+    // The system has read a DSi title's DSi area by now, which the title can then read too
+    dsiKey[0] = dsiKey[1] = dsi && dsiCart;
+
     // Handle the header based on DSi mode
     if (dsi) {
         // Apply the header's WRAM mappings
@@ -890,17 +899,17 @@ void CartridgeNds::powerReset() {
     // Start over as a card does when the DSi powers its slot off or holds it in reset
     cmdMode = CMD_NONE;
     for (int i = 0; i < 2; i++) {
-        encrypted[i] = false;
+        encrypted[i] = dsiKey[i] = false;
         romCtrl[i] &= ~BIT(29);
     }
 }
 
-void CartridgeNds::initKeycode(int level) {
-    // Initialize the Blowfish encryption table
+void CartridgeNds::initKeycode(int level, bool dsi) {
+    // Initialize the Blowfish encryption table, with the DSi's other table for the DSi parts of DSi cards
     // This is a translation of the pseudocode from GBATEK to C++
 
     for (int i = 0; i < 0x412; i++)
-        encTable[i] = core->memory.readKeyTable(i);
+        encTable[i] = core->memory.readKeyTable(i, dsi);
 
     encCode[0] = romCode;
     encCode[1] = romCode / 2;
@@ -1286,8 +1295,9 @@ void CartridgeNds::writeRomCtrl(bool cpu, uint32_t mask, uint32_t value) {
         command |= ((romCmdOut[cpu] >> (i * 8)) & 0xFF) << ((7 - i) * 8);
 
     // Decrypt the ROM command if encryption is enabled
+    // DSi cards use level 1 of the DSi's table for their DSi parts
     if (encrypted[cpu]) {
-        initKeycode(2);
+        initKeycode(dsiKey[cpu] ? 1 : 2, dsiKey[cpu]);
         command = decrypt64(command);
     }
 
@@ -1310,10 +1320,19 @@ void CartridgeNds::writeRomCtrl(bool cpu, uint32_t mask, uint32_t value) {
         else if ((command >> 56) == 0x3C) { // Activate KEY1 encryption mode
             // Initialize KEY1 encryption
             encrypted[cpu] = true;
+            dsiKey[cpu] = false;
+        }
+        else if ((command >> 56) == 0x3D && core->dsiMode && dsiCart) { // Activate KEY1 encryption mode for the DSi area
+            // Like 0x3C, but for the DSi parts of a DSi card, which only a DSi asks for
+            encrypted[cpu] = true;
+            dsiKey[cpu] = true;
         }
         else if ((command >> 60) == 0x2) { // Get secure area
             cmdMode = CMD_SECURE;
             romAddrReal[cpu] = ((command & 0x0FFFF00000000000) >> 44) * 0x1000;
+
+            // The DSi area's secure area is at its start, which like the ROM's starts 0x1000 bytes before it
+            if (dsiKey[cpu]) romAddrReal[cpu] += dsiBase - 0x1000;
 
             // Load the secure area block from file if needed
             if (romFile) {
@@ -1333,6 +1352,11 @@ void CartridgeNds::writeRomCtrl(bool cpu, uint32_t mask, uint32_t value) {
         else if ((command >> 56) == 0xB7) { // Get data
             cmdMode = CMD_DATA;
             romAddrReal[cpu] = (command >> 24) & romMask;
+
+            // DSi cards only let the DSi area be read after a DSi asked for it, apart from its first 0x3000 bytes, which
+            // read like the ROM's first 0x8000 (from melonDS)
+            if (dsiCart && romAddrReal[cpu] >= dsiBase && (!dsiKey[cpu] || romAddrReal[cpu] < dsiBase + 0x3000))
+                romAddrReal[cpu] = 0x8000 + (romAddrReal[cpu] & 0x1FF);
 
             // Load the ROM data from file if needed
             if (romFile) {

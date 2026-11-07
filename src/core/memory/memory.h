@@ -110,7 +110,7 @@ public:
     uint32_t readMbk9() { return mbk9; }
     uint32_t readScfgExt(bool arm7) { return scfgExt[arm7]; }
     uint16_t readScfgRom() { return scfgRom; }
-    uint32_t readKeyTable(int i);
+    uint32_t readKeyTable(int i, bool dsiCart = false);
     uint16_t readScfgMc();
     uint16_t readCardInsertDelay() { return cardInsertDelay; }
     uint16_t readCardPowerOffDelay() { return cardPowerOffDelay; }

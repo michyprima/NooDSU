@@ -267,8 +267,10 @@ bool Memory::loadGbaBios() {
     return false;
 }
 
-uint32_t Memory::readKeyTable(int i) {
-    // Read a word of the cards' Blowfish table, which the DSi keeps in its ARM9 BIOS instead of its ARM7 one
+uint32_t Memory::readKeyTable(int i, bool dsiCart) {
+    // Read a word of the cards' Blowfish table, which the DSi keeps in its ARM9 BIOS instead of its ARM7 one; its ARM7
+    // BIOS has another table instead, for the DSi parts of DSi cards
+    if (dsiCart) return U8TO32(bios7, 0xC6D0 + i * 4);
     return core->dsiMode ? U8TO32(bios9, 0x99A0 + i * 4) : U8TO32(bios7, 0x30 + i * 4);
 }
 
