@@ -931,8 +931,9 @@ template <typename T> bool Memory::writeJit(bool arm7, uint32_t address, T value
     // Find where a write should go if the JIT unmapped it, which only happens to main RAM, WRAM and ITCM
     uint8_t **writeMap = arm7 ? writeMap7 : (tcm ? writeMap9A : writeMap9B);
     uint8_t *base, **saved = nullptr;
-    if (address - 0x2000000 < 0x2000000 && jitPages(writeMap)[(address >> 12) - 0x2000])
-        base = *(saved = &jitPages(writeMap)[(address >> 12) - 0x2000]);
+    int slot = jitSlot(address >> 12);
+    if (slot >= 0 && jitPages(writeMap)[slot])
+        base = *(saved = &jitPages(writeMap)[slot]);
     else if (!arm7 && tcm && address < core->cp15.itcmSize && core->cp15.itcmCanWrite)
         base = &instrTcm[address & 0x7000];
     else
@@ -963,6 +964,13 @@ uint8_t **Memory::jitPages(uint8_t **writeMap) {
     return (writeMap == writeMap7) ? jitPages7 : (writeMap == writeMap9A) ? jitPages9A : jitPages9B;
 }
 
+int Memory::jitSlot(uint32_t index) {
+    // Get where a page's mapping is kept while it's unmapped for compiled code, or -1 if it can't have been
+    if (index - 0x2000 < 0x2000) return index - 0x2000;
+    if (index - 0xC000 < 0x1000) return index - 0xC000 + 0x2000;
+    return -1;
+}
+
 void Memory::forgetCleanLines() {
     // New code might be in any line, so check them all again
     memset(cleanLines, 0, sizeof(cleanLines));
@@ -970,27 +978,35 @@ void Memory::forgetCleanLines() {
 
 void Memory::unmapJit(uint8_t **writeMap, uint32_t index) {
     // Unmap a page with compiled code for writes, remembering where it points if it's in main RAM or WRAM
-    if (index - 0x2000 < 0x2000)
-        jitPages(writeMap)[index - 0x2000] = writeMap[index];
+    int slot = jitSlot(index);
+    if (slot >= 0)
+        jitPages(writeMap)[slot] = writeMap[index];
     writeMap[index] = nullptr;
 }
 
 void Memory::protectJit(uint8_t **writeMap, uint32_t start, uint32_t end) {
     // Unmap pages with compiled code again after a remap, so writes to them still reach the JIT
-    // Other pages in main RAM and WRAM forget where they pointed, since they were just mapped again
+    // Other pages in main RAM, WRAM and the DSi's main RAM mirror forget where they pointed, since they were just
+    // mapped again; without compiled code, those are the only pages to look at
     // Palettes, VRAM and OAM never have compiled code, so remapping only them needs nothing here
     if (start >= 0x5000000 && end <= 0x8000000) return;
     bool code = core->jitHasCode();
+    uint64_t ranges[2][2] = { { start, end }, {} };
     if (!code) {
-        start = std::max<uint64_t>(start, 0x2000000);
-        end = std::min<uint64_t>(end, 0x4000000);
+        ranges[0][0] = std::max<uint64_t>(start, 0x2000000);
+        ranges[0][1] = std::min<uint64_t>(end, 0x4000000);
+        ranges[1][0] = std::max<uint64_t>(start, 0xC000000);
+        ranges[1][1] = std::min<uint64_t>(end, 0xD000000);
     }
-    for (uint64_t address = start; address < end; address += 0x1000) {
-        uint8_t *&write = writeMap[address >> 12];
-        if (code && write && core->jitIsCodePage(write))
-            unmapJit(writeMap, address >> 12);
-        else if (address - 0x2000000 < 0x2000000)
-            jitPages(writeMap)[(address >> 12) - 0x2000] = nullptr;
+    for (int i = 0; i < 2; i++) {
+        for (uint64_t address = ranges[i][0]; address < ranges[i][1]; address += 0x1000) {
+            uint8_t *&write = writeMap[address >> 12];
+            int slot = jitSlot(address >> 12);
+            if (code && write && core->jitIsCodePage(write))
+                unmapJit(writeMap, address >> 12);
+            else if (slot >= 0)
+                jitPages(writeMap)[slot] = nullptr;
+        }
     }
 }
 

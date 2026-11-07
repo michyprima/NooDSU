@@ -527,8 +527,9 @@ std::string Core::debugSnapshot(const char *reason) {
     auto add = [&](const char *format, auto... args) {
         if (length < (int)sizeof(text)) length += snprintf(text + length, sizeof(text) - length, format, args...);
     };
-    const char *run = (runFunc == &Interpreter::runCoreNone) ? "none" : (runFunc == &Interpreter::runCoreNds<false>) ? "nds" :
-        (runFunc == &Interpreter::runCoreNds<true>) ? "dsi" : (runFunc == &Interpreter::runCoreSingle<true, 1>) ? "single-arm7" :
+    const char *run = (runFunc == &Interpreter::runCoreNone) ? "none" :
+        (runFunc == &Interpreter::runCoreNds<false>) ? "nds" : (runFunc == &Interpreter::runCoreNds<true>) ? "dsi" :
+        (runFunc == &Interpreter::runCoreSingle<true, 1>) ? "single-arm7" :
         (runFunc == &Interpreter::runCoreSingle<false, 0>) ? "single-arm9" :
         (runFunc == &Interpreter::runCoreSingle<false, -1>) ? "single-arm9-dsi" :
         (runFunc == &Interpreter::runCoreSingle<true, 0>) ? "single-gba" : "?";

@@ -46,10 +46,11 @@ public:
     uint8_t *writeMap9B[0x100000] = {};
     uint8_t *writeMap7[0x100000] = {};
 
-    // Where pages in main RAM and WRAM (0x2000000 to 0x3FFFFFF) point when unmapped for having compiled code
-    uint8_t *jitPages9A[0x2000] = {};
-    uint8_t *jitPages9B[0x2000] = {};
-    uint8_t *jitPages7[0x2000] = {};
+    // Where pages in main RAM and WRAM (0x2000000 to 0x3FFFFFF) point when unmapped for having compiled code, then
+    // pages in the DSi's main RAM mirror (0xC000000 to 0xCFFFFFF)
+    uint8_t *jitPages9A[0x3000] = {};
+    uint8_t *jitPages9B[0x3000] = {};
+    uint8_t *jitPages7[0x3000] = {};
 
     // Recently written lines in pages with compiled code that have none themselves, by host address
     static const int CLEAN_LINES = 64;
@@ -174,6 +175,7 @@ private:
     void protectJit(uint8_t **writeMap, uint32_t start, uint32_t end);
     void unmapJit(uint8_t **writeMap, uint32_t index);
     uint8_t **jitPages(uint8_t **writeMap);
+    static int jitSlot(uint32_t index);
 
     template <typename T> T ioRead9(uint32_t address);
     template <typename T> T ioRead7(uint32_t address);

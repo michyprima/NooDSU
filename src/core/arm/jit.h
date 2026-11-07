@@ -154,13 +154,14 @@ private:
 
     // Blocks are looked up by the host address of their first halfword
     // The ARM9 compiles code from main RAM, ITCM and its BIOS; the ARM7 from main RAM, both WRAMs and its BIOS
-    static const int RAM_SIZE = 0x400000, RAM_PAGES = RAM_SIZE >> 12, MAX_PAGES = RAM_PAGES + 24;
+    // Pages of the writable regions are tracked, which is 4MB of main RAM or 16MB in DSi mode, then the rest
     JitRegion regions[4] = {};
     int regionCount = 0;
     uint32_t tableSize = 0;
     std::vector<JitBlock*> table;
-    JitPage pages[MAX_PAGES];
+    std::vector<JitPage> pages;
     int codePages = 0;
+    bool halfCycles = false; // Whether this is the DSi's ARM9, which runs twice as fast and counts half cycles
 
     // The entry before the cache holds a flag that's set when code changes, so it's next to the cache
     // Running code stops at the next instruction when the flag is set, in case its own code changed
@@ -187,6 +188,7 @@ private:
     void *codePost[2][2] = {}, *codeSlowPost[2] = {}; // Indexed by impure, then by storing the program counter
     void *codeCond[14] = {}, *codeFlags[5] = {}, *codeMemory[6] = {}, *codeShift[4] = {}, *codeShiftCarry[4] = {}, *codeMultiplyCycles = nullptr, *codeOverflowQ = nullptr, *codeMsr[2] = {};
     int offPc = 0, offCpsr = 0, offSpsr = 0, offCycles = 0, offEventCycles = 0, offUsr = 0, offRegs = 0, offIe = 0, offIrf = 0;
+    int offDsiCycle = 0;
     uint32_t codeCore = 0;
     bool codeFailed = false;
     bool codeFast = false; // Whether code was generated for fast timing, which checks cycles less often

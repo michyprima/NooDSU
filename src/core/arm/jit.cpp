@@ -93,30 +93,37 @@ Jit::~Jit() {
 }
 
 void Jit::enable(bool value) {
-    // Only run code compiled in regular DS mode
-    if (value && (core->dsiMode || core->gbaMode))
+    // Only run compiled code in NDS and DSi mode
+    if (value && core->gbaMode)
         value = false;
     if (!value) reset();
     enabled = value;
+    halfCycles = core->dsiMode && !arm7;
 
     // Set up the memory that code is compiled from, with the writable parts first so their pages are numbered first
+    // Main RAM and the ARM7 BIOS are bigger in DSi mode
     Memory &mem = core->memory;
     regionCount = 0;
-    regions[regionCount++] = { mem.ram, RAM_SIZE, true };
+    regions[regionCount++] = { mem.ram, mem.ramSize, true };
     if (arm7) {
         regions[regionCount++] = { mem.wram, 0x8000, true };
         regions[regionCount++] = { mem.wram7, 0x10000, true };
-        regions[regionCount++] = { mem.bios7, 0x4000, false };
+        regions[regionCount++] = { mem.bios7, core->dsiMode ? 0x10000U : 0x4000U, false };
     }
     else {
         regions[regionCount++] = { mem.instrTcm, 0x8000, true };
         regions[regionCount++] = { mem.bios9, 0x10000, false };
     }
     tableSize = 0;
-    for (int i = 0; i < regionCount; i++)
+    uint32_t pageCount = 0;
+    for (int i = 0; i < regionCount; i++) {
         tableSize += regions[i].size;
-    if (enabled && table.empty())
+        if (regions[i].writable) pageCount += regions[i].size >> 12;
+    }
+    if (enabled && table.empty()) {
         table.resize(tableSize / 2);
+        pages.resize(pageCount);
+    }
 }
 
 void Jit::reset() {
@@ -129,7 +136,7 @@ void Jit::reset() {
         if (table[i]) graveyard.push_back(table[i]);
         table[i] = nullptr;
     }
-    for (int i = 0; i < MAX_PAGES; i++)
+    for (size_t i = 0; i < pages.size(); i++)
         pages[i] = JitPage();
     pendingLinks.clear();
     unlinks.clear();
@@ -142,6 +149,10 @@ void Jit::reset() {
         codePages = 0;
         core->memory.updateMap9(0x00000000, 0x04000000);
         core->memory.updateMap7(0x02000000, 0x04000000);
+        if (core->dsiMode) {
+            core->memory.updateMap9(0x0C000000, 0x0D000000);
+            core->memory.updateMap7(0x0C000000, 0x0D000000);
+        }
     }
 }
 
@@ -446,6 +457,7 @@ void Jit::protect(int page) {
     // Unmap every mirror of a page from the write maps, so writes to it go through the JIT
     // Mirrors are only unmapped if they point to the page, in case something else is mapped over them
     // Main RAM and WRAM can be written by either CPU; ITCM only appears in the ARM9's lower addresses
+    // In DSi mode, main RAM also appears at 0x0C000000
     Memory &mem = core->memory;
     uint8_t *host = pageHost(page);
     codePages++;
@@ -454,11 +466,14 @@ void Jit::protect(int page) {
             if (mem.writeMap9A[i] == host) mem.writeMap9A[i] = nullptr;
         return;
     }
-    uint32_t start = (uintptr_t(host - mem.ram) < RAM_SIZE) ? 0x02000 : 0x03000;
-    for (uint32_t i = start; i < start + 0x1000; i++) {
-        if (mem.writeMap9A[i] == host) mem.unmapJit(mem.writeMap9A, i);
-        if (mem.writeMap9B[i] == host) mem.unmapJit(mem.writeMap9B, i);
-        if (mem.writeMap7[i] == host) mem.unmapJit(mem.writeMap7, i);
+    bool ram = uintptr_t(host - mem.ram) < mem.ramSize;
+    for (int area = 0; area < ((ram && core->dsiMode) ? 2 : 1); area++) {
+        uint32_t start = area ? 0x0C000 : ram ? 0x02000 : 0x03000;
+        for (uint32_t i = start; i < start + 0x1000; i++) {
+            if (mem.writeMap9A[i] == host) mem.unmapJit(mem.writeMap9A, i);
+            if (mem.writeMap9B[i] == host) mem.unmapJit(mem.writeMap9B, i);
+            if (mem.writeMap7[i] == host) mem.unmapJit(mem.writeMap7, i);
+        }
     }
 }
 
@@ -657,11 +672,14 @@ void Jit::execute(JitBlock *block, const uint32_t *limit) {
                 }
             }
 
-            // Count the cycles, doubled for the half-speed ARM7, and continue to the next instruction if nothing
-            // else needs to run first
+            // Count the cycles, doubled for the half-speed ARM7 and halved for the DSi's ARM9, and continue to the next
+            // instruction if nothing else needs to run first
+            // An instruction that took no time also stops at the limit, since the run loop would run the ARM7 next if
+            // it was due when the instruction started, which is now
+            if (halfCycles) cycles = arm.dsiCycles(cycles);
             uint32_t next = core->globalCycles + (cycles << arm7);
             arm.cycles = next;
-            if (next > *limit || next >= core->events[0].cycles || codeChanged) {
+            if (next > *limit || (!cycles && next == *limit) || next >= core->events[0].cycles || codeChanged) {
                 if (!interleave(limit)) {
                     stop = true;
                     break;

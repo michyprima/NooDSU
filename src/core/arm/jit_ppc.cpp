@@ -64,7 +64,9 @@ public:
     void lis(int rt, int32_t si) { d(15, rt, 0, si); }
     void ori(int ra, int rs, uint32_t ui) { d(24, rs, ra, ui); }
     void lwz(int rt, int32_t disp, int ra) { d(32, rt, ra, disp); }
+    void lbz(int rt, int32_t disp, int ra) { d(34, rt, ra, disp); }
     void stw(int rs, int32_t disp, int ra) { d(36, rs, ra, disp); }
+    void stb(int rs, int32_t disp, int ra) { d(38, rs, ra, disp); }
     void stwu(int rs, int32_t disp, int ra) { d(37, rs, ra, disp); }
     void lmw(int rt, int32_t disp, int ra) { d(46, rt, ra, disp); }
     void stmw(int rs, int32_t disp, int ra) { d(47, rs, ra, disp); }
@@ -116,6 +118,9 @@ public:
     void cmplw(int ra, int rb) { x(0, ra, rb, 32); }
     void rlwinm(int ra, int rs, int sh, int mb, int me) {
         emit((21 << 26) | (rs << 21) | (ra << 16) | (sh << 11) | (mb << 6) | (me << 1));
+    }
+    void rlwinm_(int ra, int rs, int sh, int mb, int me) { // Also compares the result with 0 in cr0
+        emit((21 << 26) | (rs << 21) | (ra << 16) | (sh << 11) | (mb << 6) | (me << 1) | 1);
     }
 
     // Special registers and branches
@@ -255,6 +260,7 @@ void Jit::initCodegen() {
     offRegs = (uint8_t*)&arm.registers[0] - (uint8_t*)&arm;
     offIe = (uint8_t*)&arm.ie - (uint8_t*)&arm;
     offIrf = (uint8_t*)&arm.irf - (uint8_t*)&arm;
+    offDsiCycle = (uint8_t*)&arm.dsiCycle - (uint8_t*)&arm;
     addrWriteCpsr = (uint32_t)(uintptr_t)&Jit::writeCpsrCall;
     addrCondition = (uint32_t)(uintptr_t)&Interpreter::condition[0];
     addrMemory = (uint32_t)(uintptr_t)&core->memory;
@@ -344,12 +350,24 @@ void Jit::emitStubs(PpcEmitter &e) {
     e.beq(codeExit);
     e.blr();
 
-    // After an instruction, with its cycles in r3: add them, doubled for the half-speed ARM7, then continue if nothing
-    // else needs to run first; impure versions also check if code changed, since the block might be stale
+    // After an instruction, with its cycles in r3: add them, doubled for the half-speed ARM7 and halved for the DSi's
+    // ARM9, then continue if nothing else needs to run first; impure versions also check if code changed, since the
+    // block might be stale
     for (int store = 0; store < 2; store++) {
         for (int impure = 0; impure < 2; impure++) {
             codePost[impure][store] = e.here();
             if (arm7) e.add(3, 3, 3);
+            uint32_t *none = nullptr;
+            if (halfCycles) {
+                // Keep an odd half cycle for the next instruction, like the interpreter
+                e.lbz(4, offDsiCycle, R_ARM);
+                e.add(3, 3, 4);
+                e.rlwinm(4, 3, 0, 31, 31);
+                e.stb(4, offDsiCycle, R_ARM);
+                e.rlwinm_(3, 3, 31, 1, 31);
+                none = e.here();
+                e.beq(nullptr);
+            }
             e.add(3, 3, R_CYCLES);
             if (impure) {
                 e.lwz(4, -int(sizeof(JitCacheEntry)), R_CACHE);
@@ -359,6 +377,23 @@ void Jit::emitStubs(PpcEmitter &e) {
             e.cmplw(3, R_NEXT);
             e.bge(codeSlowPost[store]);
             e.mr(R_CYCLES, 3);
+            e.blr();
+            if (!none) continue;
+
+            // An instruction that took no time also stops at the limit, since the run loop would run the ARM7 next if
+            // it was due when the instruction started, which is now; it stops for an event made due now as well
+            e.patchBc(none);
+            e.mr(3, R_CYCLES);
+            if (impure) {
+                e.lwz(4, -int(sizeof(JitCacheEntry)), R_CACHE);
+                e.cmpwi(4, 0);
+                e.bne(codeSlowPost[store]);
+            }
+            e.cmplw(3, R_NEXT);
+            e.bge(codeSlowPost[store]);
+            e.lwz(4, 0, R_LIMIT);
+            e.cmplw(3, 4);
+            e.bge(codeSlowPost[store]);
             e.blr();
         }
     }
