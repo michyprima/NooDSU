@@ -43,11 +43,15 @@ static void runGuarded(void (*test)(void), volatile unsigned *out) {
     *irqVector = (unsigned)irq_escape;
     *exceptionVector = (unsigned)exception_caught;
 #ifdef ARM9
+    // Vectors in the BIOS, not libnds's in ITCM, and the caches off, since the BIOS turns the protection unit off before
+    // calling the exception handler, which would then see memory the cache hasn't written yet
     unsigned control = getControl(), processId = getProcessId(); // Some tests write the trace process ID, which libnds sets
-    setControl(control | (1 << 13)); // Vectors in the BIOS, not libnds's in ITCM
+    armDCacheFlushAll();
+    setControl((control | (1 << 13)) & ~((1 << 12) | (1 << 2)));
 #endif
     run_test(test, out);
 #ifdef ARM9
+    armICacheInvalidateAll();
     setControl(control);
     setProcessId(processId);
 #endif
