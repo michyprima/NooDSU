@@ -367,6 +367,10 @@ static void startEngine(Engine &en, bool arm7) {
     uc_hook_add(uc, &hook, UC_HOOK_CODE, (void*)hookCall, &en, FAKE_HANDLERS, FAKE_INTERLEAVE + 4);
 }
 
+// Set by window.cpp when game.sh links it in for --window
+bool (*windowOpen)(const char *title, int position) = nullptr;
+void (*windowShow)(const uint32_t *frame) = nullptr;
+
 static uint64_t hash(const void *data, size_t size, uint64_t h = 0xCBF29CE484222325ULL) {
     const uint8_t *p = (const uint8_t*)data;
     for (size_t i = 0; i < size; i++) h = (h ^ p[i]) * 0x100000001B3ULL;
@@ -376,12 +380,12 @@ static uint64_t hash(const void *data, size_t size, uint64_t h = 0xCBF29CE484222
 int main(int argc, char **argv) {
     if (argc < 5) {
         printf("Usage: game <system files folder> <rom, or - for none> <interp|portable|native> <frames> [fast] [dsi] [firmware] [press=N] "
-            "[start=N] [touch=N] [trace=frame] [ppm=path] [results=path] [ram=path] [keys=frame:key,...]\n");
+            "[start=N] [touch=N] [trace=frame] [ppm=path] [results=path] [ram=path] [keys=frame:key,...] [live] [window]\n");
         return 2;
     }
     std::string files = argv[1], mode = argv[3];
     int frames = atoi(argv[4]), press = 0, startKey = 0, touch = 0, traceFrom = -1;
-    bool fast = false, dsi = false, firmware = false;
+    bool fast = false, dsi = false, firmware = false, window = false;
     std::string ppm, results, ramFile;
     std::vector<std::pair<int, int>> inputs; // Frame and key to press then, for 2 frames
     for (int i = 5; i < argc; i++) {
@@ -389,6 +393,8 @@ int main(int argc, char **argv) {
         if (arg == "fast") fast = true;
         else if (arg == "dsi") dsi = true;
         else if (arg == "firmware") firmware = true;
+        else if (arg == "live") setvbuf(stdout, nullptr, _IOLBF, 0); // Each line as it's printed, for game.sh's --live
+        else if (arg == "window") window = true;
         else if (arg.rfind("press=", 0) == 0) press = atoi(arg.c_str() + 6);
         else if (arg.rfind("start=", 0) == 0) startKey = atoi(arg.c_str() + 6);
         else if (arg.rfind("touch=", 0) == 0) touch = atoi(arg.c_str() + 6);
@@ -408,6 +414,11 @@ int main(int argc, char **argv) {
         else fatal("unknown option %s", arg.c_str());
     }
     if (mode != "interp" && mode != "portable" && mode != "native") fatal("unknown mode %s", mode.c_str());
+    if (window) {
+        if (!windowOpen) fatal("the window needs game.sh's --window");
+        int position = (mode == "interp") ? 0 : (mode == "portable") ? 1 : 2;
+        if (!windowOpen(("NooDS U harness: " + mode).c_str(), position)) fatal("couldn't open a window");
+    }
 
     // Run from the current folder, keeping saves there, with everything that could differ between runs fixed
     Settings::load(".");
@@ -486,7 +497,10 @@ int main(int argc, char **argv) {
         if (touch && i % touch == 0) { core->input.pressScreen(); core->spi.setTouch(128, 96); }
         if (touch && i % touch == 10) { core->input.releaseScreen(); core->spi.clearTouch(); }
         do core->runCore(); while (!core->frameEnded.exchange(false));
-        if (core->gpu.getFrame(frame, false)) last = hash(frame, 256 * 192 * 2 * 4);
+        if (core->gpu.getFrame(frame, false)) {
+            last = hash(frame, 256 * 192 * 2 * 4);
+            if (window) windowShow(frame);
+        }
         Interpreter &arm9 = core->interpreter[0], &arm7 = core->interpreter[1];
         printf("frame %d\tscreen %016llX\tcycles %u %u %u\tpc %08X %08X\n", i, (unsigned long long)last,
             core->globalCycles, arm9.cycles, arm7.cycles, arm9.registersUsr[15], arm7.registersUsr[15]);

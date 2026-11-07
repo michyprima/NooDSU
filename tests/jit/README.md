@@ -51,7 +51,8 @@ what the cases above leave out: real memory and I/O, the ARM7 and tasks running 
 millions of blocks, and how all of that adds up over time.
 
 ```
-tests/jit/game.sh <ROM, or - for none> <folder with the system files> <frames> [--modes "interp native"] [--mutate N] [options]
+tests/jit/game.sh <ROM, or - for none> <folder with the system files> <frames> [--modes "interp native"] [--mutate N] [--live]
+    [--window] [options]
 ```
 
 The folder needs `bios9.bin`, `bios7.bin` and `firmware.bin`, plus `bios9i.bin`, `bios7i.bin`, `firmwarei.bin` and `nand.bin`
@@ -65,6 +66,10 @@ program counters, then hashes of RAM and WRAM, and every way is compared with th
 - `trace=N` to also print both CPUs' registers at the start of every scanline from frame N
 - `ppm=file` to save the last frame, `ram=file` to save main RAM at the end, and `results=file` to save what
   `tests/hardware`'s ROM recorded, for its build
+
+To watch a run, `--live` also prints each way's lines as they come, marked with its mode, and `--window` shows each way's
+screens in a window of its own, at most 60 times a second. The window needs SDL2 (`brew install sdl2`), and is only built
+with `--window`; closing it lets the run carry on without it.
 
 It builds in `$TMPDIR/noodsu-jit-test-game`, and leaves each run's output in a `run-<mode>` folder there; set
 `JIT_TEST_CFLAGS` to build with more flags, like `-fsanitize=address,undefined -g`.

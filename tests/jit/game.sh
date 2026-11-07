@@ -1,13 +1,16 @@
 #!/bin/bash
 # Runs a game with the JIT's generated PowerPC in Unicorn and compares it with other ways of running it, see README.md
-# Usage: game.sh <ROM, or - for none> <folder with the system files> <frames> [--mutate N] [--modes "interp native"] [game options]
+# Usage: game.sh <ROM, or - for none> <folder with the system files> <frames> [--mutate N] [--modes "interp native"] [--live]
+# [--window] [game options]
 set -e
 here=$(cd "$(dirname "$0")"; pwd)
 rom=-; [ "$1" = - ] || rom=$(cd "$(dirname "$1")"; pwd)/$(basename "$1"); cfg=$(cd "$2"; pwd); frames=$3; shift 3
-mutation=0; modes="interp native"
+mutation=0; modes="interp native"; live=0; window=0
 while true; do
     if [ "$1" = --mutate ]; then mutation=$2; shift 2
     elif [ "$1" = --modes ]; then modes=$2; shift 2
+    elif [ "$1" = --live ]; then live=1; shift
+    elif [ "$1" = --window ]; then window=1; shift
     else break; fi
 done
 base=${JIT_TEST_BUILD:-${TMPDIR:-/tmp}/noodsu-jit-test}
@@ -32,15 +35,30 @@ if [ ! -e "$build/obj/game.o" ] || [ "$here/game.cpp" -nt "$build/obj/game.o" ] 
     clang++ $flags -c "$here/game.cpp" -o "$build/obj/game.o" &
 fi
 clang -O2 -c "$here/shim/slirp.c" -o "$build/obj/slirp.o" &
+
+# The window needs SDL2, so it's only built and linked in when asked for, outside the other objects
+extra=()
+if [ "$window" = 1 ]; then
+    sdl=$(pkg-config --cflags sdl2) || { echo "--window needs SDL2 (brew install sdl2)"; exit 1; }
+    clang++ -std=c++17 -O2 -w $sdl -c "$here/window.cpp" -o "$build/window.o" &
+    extra=("$build/window.o" $(pkg-config --libs-only-L sdl2) -lSDL2)
+fi
 wait
-clang++ $JIT_TEST_CFLAGS "$build"/obj/*.o -L"$uni/lib" -lunicorn -Wl,-rpath,"$uni/lib" -o "$build/game"
+clang++ $JIT_TEST_CFLAGS "$build"/obj/*.o "${extra[@]}" -L"$uni/lib" -lunicorn -Wl,-rpath,"$uni/lib" -o "$build/game"
 
 # Run each way in its own folder, since saves and the DSi NAND get written, then compare each with the first
 pids=()
 for m in $modes; do
     rm -rf "$build/run-$m"; mkdir -p "$build/run-$m"
     [ ! -e "$cfg/nand.bin" ] || cp -c "$cfg/nand.bin" "$build/run-$m/nand.bin" 2>/dev/null || cp "$cfg/nand.bin" "$build/run-$m/nand.bin"
-    (cd "$build/run-$m"; exec "$build/game" "$cfg" "$rom" $m "$frames" "$@" > out.txt 2> err.txt) & pids+=($!)
+    opts=(); [ "$live" = 0 ] || opts+=(live); [ "$window" = 0 ] || opts+=(window)
+    if [ "$live" = 1 ]; then
+        # Show each line as it's written too, marked with the mode
+        (set -o pipefail; cd "$build/run-$m"; "$build/game" "$cfg" "$rom" $m "$frames" "$@" "${opts[@]}" 2> err.txt | tee out.txt | sed -l "s/^/$m: /") &
+    else
+        (cd "$build/run-$m"; exec "$build/game" "$cfg" "$rom" $m "$frames" "$@" "${opts[@]}" > out.txt 2> err.txt) &
+    fi
+    pids+=($!)
 done
 status=0; for p in "${pids[@]}"; do wait "$p" || status=1; done
 first=""
