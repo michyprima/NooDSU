@@ -35,12 +35,19 @@
 #define MAX_TESTS 110
 #define WORDS 12 // Six from the test, then the first six words of its data
 
-// Shared between the CPUs, in main RAM with caches off
-#define RESULTS(cpu) ((volatile unsigned*)(0x02300000 + (cpu) * 0x10000))
-#define COMMAND_ARM7 (*(volatile unsigned*)0x02380000) // 1 runs the normal tests, 2 onward one risky test each
-#define DONE_ARM7 (*(volatile unsigned*)0x02380004)
-#define BOOT_MAGIC (*(volatile unsigned*)0x02380020) // These survive the program restarting, to show that it did
-#define BOOT_COUNT (*(volatile unsigned*)0x02380024)
-#define BOOT_LAST_RISKY (*(volatile unsigned*)0x02380028) // 1 + the risky test the ARM9 last started
-#define BOOT_LAST_CPU (*(volatile unsigned*)0x0238002C)
-#define PROGRESS(cpu) (*(volatile unsigned*)(0x02380010 + (cpu) * 4)) // The test running, to see where a hang happened
+// Everything the CPUs share, in the ARM9's main RAM; each CPU's part has its own cache lines, since the ARM9's cache
+// is on and the ARM7 writes its part directly. The magic words let the Mac find it, for the build's expected results
+#define SHARED_MAGIC0 0x54535748 // HWTS
+#define SHARED_MAGIC1 0x544C5352 // RSLT
+struct Shared {
+    unsigned magic[8];
+    unsigned results[2][MAX_TESTS][WORDS];
+    unsigned progress9[8]; // The ARM9's test running, to see where a hang happened
+    unsigned progress7, done7, pad[6]; // The same for the ARM7, and the last command it finished
+} __attribute__((aligned(32)));
+extern struct Shared *shared;
+#define RESULTS(cpu) (&shared->results[cpu][0][0])
+
+// What the ARM9 asks the ARM7 to do over PXI, with where the shared block is: 1 runs the normal tests, 2 onward one
+// risky test each, which fits up to 14 of them
+#define COMMAND(command, block) (((command) << 22) | (((unsigned)(block) - 0x02000000) >> 2))

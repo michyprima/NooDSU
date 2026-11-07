@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Lists where a DS differed from NooDS U, from the noodsu-hwtest.bin the ROM saves to the flashcart's card
+# Lists where a DS differed from NooDS U, from the noodsu-hwtest.bin the ROM saves to the SD card
 # Usage: results.py <noodsu-hwtest.bin> [all]
 import os, re, struct, sys
 
@@ -9,11 +9,10 @@ names = re.findall(r'T\(\w+, "([^"]*)"\)', open(os.path.join(here, 'list.h')).re
 data = open(sys.argv[1], 'rb').read()
 words = struct.unpack('<%dI' % (len(data) // 4), data)
 if words[0] != 0x54535748: sys.exit("That isn't a file from the hardware test ROM")
-ran, normal, boots, restarted, stuck = words[1:6]
+ran, normal, stuck = words[1:4]
 size = 2 * MAX_TESTS * WORDS
-results, expected = words[6:6 + size], words[6 + size:6 + size * 2]
-print(f'{ran} of {len(names)} tests ran ({ran - normal} after START), {boots} boot{"s" if boots != 1 else ""}' +
-    (f', restarted in {names[normal + restarted - 1]}' if restarted else '') +
+results, expected = words[4:4 + size], words[4 + size:4 + size * 2]
+print(f'{ran} of {len(names)} tests ran ({ran - normal} after START)' +
     (f', ARM7 stuck at {stuck} {names[stuck - 1]}' if stuck else ''))
 for cpu in range(2):
     differ = 0

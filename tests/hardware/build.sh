@@ -1,26 +1,29 @@
 #!/bin/bash
-# Builds the test ROM. With a results file from running it in NooDS U, the ROM shows what differs from that
-# Usage: build.sh <ROM to take the logo from> [results file]
+# Builds the test ROM with libnds. With a results file from running it in NooDS U, the ROM shows what differs from that
+# Usage: build.sh [results file]
 set -e
-here=$(cd "$(dirname "$0")"; pwd); logo=$1; results=$2
-tools=${DEVKITARM:-/opt/devkitpro/devkitARM}/bin/arm-none-eabi
-libgba=${DEVKITPRO:-/opt/devkitpro}/libgba # Its libfat works anywhere with a DLDI driver
+here=$(cd "$(dirname "$0")"; pwd); results=$1
+dkp=${DEVKITPRO:-/opt/devkitpro}; tools=${DEVKITARM:-$dkp/devkitARM}/bin/arm-none-eabi
 out=$here/build; mkdir -p "$out"
-common="-Os -marm -nostdlib -nostartfiles -ffreestanding -fno-builtin -Wl,--no-warn-rwx-segments -T$here/link.ld"
-# Saving goes through tests/rom's code, the same way as that ROM
-"$tools-gcc" $common -mcpu=arm946e-s -DARM9 -Wl,--defsym=BASE=0x02000000 -Wl,--defsym=IRQ_STACK=0x023F0000 \
-    -Wl,--defsym=SVC_STACK=0x023F1000 -Wl,--defsym=SYS_STACK=0x023FA000 -I"$here/../rom" -I"$libgba/include" -L"$libgba/lib" \
-    '-DFILE_NAME="fat:/noodsu-hwtest.bin"' '-DFILE_LABEL="NOODSU-HWTEST.BIN"' \
-    "$here/start.S" "$here/tests.S" "$here/common.c" "$here/../rom/save.c" "$here/arm9.c" \
-    -Wl,--start-group -lfat -lgba -lsysbase -lc -lgcc -Wl,--end-group -o "$out/arm9.elf"
-"$tools-gcc" $common -mcpu=arm7tdmi -Wa,-march=armv5te -DARM7 -Wl,--defsym=BASE=0x037F8000 -Wl,--defsym=IRQ_STACK=0x0380F000 \
-    -Wl,--defsym=SVC_STACK=0x0380EC00 -Wl,--defsym=SYS_STACK=0x0380E800 \
-    "$here/start.S" "$here/tests.S" "$here/common.c" "$here/arm7.c" -lgcc -o "$out/arm7.elf"
-"$tools-objcopy" -O binary "$out/arm9.elf" "$out/arm9.bin"
-"$tools-objcopy" -O binary "$out/arm7.elf" "$out/arm7.bin"
-if [ -n "$results" ]; then
-    offset=$(( $("$tools-nm" "$out/arm9.elf" | awk '$3 == "expected" { print "0x" $1 }') - 0x02000000 ))
-    dd if="$results" of="$out/arm9.bin" bs=1 seek=$offset conv=notrunc 2>/dev/null
-fi
-python3 -I "$here/make_rom.py" "$out/arm9.bin" "$out/arm7.bin" "$logo" "$out/noodsu-test.nds"
-echo "Built $out/noodsu-test.nds, ARM9 $(wc -c < "$out/arm9.bin") bytes, ARM7 $(wc -c < "$out/arm7.bin") bytes"
+
+# NooDS U's results go in a table of the same size either way, so the code is in the same place with or without them
+python3 -I - "$out/expected.c" "$results" <<'EOF'
+import struct, sys
+words = [0x4E4F4E45] + [0] * (2 * 110 * 12 - 1)
+if sys.argv[2]:
+    data = open(sys.argv[2], 'rb').read()
+    words = list(struct.unpack('<%dI' % (2 * 110 * 12), data[:2 * 110 * 12 * 4]))
+with open(sys.argv[1], 'w') as f:
+    f.write('volatile const unsigned expected[2][110][12] = {\n')
+    f.write(',\n'.join(', '.join('0x%08X' % w for w in words[i:i + 12]) for i in range(0, len(words), 12)))
+    f.write('\n};\n')
+EOF
+
+common="-g -Os -marm -D__NDS__ -I$dkp/calico/include -I$dkp/libnds/include -L$dkp/calico/lib -L$dkp/libnds/lib"
+"$tools-gcc" $common -march=armv5te -mtune=arm946e-s -DARM9 -specs="$dkp/calico/share/ds9.specs" \
+    "$here/tests.S" "$here/common.c" "$here/arm9.c" "$out/expected.c" -lfat -lnds9 -lcalico_ds9 -o "$out/arm9.elf"
+"$tools-gcc" $common -march=armv4t -mtune=arm7tdmi -Wa,-march=armv5te -DARM7 -specs="$dkp/calico/share/ds7.specs" \
+    "$here/tests.S" "$here/common.c" "$here/arm7.c" -lnds7 -lcalico_ds7 -o "$out/arm7.elf"
+"$dkp/tools/bin/ndstool" -c "$out/noodsu-test.nds" -7 "$out/arm7.elf" -9 "$out/arm9.elf" \
+    -b "$dkp/calico/share/nds-icon.bmp" "NooDS U test;Instructions on a real DS;" > /dev/null
+echo "Built $out/noodsu-test.nds"

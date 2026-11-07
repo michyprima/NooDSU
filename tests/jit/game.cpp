@@ -483,13 +483,17 @@ int main(int argc, char **argv) {
     fprintf(stderr, "%s: %d frames in %.1f s, %llu entries into generated code, %llu calls from it\n", mode.c_str(),
         frames, seconds, (unsigned long long)enters, (unsigned long long)calls);
     if (!results.empty()) {
-        // What tests/hardware's ROM records for each CPU, which its build takes as the results to compare with
+        // What tests/hardware's ROM records for each CPU, which its build takes as the results to compare with; they're
+        // in a block in main RAM marked with two words
+        uint32_t block = 0;
+        for (uint32_t a = 0x02000000; a < 0x02000000 + mem.ramSize && !block; a += 32)
+            if (mem.read<uint32_t>(0, a) == 0x54535748 && mem.read<uint32_t>(0, a + 4) == 0x544C5352) block = a;
+        if (!block) fatal("no results from tests/hardware's ROM");
         FILE *out = fopen(results.c_str(), "wb");
-        for (int cpu = 0; cpu < 2; cpu++)
-            for (uint32_t a = 0; a < 110 * 12 * 4; a += 4) {
-                uint32_t word = mem.read<uint32_t>(0, 0x02300000 + cpu * 0x10000 + a);
-                fwrite(&word, 4, 1, out);
-            }
+        for (uint32_t a = 0; a < 2 * 110 * 12 * 4; a += 4) {
+            uint32_t word = mem.read<uint32_t>(0, block + 32 + a);
+            fwrite(&word, 4, 1, out);
+        }
         fclose(out);
     }
     if (!ppm.empty()) {

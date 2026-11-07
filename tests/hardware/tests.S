@@ -53,9 +53,22 @@
 .type run_test, %function
 .align 2
 run_test: @ r0 = test, r1 = results
+    @ Keep the caller's mode and every mode's stack pointer, which tests and the BIOS change, for libnds afterwards
     push {r4-r11, lr}
-    ldr r2, =saved_sp
-    str sp, [r2]
+    ldr r2, =saved_regs
+    mrs r3, cpsr
+    str r3, [r2, #0]
+    str sp, [r2, #4]
+    msr cpsr_c, #0xD2 @ IRQ
+    str sp, [r2, #8]
+    msr cpsr_c, #0xD3 @ Supervisor
+    str sp, [r2, #12]
+    msr cpsr_c, #0xD7 @ Abort
+    str sp, [r2, #16]
+    msr cpsr_c, #0xDB @ Undefined
+    str sp, [r2, #20]
+    msr cpsr_c, #0xDF @ System
+    str sp, [r2, #24]
     mov r11, r1
     ldr r2, =saved_out
     str r1, [r2]
@@ -66,8 +79,20 @@ run_test: @ r0 = test, r1 = results
 .global test_done
 test_done:
     msr cpsr_cxsf, #0xDF
-    ldr r2, =saved_sp
-    ldr sp, [r2]
+    ldr r2, =saved_regs
+    msr cpsr_c, #0xD2
+    ldr sp, [r2, #8]
+    msr cpsr_c, #0xD3
+    ldr sp, [r2, #12]
+    msr cpsr_c, #0xD7
+    ldr sp, [r2, #16]
+    msr cpsr_c, #0xDB
+    ldr sp, [r2, #20]
+    msr cpsr_c, #0xDF
+    ldr sp, [r2, #24]
+    ldr r3, [r2, #0]
+    msr cpsr_cxsf, r3
+    ldr sp, [r2, #4]
     pop {r4-r11, lr}
     bx lr
 
@@ -232,12 +257,12 @@ exception_caught:
 .global irq_escape
 .align 2
 irq_escape: @ Reached in IRQ mode from the BIOS, to get back from User mode
+    @ Only V-blank is acknowledged, so libnds still gets any other interrupt that came in meanwhile
     mov r0, #0x04000000
     mov r1, #0
     str r1, [r0, #0x208]
-    ldr r1, [r0, #0x214]
+    mov r1, #1
     str r1, [r0, #0x214]
-    ldr sp, =IRQ_STACK
     msr cpsr_c, #0xDF
     ldr r0, =escape_to
     ldr pc, [r0]
@@ -259,7 +284,6 @@ TEST t_user_msr
     strh r1, [r0, #4]
     mov r1, #1
     str r1, [r0, #0x210]
-    mvn r1, #0
     str r1, [r0, #0x214]
     mov r1, #1
     str r1, [r0, #0x208]
@@ -837,7 +861,6 @@ TEST t_msr_imm_thumb
     strh r1, [r0, #4]
     mov r1, #1
     str r1, [r0, #0x210]
-    mvn r1, #0
     str r1, [r0, #0x214]
     mov r1, #1
     str r1, [r0, #0x208]
@@ -869,17 +892,27 @@ BAD_MODE t_bad_mode_1e, 0x1E
 
 @ MRC to the PC, which ARMv5 says sets the flags from the value's top bits; the value is in the trace process ID, and
 @ points to a page of B . in case the PC really is written, so the interrupt still gets back
-.macro MRC_TO_PC name, value, flags
+.macro MRC_TO_PC name, top, flags
 TEST \name
     ARM9_ONLY
     ARM_INTERRUPT_WAY_BACK
-    ldr r0, =0x02200000
+    ldr r0, =sled
     ldr r1, =0xEAFFFFFE @ B .
     mov r2, #0x80
 3:  str r1, [r0], #4
     subs r2, r2, #1
     bne 3b
-    ldr r0, =\value
+    ldr r0, =sled @ Written out of the data cache and dropped from the instruction cache
+    mov r2, #0x10
+3:  mcr p15, 0, r0, c7, c10, 1
+    add r0, r0, #32
+    subs r2, r2, #1
+    bne 3b
+    mov r0, #0
+    mcr p15, 0, r0, c7, c10, 4
+    mcr p15, 0, r0, c7, c5, 0
+    ldr r0, =sled + 0x3F
+    orr r0, r0, #\top
     .word 0xEE0D0F30 @ MCR p15,0,r0,c13,c0,1
     mov r3, #0
     mov r4, #0
@@ -896,8 +929,8 @@ TEST \name
     b test_done
 .endm
 
-MRC_TO_PC t_mrc_pc_low, 0x0220003F, 0xB0000000
-MRC_TO_PC t_mrc_pc_high, 0x5220003F, 0xA0000000
+MRC_TO_PC t_mrc_pc_low, 0, 0xB0000000
+MRC_TO_PC t_mrc_pc_high, 0x50000000, 0xA0000000
 
 .ltorg
 
@@ -990,7 +1023,9 @@ TEST t_user_msr_t
 
 .bss
 .align 2
-saved_sp: .space 4
+saved_regs: .space 28
 saved_out: .space 4
+.align 5
+sled: .space 0x200 @ Where MRC to the PC goes if it really writes the PC
 .global escape_to
 escape_to: .space 4

@@ -1,10 +1,10 @@
 // Runs the tests on both CPUs and shows where this DS differs from what NooDS U does
+#include <stdio.h>
+#include <nds.h>
+#include <fat.h>
 #include "list.h"
 void runNormal(int cpu);
 void runRisky(int cpu, int index);
-int saveStart(const char **name);
-void saveWord(unsigned value);
-int saveEnd(void);
 
 #define T(f, n) n,
 static const char *const names[] = { NORMAL_TESTS RISKY_TESTS };
@@ -13,10 +13,11 @@ static const char *const names[] = { NORMAL_TESTS RISKY_TESTS };
 static const int normalCount = 0 NORMAL_TESTS, totalCount = 0 NORMAL_TESTS RISKY_TESTS;
 #undef T
 
-// Filled in after building, from running this same ROM in NooDS U
-volatile const unsigned expected[2][MAX_TESTS][WORDS] __attribute__((section(".expected"))) = { { { 0x4E4F4E45 } } };
+// From running this same ROM in NooDS U, which build.sh puts in expected.c
+extern volatile const unsigned expected[2][MAX_TESTS][WORDS];
+static struct Shared block;
 
-#define VRAM ((volatile unsigned short*)0x06800000)
+#define SCREEN ((volatile unsigned short*)0x06800000)
 #define KEYS (*(volatile unsigned short*)0x04000130)
 #define VCOUNT (*(volatile unsigned short*)0x04000006)
 
@@ -48,7 +49,7 @@ static void drawChar(int column, int row, char c, unsigned short color) {
     for (int x = 0; x < 6; x++) {
         unsigned char bits = x < 5 ? glyph[x] : 0;
         for (int y = 0; y < 8; y++)
-            VRAM[(row * 8 + y) * 256 + column * 6 + x + 1] = (bits >> y) & 1 ? color : BLACK;
+            SCREEN[(row * 8 + y) * 256 + column * 6 + x + 1] = (bits >> y) & 1 ? color : BLACK;
     }
 }
 
@@ -104,7 +105,7 @@ static struct Line lines[4000];
 static int lineCount;
 static int shownCpu, showAll, scroll, ranCount, stuck;
 static int same[2], different[2];
-static int nextRisky, restarted;
+static int nextRisky;
 static int hasExpected;
 static const char *saved = "";
 
@@ -147,23 +148,16 @@ static void showResults(void) {
     number(same[shownCpu], GREEN);
     text(" DIFF ", WHITE);
     number(different[shownCpu], different[shownCpu] ? RED : GREEN);
-    text(" BOOTS ", WHITE);
-    number(BOOT_COUNT, BOOT_COUNT > 1 ? RED : GREEN);
     if (!hasExpected) text(" NO EXPECTED", RED);
     text(" ", WHITE);
-    text(saved, saved[0] == 'S' && saved[1] == 'D' ? GREEN : saved[0] == 'S' ? YELLOW : RED);
+    text(saved, saved[4] == 'D' ? GREEN : saved[4] == 'I' ? YELLOW : RED); // SAVED, SAVING, or a failure
     newLine();
-    if (restarted) {
-        text("RESTARTED IN ", RED);
-        text(BOOT_LAST_CPU ? "ARM7 " : "ARM9 ", RED);
-        text(names[normalCount + restarted - 1], RED);
-    }
-    else if (stuck) {
+    if (stuck) {
         // Keep this up, since it's the only way to know where the ARM7 stopped
         text("ARM7 STUCK AT ", RED);
-        number(PROGRESS(1), RED);
+        number(shared->progress7, RED);
         text(" ", RED);
-        if (PROGRESS(1) >= 1 && PROGRESS(1) <= totalCount) text(names[PROGRESS(1) - 1], RED);
+        if (shared->progress7 >= 1 && shared->progress7 <= (unsigned)totalCount) text(names[shared->progress7 - 1], RED);
     }
     else {
         text(showAll ? "ALL RESULTS" : "DIFFERENCES", WHITE);
@@ -212,74 +206,104 @@ static void showResults(void) {
     newLine();
 }
 
+static FILE *openSave(const char **where) {
+    // The folder the ROM started from, then the root of the DSi's SD card or a flashcart's
+    static int mounted = -1;
+    if (mounted < 0) mounted = fatInitDefault();
+    if (!mounted) return NULL;
+    static const char *const paths[] = { "noodsu-hwtest.bin", "sd:/noodsu-hwtest.bin", "fat:/noodsu-hwtest.bin" };
+    for (unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        FILE *file = fopen(paths[i], "wb");
+        if (!file) continue;
+        *where = paths[i];
+        return file;
+    }
+    return NULL;
+}
+
+static void put(FILE *file, unsigned value, unsigned *hash) {
+    fwrite(&value, 4, 1, file);
+    for (int i = 0; i < 32; i += 8) *hash = (*hash ^ ((value >> i) & 0xFF)) * 16777619u;
+}
+
 static void saveResults(void) {
     // Write everything so far to the card after each run, with what NooDS U gives, so tests/hardware/results.py can
-    // list the differences; the results are on screen first, in case the driver needs the ARM7, which is busy here
+    // list the differences; the results are on screen first, in case saving hangs
     saved = "SAVING";
     showResults();
-    const char *name;
-    if (!saveStart(&name)) {
+    const char *where;
+    FILE *file = openSave(&where);
+    if (!file) {
         saved = "NOT SAVED";
         return;
     }
-    saveWord(0x54535748); // HWTS
-    saveWord(ranCount);
-    saveWord(normalCount);
-    saveWord(BOOT_COUNT);
-    saveWord(restarted);
-    saveWord(stuck ? PROGRESS(1) : 0);
+    armDCacheInvalidate(shared->results[1], sizeof(shared->results[1]));
+    unsigned hash = 2166136261u;
+    put(file, SHARED_MAGIC0, &hash);
+    put(file, ranCount, &hash);
+    put(file, normalCount, &hash);
+    put(file, stuck ? shared->progress7 : 0, &hash);
     for (int cpu = 0; cpu < 2; cpu++)
-        for (int i = 0; i < MAX_TESTS * WORDS; i++) saveWord(RESULTS(cpu)[i]);
+        for (int i = 0; i < MAX_TESTS * WORDS; i++) put(file, RESULTS(cpu)[i], &hash);
     for (int cpu = 0; cpu < 2; cpu++)
         for (int test = 0; test < MAX_TESTS; test++)
-            for (int w = 0; w < WORDS; w++) saveWord(expected[cpu][test][w]);
-    int bytes = saveEnd();
-    saved = bytes <= 0 ? "SAVE FAILED" : name[0] == 'N' ? "SD SAVED" : "SAVED TO CHIP";
+            for (int w = 0; w < WORDS; w++) put(file, expected[cpu][test][w], &hash);
+    int good = fclose(file) == 0;
+
+    // Read it back to be sure it's all there
+    file = good ? fopen(where, "rb") : NULL;
+    unsigned back = 2166136261u, value;
+    if (file) {
+        while (fread(&value, 4, 1, file) == 1)
+            for (int i = 0; i < 32; i += 8) back = (back ^ ((value >> i) & 0xFF)) * 16777619u;
+        fclose(file);
+    }
+    saved = (!file || back != hash) ? "SAVE FAILED" : where[0] == 's' ? "SAVED SD:" : where[0] == 'f' ? "SAVED FAT:" : "SAVED";
 }
 
-static int waitArm7(unsigned value) {
-    // About 10 seconds of frames
+static int runArm7(unsigned command) {
+    // Ask the ARM7 to run tests, waiting about 10 seconds of frames for it; its part of the block is written without
+    // going through this CPU's cache, so the cache has to forget it before looking
+    armDCacheFlush(&block, sizeof(block));
+    shared->done7 = 0;
+    armDCacheFlush(&shared->progress7, 32);
+    pxiSend(PxiChannel_User0, COMMAND(command, shared));
     for (int frames = 0; frames < 600; frames++) {
-        while (VCOUNT != 100) if (DONE_ARM7 == value) return 1;
+        while (VCOUNT != 100) {
+            armDCacheInvalidate(&shared->progress7, 32);
+            if (shared->done7 == command) {
+                armDCacheInvalidate(shared->results[1], sizeof(shared->results[1]));
+                return 1;
+            }
+        }
         while (VCOUNT == 100);
     }
+    armDCacheInvalidate(shared->results[1], sizeof(shared->results[1]));
     return 0;
 }
 
-void arm9Main(void) {
+int main(void) {
     *(volatile unsigned*)0x04000304 = 0x8003;
     *(volatile unsigned char*)0x04000240 = 0x80;
     *(volatile unsigned*)0x04000000 = 0x00020000;
-    for (int i = 0; i < 256 * 192; i++) VRAM[i] = BLACK;
+    for (int i = 0; i < 256 * 192; i++) SCREEN[i] = BLACK;
     hasExpected = expected[0][0][0] != 0x4E4F4E45;
-
-    // See if this is the program starting again in the middle of a risky test
-    if (BOOT_MAGIC == 0x4E545354) {
-        BOOT_COUNT = BOOT_COUNT + 1;
-        restarted = BOOT_LAST_RISKY;
-    }
-    else {
-        BOOT_MAGIC = 0x4E545354;
-        BOOT_COUNT = 1;
-    }
-    BOOT_LAST_RISKY = 0;
-    nextRisky = restarted;
+    shared = &block;
+    shared->magic[0] = SHARED_MAGIC0;
+    shared->magic[1] = SHARED_MAGIC1;
+    pxiWaitRemote(PxiChannel_User0);
 
     textRow = 0;
     textColumn = 0;
     text("NOODS U INSTRUCTION TEST", WHITE);
     newLine();
-    COMMAND_ARM7 = 0;
-    DONE_ARM7 = 0;
-    PROGRESS(0) = PROGRESS(1) = 0;
     runNormal(0);
 
     textRow = 2;
     textColumn = 0;
     text("ARM7 RUNNING", YELLOW);
     newLine();
-    COMMAND_ARM7 = 1;
-    stuck = !waitArm7(1);
+    stuck = !runArm7(1);
     ranCount = normalCount;
     buildLines();
     saveResults();
@@ -300,21 +324,14 @@ void arm9Main(void) {
         else if (pressed & BIT_KEY(0)) { showAll = !showAll; scroll = 0; buildLines(); }
         else if ((pressed & BIT_KEY(3)) && nextRisky < totalCount - normalCount) {
             // One at a time, so a crash can only be from this test, and the other CPU's results are still safe
-            BOOT_LAST_RISKY = nextRisky + 1;
-            BOOT_LAST_CPU = 0;
             runRisky(0, nextRisky);
-            BOOT_LAST_CPU = 1;
             textRow = 2;
             textColumn = 0;
             text("ARM7 RUNNING RISKY", YELLOW);
             newLine();
-            DONE_ARM7 = 0;
-            COMMAND_ARM7 = nextRisky + 2;
-            stuck = stuck || !waitArm7(nextRisky + 2);
-            BOOT_LAST_RISKY = 0;
+            stuck = stuck || !runArm7(nextRisky + 2);
             nextRisky++;
             ranCount = normalCount + nextRisky;
-            restarted = 0;
             scroll = lineCount;
             buildLines();
             scroll = lineCount > 10 ? lineCount - 10 : 0;
