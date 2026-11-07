@@ -87,7 +87,25 @@ release checks every write to RAM for code being written over, which makes runs 
 another Unicorn source folder, built in its `build` folder, to use that instead.
 
 It builds in `$TMPDIR/noodsu-jit-test-game`, and leaves each run's output in a `run-<mode>` folder there; set
-`JIT_TEST_CFLAGS` to build with more flags, like `-fsanitize=address,undefined -g`.
+`JIT_TEST_GAME_BUILD` to use another folder, and `JIT_TEST_CFLAGS` to build with more flags, like
+`-fsanitize=address,undefined -g`.
+
+### Comparing with a release
+
+Each run also counts the PowerPC instructions generated code runs for each CPU. Unicorn has no timing, but with the same
+frames, more instructions in generated code means more work for the console, so `bench.sh` compares them with an older
+commit's, like the last release before making a new one:
+
+```
+tests/jit/bench.sh <commit or tag> <ROM, or - for none> <folder with the system files> <frames> [game.sh options]
+```
+
+It checks the commit out in `$TMPDIR/noodsu-jit-test-bench-tree` with this tree's harness, runs both cores at once in
+`game.sh`, then prints each run's counts, the change in instructions, and whether the frames and memory still match. Older
+cores only work as far back as `patch.py` still applies to them; v0.5 does. The counts leave out the C++ that generated
+code calls, which runs natively on the Mac, so a change there only shows in the `interp` time, and only roughly. At 17fa864,
+Mario Kart DS in a race (`press=40`, 2500 frames) and Pokemon Black (`press=37`, 6000) ran within 3 instructions of v0.5
+in billions, with the same frames; Pokemon's main RAM differed, probably from the new cartridge chip ID.
 
 Fast timing lets generated code count cycles in batches, so its runs differ from the interpreter's by design; it can still be
 run alone to see that a game works. With exact timing, any difference is a bug.

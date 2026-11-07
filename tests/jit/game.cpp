@@ -64,7 +64,7 @@ static Engine engines[2];
 static std::vector<Handler> handlers;
 static uint8_t *codeBase, *ramMapped;
 static uint32_t ramMappedSize, coreSize;
-static uint64_t enters, calls;
+static uint64_t enters, calls, ppcOps[2];
 
 static void fatal(const char *format, ...) {
     va_list args;
@@ -349,6 +349,10 @@ static void setup(Jit &jit) {
     jit.addrStore16 = FAKE + 40;
 }
 
+static void countBlock(uc_engine*, uint64_t, uint32_t size, void *arm7) {
+    ppcOps[uintptr_t(arm7)] += size / 4;
+}
+
 static void startEngine(Engine &en, bool arm7) {
     en.arm7 = arm7;
     en.jit = arm7 ? &core->jit7 : &core->jit;
@@ -377,8 +381,11 @@ static void startEngine(Engine &en, bool arm7) {
     uc_mem_write(uc, COND_TABLE, Interpreter::condition, 256);
     std::vector<uint32_t> blr((FAKE_INTERLEAVE + 0x1000 - FAKE_HANDLERS) / 4, swap32(0x4E800020));
     uc_mem_write(uc, FAKE_HANDLERS, blr.data(), blr.size() * 4);
-    uc_hook hook;
+    uc_hook hook, blocks;
     uc_hook_add(uc, &hook, UC_HOOK_CODE, (void*)hookCall, &en, FAKE_HANDLERS, FAKE_INTERLEAVE + 4);
+
+    // Count the PowerPC instructions generated code runs, for comparing builds; a block left early still counts in full
+    uc_hook_add(uc, &blocks, UC_HOOK_BLOCK, (void*)countBlock, (void*)uintptr_t(arm7), CODE, CODE + CODE_SIZE - 1);
 }
 
 // Set by window.cpp when game.sh links it in for --window
@@ -567,8 +574,9 @@ int main(int argc, char **argv) {
     printf("ram %016llX\twram %016llX\n", (unsigned long long)hash(mem.ram, mem.ramSize),
         (unsigned long long)hash(mem.wram7, sizeof(mem.wram7), hash(mem.wram, sizeof(mem.wram))));
     double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    fprintf(stderr, "%s: %d frames in %.1f s, %llu entries into generated code, %llu calls from it\n", mode.c_str(),
-        frames, seconds, (unsigned long long)enters, (unsigned long long)calls);
+    fprintf(stderr, "%s: %d frames in %.1f s, %llu entries into generated code, %llu calls from it, %llu and %llu PowerPC "
+        "instructions run for the ARM9 and ARM7\n", mode.c_str(), frames, seconds, (unsigned long long)enters,
+        (unsigned long long)calls, (unsigned long long)ppcOps[0], (unsigned long long)ppcOps[1]);
     if (!ramFile.empty()) {
         FILE *out = fopen(ramFile.c_str(), "wb");
         fwrite(mem.ram, 1, mem.ramSize, out);

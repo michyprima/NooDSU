@@ -16,7 +16,7 @@ while true; do
     else break; fi
 done
 base=${JIT_TEST_BUILD:-${TMPDIR:-/tmp}/noodsu-jit-test}
-build=$base-game; [ "$mutation" = 0 ] || build=$build-m$mutation
+build=${JIT_TEST_GAME_BUILD:-$base-game}; [ "$mutation" = 0 ] || build=$build-m$mutation
 mkdir -p "$build/obj"
 
 # Build the Unicorn PowerPC emulator once, from a development version: the release checks every write to RAM for code
