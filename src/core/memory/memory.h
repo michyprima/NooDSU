@@ -97,6 +97,8 @@ public:
     uint8_t readVramCnt(int block) { return vramCnt[block]; }
     uint8_t readVramStat() { return vramStat; }
     uint8_t readWramCnt() { return wramCnt; }
+    uint16_t readExMemCnt() { return exMemCnt; }
+    uint16_t readExMemStat() { return (exMemCnt & 0xFF80) | (exMemStat & 0x7F); }
     uint8_t readHaltCnt() { return haltCnt; }
 
     uint8_t readMbk1(int i) { return mbk1[i]; }
@@ -107,10 +109,17 @@ public:
     uint32_t readMbk8(bool arm7) { return mbk8[arm7]; }
     uint32_t readMbk9() { return mbk9; }
     uint32_t readScfgExt(bool arm7) { return scfgExt[arm7]; }
+    uint16_t readScfgRom() { return scfgRom; }
+    uint32_t readKeyTable(int i);
+    uint16_t readScfgMc();
+    uint16_t readCardInsertDelay() { return cardInsertDelay; }
+    uint16_t readCardPowerOffDelay() { return cardPowerOffDelay; }
 
     void writeDmaFill(int channel, uint32_t mask, uint32_t value);
     void writeVramCnt(int index, uint8_t value);
     void writeWramCnt(uint8_t value);
+    void writeExMemCnt(uint16_t mask, uint16_t value);
+    void writeExMemStat(uint16_t mask, uint16_t value);
     void writeHaltCnt(uint8_t value);
     void writeGbaHaltCnt(uint8_t value);
 
@@ -124,6 +133,13 @@ public:
     void writeScfgExt9(uint32_t mask, uint32_t value);
     void writeScfgExt7(uint32_t mask, uint32_t value);
     void setScfgExt(uint32_t ext9, uint32_t ext7);
+    void applyPendingRam();
+    void writeScfgRom(uint16_t mask, uint16_t value);
+    void writeScfgMc(uint16_t mask, uint16_t value);
+    void writeCardInsertDelay(uint16_t mask, uint16_t value);
+    void writeCardPowerOffDelay(uint16_t mask, uint16_t value);
+    void prepareTitle(bool dsiTitle);
+    void cardPowerOff();
 
 private:
     Core *core;
@@ -131,6 +147,8 @@ private:
 
     uint8_t bios9[0x10000] = {}; // 64KB ARM9 BIOS
     uint8_t bios7[0x10000] = {}; // 64KB ARM7 BIOS
+    uint8_t ndsBios9[0x10000] = {}, ndsBios7[0x10000] = {}; // The DS BIOSes, which a DSi switches to for DS titles
+    bool ndsBios = false;
     uint8_t gbaBios[0x4000] = {}; // 16KB GBA BIOS
 
     uint8_t *ram = nullptr; // 4MB main RAM, or 16MB in DSi mode
@@ -166,6 +184,7 @@ private:
     uint8_t vramCnt[9] = {};
     uint8_t vramStat = 0;
     uint8_t wramCnt = 0;
+    uint16_t exMemCnt = 0x6000, exMemStat = 0; // The ARM7 sees the ARM9's slot access bits and its own GBA slot timings
     uint8_t haltCnt = 0;
 
     uint8_t mbk1[4] = {};
@@ -176,9 +195,14 @@ private:
     uint32_t mbk8[2] = {};
     uint32_t mbk9 = 0;
     uint32_t scfgExt[2] = { 0x8307F100, 0x93FFFB06 }; // As the DSi firmware runs with them
+    uint16_t scfgRom = 0x0101; // Which BIOS each CPU sees; the boot stage before the firmware hides their upper halves
+    bool bigRam = true, ramPending = false; // Whether main RAM is mapped as 16MB, and a change waiting for the launcher
+    uint16_t scfgMc = 0x0010; // Card slot power states; the second slot is always empty on a DSi
+    uint16_t cardInsertDelay = 0xFFFF, cardPowerOffDelay = 0xFFFF;
+    uint8_t cardPowerOffs = 0; // Power-offs scheduled, of which only the last one counts
 
     uint32_t ramMask();
-    void updateRamSize(uint32_t oldExt9);
+    void updateRamSize();
 
     template <typename T> T readFallback(bool arm7, uint32_t address);
     template <typename T> void writeFallback(bool arm7, uint32_t address, T value, bool tcm);

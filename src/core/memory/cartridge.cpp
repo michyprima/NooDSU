@@ -825,6 +825,8 @@ void CartridgeNds::directBoot() {
         // Leave only the DS features, as the system does for a DS title
         core->memory.setScfgExt(0x03000000, 0x12A03000);
     }
+    if (core->dsiMode)
+        core->memory.prepareTitle(dsi);
 
     // Copy the NDS ROM header into memory, which DSi games read too, like for where their files are
     for (uint32_t i = 0; i < 0x170; i += 4)
@@ -878,12 +880,21 @@ uint64_t CartridgeNds::decrypt64(uint64_t value) {
     return ((uint64_t)(y ^ encTable[0x00]) << 32) | (x ^ encTable[0x01]);
 }
 
+void CartridgeNds::powerReset() {
+    // Start over as a card does when the DSi powers its slot off or holds it in reset
+    cmdMode = CMD_NONE;
+    for (int i = 0; i < 2; i++) {
+        encrypted[i] = false;
+        romCtrl[i] &= ~BIT(29);
+    }
+}
+
 void CartridgeNds::initKeycode(int level) {
     // Initialize the Blowfish encryption table
     // This is a translation of the pseudocode from GBATEK to C++
 
     for (int i = 0; i < 0x412; i++)
-        encTable[i] = core->memory.read<uint32_t>(1, 0x30 + i * 4);
+        encTable[i] = core->memory.readKeyTable(i);
 
     encCode[0] = romCode;
     encCode[1] = romCode / 2;

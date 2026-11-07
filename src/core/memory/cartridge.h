@@ -163,6 +163,7 @@ public:
     void loadState(FILE *file);
 
     void directBoot();
+    void powerReset();
     void wordReady(bool cpu);
     void flushWord();
     void resetCycles();

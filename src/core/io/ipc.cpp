@@ -42,6 +42,10 @@ void Ipc::writeIpcSync(bool arm7, uint16_t mask, uint16_t value) {
     mask &= 0x4F00;
     ipcSync[arm7] = (ipcSync[arm7] & ~mask) | (value & mask);
 
+    // The ARM7 clearing its value ends the DSi launcher's last handshake, after which it no longer needs all of RAM
+    if (arm7 && core->dsiMode && (mask & 0xF00) == 0xF00 && !(value & 0xF00))
+        core->memory.applyPendingRam();
+
     // Override sync for HLE ARM7 if enabled
     if (core->arm7Hle && !arm7)
         return core->hleArm7.ipcSync((ipcSync[0] >> 8) & 0xF);

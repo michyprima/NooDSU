@@ -115,6 +115,8 @@ void Memory::saveState(FILE *file) {
     fwrite(dmaFill, 4, sizeof(dmaFill) / 4, file);
     fwrite(vramCnt, 1, sizeof(vramCnt), file);
     fwrite(&wramCnt, sizeof(wramCnt), 1, file);
+    fwrite(&exMemCnt, sizeof(exMemCnt), 1, file);
+    fwrite(&exMemStat, sizeof(exMemStat), 1, file);
     fwrite(&haltCnt, sizeof(haltCnt), 1, file);
 
     // Write DSi state data to the file
@@ -130,6 +132,13 @@ void Memory::saveState(FILE *file) {
         fwrite(mbk8, 4, sizeof(mbk8) / 4, file);
         fwrite(&mbk9, sizeof(mbk9), 1, file);
         fwrite(scfgExt, 4, sizeof(scfgExt) / 4, file);
+        fwrite(&scfgRom, sizeof(scfgRom), 1, file);
+        fwrite(&bigRam, sizeof(bigRam), 1, file);
+        fwrite(&ramPending, sizeof(ramPending), 1, file);
+        fwrite(&scfgMc, sizeof(scfgMc), 1, file);
+        fwrite(&cardInsertDelay, sizeof(cardInsertDelay), 1, file);
+        fwrite(&cardPowerOffDelay, sizeof(cardPowerOffDelay), 1, file);
+        fwrite(&cardPowerOffs, sizeof(cardPowerOffs), 1, file);
     }
 }
 
@@ -175,6 +184,8 @@ void Memory::loadState(FILE *file) {
     fread(dmaFill, 4, sizeof(dmaFill) / 4, file);
     fread(vramCnt, 1, sizeof(vramCnt), file);
     fread(&wramCnt, sizeof(wramCnt), 1, file);
+    fread(&exMemCnt, sizeof(exMemCnt), 1, file);
+    fread(&exMemStat, sizeof(exMemStat), 1, file);
     fread(&haltCnt, sizeof(haltCnt), 1, file);
 
     // Read DSi state data from the file
@@ -190,6 +201,13 @@ void Memory::loadState(FILE *file) {
         fread(mbk8, 4, sizeof(mbk8) / 4, file);
         fread(&mbk9, sizeof(mbk9), 1, file);
         fread(scfgExt, 4, sizeof(scfgExt) / 4, file);
+        fread(&scfgRom, sizeof(scfgRom), 1, file);
+        fread(&bigRam, sizeof(bigRam), 1, file);
+        fread(&ramPending, sizeof(ramPending), 1, file);
+        fread(&scfgMc, sizeof(scfgMc), 1, file);
+        fread(&cardInsertDelay, sizeof(cardInsertDelay), 1, file);
+        fread(&cardPowerOffDelay, sizeof(cardPowerOffDelay), 1, file);
+        fread(&cardPowerOffs, sizeof(cardPowerOffs), 1, file);
     }
 
     // Update mapped memory
@@ -199,6 +217,14 @@ void Memory::loadState(FILE *file) {
 }
 
 bool Memory::loadBios9() {
+    // In DSi mode, also load the DS BIOSes if they're found, for DS titles
+    if (core->dsiMode) {
+        FILE *file9 = fopen(Settings::ndsBios9Path.c_str(), "rb"), *file7 = fopen(Settings::ndsBios7Path.c_str(), "rb");
+        ndsBios = file9 && file7 && fread(ndsBios9, 1, 0x1000, file9) == 0x1000 && fread(ndsBios7, 1, 0x4000, file7) == 0x4000;
+        if (file9) fclose(file9);
+        if (file7) fclose(file7);
+    }
+
     // Load the ARM9 BIOS if the file is found
     std::string &path = core->dsiMode ? Settings::dsiBios9Path : Settings::ndsBios9Path;
     if (FILE *file = fopen(path.c_str(), "rb")) {
@@ -239,6 +265,11 @@ bool Memory::loadGbaBios() {
     // Prepare HLE BIOS with a special opcode for interrupt return
     gbaBios[3] = 0xFF;
     return false;
+}
+
+uint32_t Memory::readKeyTable(int i) {
+    // Read a word of the cards' Blowfish table, which the DSi keeps in its ARM9 BIOS instead of its ARM7 one
+    return core->dsiMode ? U8TO32(bios9, 0x99A0 + i * 4) : U8TO32(bios7, 0x30 + i * 4);
 }
 
 void Memory::copyBiosLogo(uint8_t *logo) {
@@ -339,8 +370,13 @@ void Memory::updateMap9(uint32_t start, uint32_t end, bool tcm) {
             break;
 
         case 0xFF000000: // ARM9 BIOS
-            if ((address & (core->dsiMode ? 0xFFFF0000 : 0xFFFF8000)) == 0xFFFF0000)
+            if (ndsBios && (scfgRom & BIT(1))) { // The DS BIOS on a DSi
+                if ((address & 0xFFFF8000) == 0xFFFF0000)
+                    read = &ndsBios9[address & 0xFFFF];
+            }
+            else if ((address & (core->dsiMode ? 0xFFFF0000 : 0xFFFF8000)) == 0xFFFF0000) {
                 read = &bios9[address & 0xFFFF];
+            }
             break;
         }
 
@@ -414,7 +450,9 @@ void Memory::updateMap7(uint32_t start, uint32_t end) {
             // Map a 4KB block to the corresponding ARM7 memory, excluding special cases
             switch (address & 0xFF000000) {
             case 0x0000000: // ARM7 BIOS
-                if (address < (core->dsiMode ? 0x10000 : 0x4000))
+                if (ndsBios && (scfgRom & BIT(9))) // The DS BIOS on a DSi
+                    read = (address < 0x4000) ? &ndsBios7[address] : nullptr;
+                else if (address < (core->dsiMode ? 0x10000 : 0x4000))
                     read = &bios7[address];
                 break;
 
@@ -1178,6 +1216,7 @@ template <typename T> T Memory::ioRead9(uint32_t address) {
             DEF_IO16(0x40001A0, data = core->cartridgeNds.readAuxSpiCnt(0)) // AUXSPICNT (ARM9)
             DEF_IO08(0x40001A2, data = core->cartridgeNds.readAuxSpiData(0)) // AUXSPIDATA (ARM9)
             DEF_IO32(0x40001A4, data = core->cartridgeNds.readRomCtrl(0)) // ROMCTRL (ARM9)
+            DEF_IO16(0x4000204, data = readExMemCnt()) // EXMEMCNT
             DEF_IO08(0x4000208, data = core->interpreter[0].readIme()) // IME (ARM9)
             DEF_IO32(0x4000210, data = core->interpreter[0].readIe(0)) // IE (ARM9)
             DEF_IO32(0x4000214, data = core->interpreter[0].readIrf(0)) // IF (ARM9)
@@ -1264,8 +1303,9 @@ template <typename T> T Memory::ioRead9(uint32_t address) {
                 goto next;
             }
             switch (base) {
-                DEF_IO32(0x4004000, data = 0x1) // SCFG_A9ROM (stub)
+                DEF_IO08(0x4004000, data = readScfgRom()) // SCFG_A9ROM
                 DEF_IO32(0x4004008, data = readScfgExt(0)) // SCFG_EXT9
+                DEF_IO16(0x4004010, data = readScfgMc()) // SCFG_MC
                 DEF_IO08(0x4004040, data = readMbk1(0)) // MBK1.0
                 DEF_IO08(0x4004041, data = readMbk1(1)) // MBK1.1
                 DEF_IO08(0x4004042, data = readMbk1(2)) // MBK1.2
@@ -1479,7 +1519,7 @@ template <typename T> T Memory::ioRead7(uint32_t address) {
             DEF_IO16(0x4800150, data = core->wifi.readWConfig(13)) // W_CONFIG_150
             DEF_IO16(0x4800154, data = core->wifi.readWConfig(14)) // W_CONFIG_154
             DEF_IO16(0x480015C, data = core->wifi.readWBbRead()) // W_BB_READ
-            DEF_IO16(0x4000204, data = 0x6000) // EXMEMSTAT (stub)
+            DEF_IO16(0x4000204, data = readExMemStat()) // EXMEMSTAT
             DEF_IO16(0x4800210, data = core->wifi.readWTxSeqno()) // W_TX_SEQNO
         }
 
@@ -1495,8 +1535,11 @@ template <typename T> T Memory::ioRead7(uint32_t address) {
             switch (base) {
                 DEF_IO32(0x4000218, data = core->interpreter[1].readIe(1)) // IE2
                 DEF_IO32(0x400021C, data = core->interpreter[1].readIrf(1)) // IF2
-                DEF_IO32(0x4004000, data = 0x1) // SCFG_ROM (stub)
+                DEF_IO16(0x4004000, data = readScfgRom()) // SCFG_ROM
                 DEF_IO32(0x4004008, data = readScfgExt(1)) // SCFG_EXT7
+                DEF_IO16(0x4004010, data = readScfgMc()) // SCFG_MC
+                DEF_IO16(0x4004012, data = readCardInsertDelay()) // SCFG_CARD_INSERT_DELAY
+                DEF_IO16(0x4004014, data = readCardPowerOffDelay()) // SCFG_CARD_PWROFF_DELAY
                 DEF_IO08(0x4004040, data = readMbk1(0)) // MBK1.0
                 DEF_IO08(0x4004041, data = readMbk1(1)) // MBK1.1
                 DEF_IO08(0x4004042, data = readMbk1(2)) // MBK1.2
@@ -1786,6 +1829,7 @@ template <typename T> void Memory::ioWrite9(uint32_t address, T value) {
             DEF_IO32(0x40001A4, core->cartridgeNds.writeRomCtrl(0, IOWR_PARAMS)) // ROMCTRL (ARM9)
             DEF_IO32(0x40001A8, core->cartridgeNds.writeRomCmdOutL(0, IOWR_PARAMS)) // ROMCMDOUT_L (ARM9)
             DEF_IO32(0x40001AC, core->cartridgeNds.writeRomCmdOutH(0, IOWR_PARAMS)) // ROMCMDOUT_H (ARM9)
+            DEF_IO16(0x4000204, writeExMemCnt(IOWR_PARAMS)) // EXMEMCNT
             DEF_IO08(0x4000208, core->interpreter[0].writeIme(IOWR_PARAMS8)) // IME (ARM9)
             DEF_IO32(0x4000210, core->interpreter[0].writeIe(0, IOWR_PARAMS)) // IE (ARM9)
             DEF_IO32(0x4000214, core->interpreter[0].writeIrf(0, IOWR_PARAMS)) // IF (ARM9)
@@ -2100,6 +2144,7 @@ template <typename T> void Memory::ioWrite7(uint32_t address, T value) {
             DEF_IO32(0x40001AC, core->cartridgeNds.writeRomCmdOutH(1, IOWR_PARAMS)) // ROMCMDOUT_H (ARM7)
             DEF_IO16(0x40001C0, core->spi.writeSpiCnt(IOWR_PARAMS)) // SPICNT
             DEF_IO08(0x40001C2, core->spi.writeSpiData(IOWR_PARAMS8)) // SPIDATA
+            DEF_IO16(0x4000204, writeExMemStat(IOWR_PARAMS)) // EXMEMSTAT
             DEF_IO08(0x4000208, core->interpreter[1].writeIme(IOWR_PARAMS8)) // IME (ARM7)
             DEF_IO32(0x4000210, core->interpreter[1].writeIe(0, IOWR_PARAMS)) // IE (ARM7)
             DEF_IO32(0x4000214, core->interpreter[1].writeIrf(0, IOWR_PARAMS)) // IF (ARM7)
@@ -2275,7 +2320,11 @@ template <typename T> void Memory::ioWrite7(uint32_t address, T value) {
             switch (base) {
                 DEF_IO32(0x4000218, core->interpreter[1].writeIe(1, IOWR_PARAMS)) // IE2
                 DEF_IO32(0x400021C, core->interpreter[1].writeIrf(1, IOWR_PARAMS)) // IF2
+                DEF_IO16(0x4004000, writeScfgRom(IOWR_PARAMS)) // SCFG_ROM
                 DEF_IO32(0x4004008, writeScfgExt7(IOWR_PARAMS)) // SCFG_EXT7
+                DEF_IO16(0x4004010, writeScfgMc(IOWR_PARAMS)) // SCFG_MC
+                DEF_IO16(0x4004012, writeCardInsertDelay(IOWR_PARAMS)) // SCFG_CARD_INSERT_DELAY
+                DEF_IO16(0x4004014, writeCardPowerOffDelay(IOWR_PARAMS)) // SCFG_CARD_PWROFF_DELAY
                 DEF_IO32(0x4004054, writeMbk6(1, IOWR_PARAMS)) // MBK6
                 DEF_IO32(0x4004058, writeMbk7(1, IOWR_PARAMS)) // MBK7
                 DEF_IO32(0x400405C, writeMbk8(1, IOWR_PARAMS)) // MBK8
@@ -2562,6 +2611,18 @@ void Memory::writeWramCnt(uint8_t value) {
     updateMap7(0x3000000, 0x3800000);
 }
 
+void Memory::writeExMemCnt(uint16_t mask, uint16_t value) {
+    // Write to the ARM9's external memory control, which says which CPU has each card slot; bit 13 always reads as set
+    mask &= 0xC8FF;
+    exMemCnt = (exMemCnt & ~mask) | (value & mask);
+}
+
+void Memory::writeExMemStat(uint16_t mask, uint16_t value) {
+    // Write to the ARM7's GBA slot timings; the rest of the register shows the ARM9's
+    mask &= 0x007F;
+    exMemStat = (exMemStat & ~mask) | (value & mask);
+}
+
 void Memory::writeHaltCnt(uint8_t value) {
     // Write to the HALTCNT register
     haltCnt = value & 0xC0;
@@ -2639,34 +2700,122 @@ void Memory::writeMbk9(uint32_t mask, uint32_t value) {
 
 void Memory::writeScfgExt9(uint32_t mask, uint32_t value) {
     // Write to the ARM9's DSi feature register, which also sets the ARM7's copies of a few bits (masks from melonDS)
-    uint32_t old = scfgExt[0];
     scfgExt[0] = (scfgExt[0] & ~(mask & 0x8007F19F)) | (value & mask & 0x8007F19F);
     scfgExt[1] = (scfgExt[1] & ~(mask & 0x00003080)) | (value & mask & 0x00003080);
-    updateRamSize(old);
+
+    // The DSi's launcher limits RAM for a DS title while it still needs all of it, until its last handshake with the
+    // ARM7; like melonDS, recognize it by where it does that and wait for the handshake
+    if (core->interpreter[0].getPC() == 0x23FEED0 && core->ipc.readIpcSync(0) == 0x0505)
+        ramPending = true;
+    else
+        updateRamSize();
 }
 
 void Memory::setScfgExt(uint32_t ext9, uint32_t ext7) {
     // Set both DSi feature registers, as the system does before starting a title
-    uint32_t old = scfgExt[0];
     scfgExt[0] = ext9;
     scfgExt[1] = ext7;
-    updateRamSize(old);
+    updateRamSize();
+}
+
+void Memory::applyPendingRam() {
+    // Change the RAM size the launcher asked for, now that it's done with the RAM
+    if (!ramPending) return;
+    ramPending = false;
+    updateRamSize();
 }
 
 uint32_t Memory::ramMask() {
     // Get the main RAM mirror mask; the DSi's 16MB is limited to the DS's 4MB when SCFG_EXT9 asks for it, as for DS titles
-    return (core->dsiMode && (scfgExt[0] & BIT(15))) ? 0xFFFFFF : 0x3FFFFF;
+    return (core->dsiMode && bigRam) ? 0xFFFFFF : 0x3FFFFF;
 }
 
-void Memory::updateRamSize(uint32_t oldExt9) {
+void Memory::updateRamSize() {
     // Show the ARM9's RAM size to the ARM7, and remap main RAM if it changed
+    ramPending = false;
     scfgExt[1] = (scfgExt[1] & ~0xC000) | (scfgExt[0] & 0xC000);
-    if (!((oldExt9 ^ scfgExt[0]) & BIT(15))) return;
+    if (bigRam == bool(scfgExt[0] & BIT(15))) return;
+    bigRam = !bigRam;
     updateMap9(0x2000000, 0x3000000);
     updateMap7(0x2000000, 0x3000000);
     if (!core->dsiMode) return;
     updateMap9(0xC000000, 0xD000000);
     updateMap7(0xC000000, 0xD000000);
+}
+
+uint16_t Memory::readScfgMc() {
+    // Read the card slot register, which says the first slot is empty when there's no ROM
+    return (scfgMc & ~BIT(0)) | (core->cartridgeNds.getRomSize() ? 0 : BIT(0));
+}
+
+void Memory::writeScfgMc(uint16_t mask, uint16_t value) {
+    // Write to the card slot register, following its power states as melonDS does: 0 is off, 1 on with the card held
+    // in reset, 2 on, and 3 powering off, which turns to 0 after a delay; an empty slot can't be powered on
+    uint16_t old = scfgMc;
+    scfgMc = (scfgMc & (~mask | 0x0011)) | (value & mask & 0x80CC);
+    for (int i = 0; i < 2; i++) {
+        int shift = 2 + i * 4;
+        uint8_t oldPower = (old >> shift) & 0x3, newPower = (scfgMc >> shift) & 0x3;
+        if (newPower == oldPower) continue;
+        if ((newPower == 1 || newPower == 2) && (i || !core->cartridgeNds.getRomSize())) {
+            oldPower = newPower;
+            newPower = 3;
+        }
+
+        // The card starts over unless it's left running, and tells both CPUs when it loses power
+        if (i == 0 && newPower != 2)
+            core->cartridgeNds.powerReset();
+        if (i == 0 && (oldPower == 1 || oldPower == 2) && (newPower == 0 || newPower == 3)) {
+            core->interpreter[0].sendInterrupt(20);
+            core->interpreter[1].sendInterrupt(20);
+        }
+        if (newPower == 3) {
+            cardPowerOffs++;
+            core->schedule(CARD_POWER_OFF, cardPowerOffDelay << 9);
+        }
+        scfgMc = (scfgMc & ~(0x3 << shift)) | (newPower << shift);
+    }
+}
+
+void Memory::writeCardInsertDelay(uint16_t mask, uint16_t value) {
+    // Write to the delay before a newly inserted card is powered on
+    cardInsertDelay = (cardInsertDelay & ~mask) | (value & mask);
+}
+
+void Memory::writeCardPowerOffDelay(uint16_t mask, uint16_t value) {
+    // Write to the delay before a card slot finishes powering off
+    cardPowerOffDelay = (cardPowerOffDelay & ~mask) | (value & mask);
+}
+
+void Memory::prepareTitle(bool dsiTitle) {
+    // Leave the first card slot on, and DS titles on the DS BIOSes, as the system does before starting a title (slot
+    // values from melonDS)
+    scfgMc = 0x0018;
+    cardInsertDelay = 0x1988;
+    cardPowerOffDelay = 0x264C;
+    writeScfgRom(0xFFFF, dsiTitle ? 0x0101 : 0x0303);
+}
+
+void Memory::cardPowerOff() {
+    // Finish powering off the slots that are powering off, unless a later power-off is still to come
+    if (cardPowerOffs > 1) {
+        cardPowerOffs--;
+        return;
+    }
+    cardPowerOffs = 0;
+    for (int shift = 2; shift <= 6; shift += 4)
+        if (((scfgMc >> shift) & 0x3) == 3) scfgMc &= ~(0x3 << shift);
+}
+
+void Memory::writeScfgRom(uint16_t mask, uint16_t value) {
+    // Write to the ARM7's BIOS control, whose bits can only be set: bits 1 and 9 switch the ARM9 and ARM7 to the DS
+    // BIOSes, and bits 0 and 8 hide the upper halves of the DSi ones (not emulated)
+    uint16_t old = scfgRom;
+    scfgRom |= value & mask & 0x0703;
+    if ((old ^ scfgRom) & BIT(1))
+        updateMap9(0xFFFF0000, 0xFFFFFFFF);
+    if ((old ^ scfgRom) & BIT(9))
+        updateMap7(0x0000000, 0x0010000);
 }
 
 void Memory::writeScfgExt7(uint32_t mask, uint32_t value) {
