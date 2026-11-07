@@ -376,13 +376,14 @@ static uint64_t hash(const void *data, size_t size, uint64_t h = 0xCBF29CE484222
 int main(int argc, char **argv) {
     if (argc < 5) {
         printf("Usage: game <system files folder> <rom, or - for none> <interp|portable|native> <frames> [fast] [dsi] [press=N] "
-            "[start=N] [touch=N] [trace=frame] [ppm=path] [results=path] [ram=path]\n");
+            "[start=N] [touch=N] [trace=frame] [ppm=path] [results=path] [ram=path] [keys=frame:key,...]\n");
         return 2;
     }
     std::string files = argv[1], mode = argv[3];
     int frames = atoi(argv[4]), press = 0, startKey = 0, touch = 0, traceFrom = -1;
     bool fast = false, dsi = false;
     std::string ppm, results, ramFile;
+    std::vector<std::pair<int, int>> inputs; // Frame and key to press then, for 2 frames
     for (int i = 5; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "fast") fast = true;
@@ -394,6 +395,15 @@ int main(int argc, char **argv) {
         else if (arg.rfind("ppm=", 0) == 0) ppm = arg.substr(4);
         else if (arg.rfind("results=", 0) == 0) results = arg.substr(8);
         else if (arg.rfind("ram=", 0) == 0) ramFile = arg.substr(4);
+        else if (arg.rfind("keys=", 0) == 0) {
+            // Comma-separated frame:key pairs, keys numbered as KEYINPUT bits, then 10 and 11 for X and Y
+            for (size_t at = 5; at < arg.size();) {
+                size_t end = arg.find(',', at);
+                std::string pair = arg.substr(at, end == std::string::npos ? std::string::npos : end - at);
+                inputs.push_back({ atoi(pair.c_str()), atoi(pair.c_str() + pair.find(':') + 1) });
+                at = (end == std::string::npos) ? arg.size() : end + 1;
+            }
+        }
         else fatal("unknown option %s", arg.c_str());
     }
     if (mode != "interp" && mode != "portable" && mode != "native") fatal("unknown mode %s", mode.c_str());
@@ -468,6 +478,10 @@ int main(int argc, char **argv) {
         if (press && i % press == 2) core->input.releaseKey(0);
         if (startKey && i % startKey == startKey - 1) core->input.pressKey(3);
         if (startKey && i % startKey == 1) core->input.releaseKey(3);
+        for (auto &input: inputs) {
+            if (i == input.first) core->input.pressKey(input.second);
+            if (i == input.first + 2) core->input.releaseKey(input.second);
+        }
         if (touch && i % touch == 0) { core->input.pressScreen(); core->spi.setTouch(128, 96); }
         if (touch && i % touch == 10) { core->input.releaseScreen(); core->spi.clearTouch(); }
         do core->runCore(); while (!core->frameEnded.exchange(false));
