@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # Changes a copy of the core so it builds on a Mac, with generated code going to the test instead of being run
-# Usage: patch.py <copy of src/core> [mutation number], where a mutation plants a bug the tests should catch
+# Usage: patch.py <copy of src/core> [mutation number] [game], where a mutation plants a bug the tests should catch
+# With game, generated code runs whole games through game.cpp instead of being checked a case at a time
 import os, re, sys
 
 root = sys.argv[1]
 mutation = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+game = len(sys.argv) > 3 and sys.argv[3] == 'game'
 
 def edit(path, *changes):
     path = root + '/' + path
@@ -34,10 +36,25 @@ edit('arm/interpreter_alu.cpp', ('(op2 < (-1 << (m << 3)) || op2 >= (1 << (m << 
 path = root + '/arm/jit_ppc.cpp'
 text = open(path).read()
 text = re.sub(r'static_assert\(sizeof\(JitCacheEntry\) == 16[^\n]*\n', '', text)
-text = text.replace('return (parts.ptr & 1 || parts.adj) ? nullptr : (void*)parts.ptr;', 'return (void*)(uintptr_t)0x3F1000;')
 text = text.replace('e.call((void*)&Jit::interleaveCall);', 'e.call((void*)(uintptr_t)0x3F2000);')
 text = text.replace('    emitStubs(e);\n    codeStart =', '    rigOverride(*this);\n    emitStubs(e);\n    codeStart =')
 text = text.replace('#include "../core.h"', '#define private public\n#include "../core.h"\n#undef private\nvoid rigOverride(Jit &jit);', 1)
+if game:
+    # Each handler gets its own address so the game run knows which to call, and code goes to the emulator when it's
+    # flushed and runs there
+    text = text.replace('return (parts.ptr & 1 || parts.adj) ? nullptr : (void*)parts.ptr;',
+        'return (void*)(uintptr_t)rigHandler(&func, sizeof(func), std::is_same<T, int (Interpreter::*)(uint16_t)>::value);')
+    text = text.replace('    JS_START(flushStart);\n    if (start) DCFlushRange', '    rigCodeWritten(*this, start, size, patched);\n'
+        '    JS_START(flushStart);\n    if (start) DCFlushRange')
+    text = text.replace('#include <cstring>', '#include <cstring>\n#include <type_traits>', 1)
+    text = text.replace('void rigOverride(Jit &jit);', 'void rigOverride(Jit &jit);\nuint32_t rigHandler(const void *func, size_t size, bool thumb);\n'
+        'void rigCodeWritten(Jit &jit, uint8_t *start, size_t size, const std::vector<uint32_t*> &patched);', 1)
+    edit('arm/jit.cpp', ('        ((void(*)(Interpreter*, EventQueue*, const uint32_t*, void*, uint32_t*, JitCacheEntry*))\n'
+        '            codeEnter)(&arm, &core->events, limit, block->code, &core->globalCycles, cache);',
+        '        rigEnter(*this, limit, block->code);'),
+        ('#include <algorithm>\n', '#include <algorithm>\nclass Jit;\nvoid rigEnter(Jit &jit, const uint32_t *limit, void *code);\n'))
+else:
+    text = text.replace('return (parts.ptr & 1 || parts.adj) ? nullptr : (void*)parts.ptr;', 'return (void*)(uintptr_t)0x3F1000;')
 
 # Bugs that should be caught, by which suite they're aimed at
 MUTATIONS = [

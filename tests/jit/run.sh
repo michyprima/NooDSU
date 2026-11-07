@@ -26,6 +26,7 @@ for f in $(cd "$build/src"; find . -name '*.cpp'); do
     while [ "$(jobs -r | wc -l)" -ge 12 ]; do sleep 0.05; done
 done
 clang++ $flags -c "$here/jit_test.cpp" -o "$build/obj/jit_test.o" &
+clang -O2 -c "$here/shim/slirp.c" -o "$build/obj/slirp.o" &
 wait
 clang++ "$build"/obj/*.o -L"$uni/lib" -lunicorn -Wl,-rpath,"$uni/lib" -o "$build/jit_test"
 

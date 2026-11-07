@@ -39,7 +39,38 @@ time and checks that each is noticed; add one there when adding a kind of test.
   over loaded data and invalid modes. ARMv5 additions and loads of the PC aren't compared on the ARM7 at all.
 - **Real memory and I/O.** Slow memory accesses are stood in for by the test and only reach RAM, so registers with side effects,
   DMA and interrupts aren't involved. Real writes over compiled code, and what the ARM7 does during a stop, aren't either.
-- **Long-running behavior.** These are single instructions and short blocks, not a game.
+- **Long-running behavior.** These are single instructions and short blocks, not a game; `game.sh` below runs whole games.
 
 The JIT self-test on the console (`./build-wiiu-debug.sh jittest`) covers most of this, but turns batching off, so playing games
 on the console is still needed for that.
+
+## Whole games
+
+`game.sh` runs a game with the generated PowerPC in Unicorn and compares it with the interpreter, frame by frame. This covers
+what the cases above leave out: real memory and I/O, the ARM7 and tasks running during stops, invalidation and linking over
+millions of blocks, and how all of that adds up over time.
+
+```
+tests/jit/game.sh <ROM, or - for none> <folder with the system files> <frames> [--modes "interp native"] [--mutate N] [options]
+```
+
+The folder needs `bios9.bin`, `bios7.bin` and `firmware.bin`, plus `bios9i.bin`, `bios7i.bin`, `firmwarei.bin` and `nand.bin`
+for DSi mode. Each way of running is given by `--modes`: `interp` without the JIT, `portable` with the JIT's portable executor,
+and `native` with generated code. Each prints a line per frame with a hash of the screens, the cycle counts and both CPUs'
+program counters, then hashes of RAM and WRAM, and every way is compared with the first. Options are `fast` for fast timing,
+`dsi` for DSi mode, `press=N` to press A every N frames, `touch=N` to touch the middle of the bottom screen every N frames,
+and `ppm=file` to save the last frame. It builds in `$TMPDIR/noodsu-jit-test-game`, and leaves each run's output in a
+`run-<mode>` folder there.
+
+Fast timing lets generated code count cycles in batches, so its runs differ from the interpreter's by design; it can still be
+run alone to see that a game works. With exact timing, any difference is a bug.
+
+The emulator reads the core's own state while generated code runs, rather than a copy: the interpreter, the scheduler, the
+block cache and the memory maps are areas whose reads and writes go to the core, with the 64-bit pointers in them turned
+into the emulator's 32-bit addresses. Main RAM and the core object are mapped into the emulator directly, so memory the maps
+point to is shared; anywhere else gets a null pointer, which sends accesses through the slow path. Calls from generated code
+to C++, like interpreter handlers and the interleave helper, run for real. Each CPU has its own emulator, since ARM7 code
+can run during a stop in ARM9 code.
+
+Mario Kart DS with `press=40` reaches a race by about frame 1500, and DSi mode with no ROM and `touch=97 press=61` gets past
+the health and safety screen.
