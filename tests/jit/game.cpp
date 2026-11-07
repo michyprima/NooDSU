@@ -376,21 +376,23 @@ static uint64_t hash(const void *data, size_t size, uint64_t h = 0xCBF29CE484222
 int main(int argc, char **argv) {
     if (argc < 5) {
         printf("Usage: game <system files folder> <rom, or - for none> <interp|portable|native> <frames> [fast] [dsi] [press=N] "
-            "[touch=N] [trace=frame] [ppm=path]\n");
+            "[start=N] [touch=N] [trace=frame] [ppm=path] [results=path]\n");
         return 2;
     }
     std::string files = argv[1], mode = argv[3];
-    int frames = atoi(argv[4]), press = 0, touch = 0, traceFrom = -1;
+    int frames = atoi(argv[4]), press = 0, startKey = 0, touch = 0, traceFrom = -1;
     bool fast = false, dsi = false;
-    std::string ppm;
+    std::string ppm, results;
     for (int i = 5; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "fast") fast = true;
         else if (arg == "dsi") dsi = true;
         else if (arg.rfind("press=", 0) == 0) press = atoi(arg.c_str() + 6);
+        else if (arg.rfind("start=", 0) == 0) startKey = atoi(arg.c_str() + 6);
         else if (arg.rfind("touch=", 0) == 0) touch = atoi(arg.c_str() + 6);
         else if (arg.rfind("trace=", 0) == 0) traceFrom = atoi(arg.c_str() + 6);
         else if (arg.rfind("ppm=", 0) == 0) ppm = arg.substr(4);
+        else if (arg.rfind("results=", 0) == 0) results = arg.substr(8);
         else fatal("unknown option %s", arg.c_str());
     }
     if (mode != "interp" && mode != "portable" && mode != "native") fatal("unknown mode %s", mode.c_str());
@@ -463,6 +465,8 @@ int main(int argc, char **argv) {
         frameNow = i;
         if (press && i % press == 0) core->input.pressKey(0);
         if (press && i % press == 2) core->input.releaseKey(0);
+        if (startKey && i % startKey == startKey - 1) core->input.pressKey(3);
+        if (startKey && i % startKey == 1) core->input.releaseKey(3);
         if (touch && i % touch == 0) { core->input.pressScreen(); core->spi.setTouch(128, 96); }
         if (touch && i % touch == 10) { core->input.releaseScreen(); core->spi.clearTouch(); }
         do core->runCore(); while (!core->frameEnded.exchange(false));
@@ -471,12 +475,23 @@ int main(int argc, char **argv) {
         printf("frame %d\tscreen %016llX\tcycles %u %u %u\tpc %08X %08X\n", i, (unsigned long long)last,
             core->globalCycles, arm9.cycles, arm7.cycles, arm9.registersUsr[15], arm7.registersUsr[15]);
     }
+    core->cartridgeNds.writeSave();
     Memory &mem = core->memory;
     printf("ram %016llX\twram %016llX\n", (unsigned long long)hash(mem.ram, mem.ramSize),
         (unsigned long long)hash(mem.wram7, sizeof(mem.wram7), hash(mem.wram, sizeof(mem.wram))));
     double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     fprintf(stderr, "%s: %d frames in %.1f s, %llu entries into generated code, %llu calls from it\n", mode.c_str(),
         frames, seconds, (unsigned long long)enters, (unsigned long long)calls);
+    if (!results.empty()) {
+        // What tests/hardware's ROM records for each CPU, which its build takes as the results to compare with
+        FILE *out = fopen(results.c_str(), "wb");
+        for (int cpu = 0; cpu < 2; cpu++)
+            for (uint32_t a = 0; a < 110 * 12 * 4; a += 4) {
+                uint32_t word = mem.read<uint32_t>(0, 0x02300000 + cpu * 0x10000 + a);
+                fwrite(&word, 4, 1, out);
+            }
+        fclose(out);
+    }
     if (!ppm.empty()) {
         FILE *out = fopen(ppm.c_str(), "wb");
         fprintf(out, "P6\n256 384\n255\n");

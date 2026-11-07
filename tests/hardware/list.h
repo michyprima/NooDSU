@@ -24,11 +24,13 @@
     T(t_movs_no_spsr, "MOVS NO SPSR") T(t_ands_no_spsr, "ANDS NO SPSR") T(t_ldm_s_no_spsr, "LDM^ NO SPSR") T(t_mrs_no_spsr, "MRS NO SPSR") \
     T(t_msr_no_spsr, "MSR NO SPSR") T(t_ldm_user_regs, "LDM^ USER REG") T(t_stm_user_regs, "STM^ USER REG") \
     T(t_ldr_pc_bit0, "LDR PC+1") T(t_ldm_pc_bit0, "LDM PC+1") T(t_mrs_sys_flags, "MRS SYS FLAGS") T(t_mrs_sys_irq_on, "MRS SYS IRQ ON") \
-    T(t_movs_sys_irq_on, "MOVS SYS IRQ ON") T(t_ldm_no_spsr_bit0, "LDM^ SYS PC+1") T(t_user_spsr, "USER SPSR") T(t_user_msr_t, "USER MSR T")
+    T(t_movs_sys_irq_on, "MOVS SYS IRQ ON") T(t_ldm_no_spsr_bit0, "LDM^ SYS PC+1") T(t_user_spsr, "USER SPSR") T(t_user_msr_t, "USER MSR T") \
+    T(t_mrc_id, "MRC P15 ID") T(t_mrc_p0, "MRC P0") T(t_mcr_p0, "MCR P0")
 
 #define RISKY_TESTS \
     T(t_msr_thumb, "MSR T REG A7") T(t_msr_imm_thumb, "MSR T IMM A7") T(t_bad_mode_00, "MODE 00") T(t_bad_mode_01, "MODE 01") T(t_bad_mode_02, "MODE 02") \
-    T(t_bad_mode_03, "MODE 03") T(t_bad_mode_07, "MODE 07") T(t_bad_mode_0b, "MODE 0B") T(t_bad_mode_0f, "MODE 0F") T(t_bad_mode_14, "MODE 14") T(t_bad_mode_18, "MODE 18") T(t_bad_mode_1e, "MODE 1E")
+    T(t_bad_mode_03, "MODE 03") T(t_bad_mode_07, "MODE 07") T(t_bad_mode_0b, "MODE 0B") T(t_bad_mode_0f, "MODE 0F") T(t_bad_mode_14, "MODE 14") T(t_bad_mode_18, "MODE 18") T(t_bad_mode_1e, "MODE 1E") \
+    T(t_mrc_pc_low, "MRC PC 0") T(t_mrc_pc_high, "MRC PC 5")
 
 #define MAX_TESTS 110
 #define WORDS 12 // Six from the test, then the first six words of its data

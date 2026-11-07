@@ -4,11 +4,15 @@
 set -e
 here=$(cd "$(dirname "$0")"; pwd); logo=$1; results=$2
 tools=${DEVKITARM:-/opt/devkitpro/devkitARM}/bin/arm-none-eabi
+libgba=${DEVKITPRO:-/opt/devkitpro}/libgba # Its libfat works anywhere with a DLDI driver
 out=$here/build; mkdir -p "$out"
 common="-Os -marm -nostdlib -nostartfiles -ffreestanding -fno-builtin -Wl,--no-warn-rwx-segments -T$here/link.ld"
+# Saving goes through tests/rom's code, the same way as that ROM
 "$tools-gcc" $common -mcpu=arm946e-s -DARM9 -Wl,--defsym=BASE=0x02000000 -Wl,--defsym=IRQ_STACK=0x023F0000 \
-    -Wl,--defsym=SVC_STACK=0x023F1000 -Wl,--defsym=SYS_STACK=0x023FA000 \
-    "$here/start.S" "$here/tests.S" "$here/common.c" "$here/arm9.c" -lgcc -o "$out/arm9.elf"
+    -Wl,--defsym=SVC_STACK=0x023F1000 -Wl,--defsym=SYS_STACK=0x023FA000 -I"$here/../rom" -I"$libgba/include" -L"$libgba/lib" \
+    '-DFILE_NAME="fat:/noodsu-hwtest.bin"' '-DFILE_LABEL="NOODSU-HWTEST.BIN"' \
+    "$here/start.S" "$here/tests.S" "$here/common.c" "$here/../rom/save.c" "$here/arm9.c" \
+    -Wl,--start-group -lfat -lgba -lsysbase -lc -lgcc -Wl,--end-group -o "$out/arm9.elf"
 "$tools-gcc" $common -mcpu=arm7tdmi -Wa,-march=armv5te -DARM7 -Wl,--defsym=BASE=0x037F8000 -Wl,--defsym=IRQ_STACK=0x0380F000 \
     -Wl,--defsym=SVC_STACK=0x0380EC00 -Wl,--defsym=SYS_STACK=0x0380E800 \
     "$here/start.S" "$here/tests.S" "$here/common.c" "$here/arm7.c" -lgcc -o "$out/arm7.elf"

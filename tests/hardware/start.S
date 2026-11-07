@@ -44,6 +44,10 @@ _start:
 #endif
     ldr r1, =exception_caught
     str r1, [r0]
+#ifdef ARM9
+    ldr r0, =0x02FFFD9C @ Where the DSi's BIOS looks in DSi mode; a mirror of the other in DS mode
+    str r1, [r0]
+#endif
     mov r0, #0x04000000
     mov r1, #0
     str r1, [r0, #0x208]

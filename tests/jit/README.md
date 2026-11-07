@@ -57,10 +57,14 @@ tests/jit/game.sh <ROM, or - for none> <folder with the system files> <frames> [
 The folder needs `bios9.bin`, `bios7.bin` and `firmware.bin`, plus `bios9i.bin`, `bios7i.bin`, `firmwarei.bin` and `nand.bin`
 for DSi mode. Each way of running is given by `--modes`: `interp` without the JIT, `portable` with the JIT's portable executor,
 and `native` with generated code. Each prints a line per frame with a hash of the screens, the cycle counts and both CPUs'
-program counters, then hashes of RAM and WRAM, and every way is compared with the first. Options are `fast` for fast timing,
-`dsi` for DSi mode, `press=N` to press A every N frames, `touch=N` to touch the middle of the bottom screen every N frames,
-`trace=N` to also print both CPUs' registers at the start of every scanline from frame N, and `ppm=file` to save the last
-frame. It builds in `$TMPDIR/noodsu-jit-test-game`, and leaves each run's output in a `run-<mode>` folder there; set
+program counters, then hashes of RAM and WRAM, and every way is compared with the first. Options are:
+
+- `fast` for fast timing, and `dsi` for DSi mode
+- `press=N`, `start=N` and `touch=N` to press A, press START or touch the middle of the bottom screen every N frames
+- `trace=N` to also print both CPUs' registers at the start of every scanline from frame N
+- `ppm=file` to save the last frame, and `results=file` to save what `tests/hardware`'s ROM recorded, for its build
+
+It builds in `$TMPDIR/noodsu-jit-test-game`, and leaves each run's output in a `run-<mode>` folder there; set
 `JIT_TEST_CFLAGS` to build with more flags, like `-fsanitize=address,undefined -g`.
 
 Fast timing lets generated code count cycles in batches, so its runs differ from the interpreter's by design; it can still be

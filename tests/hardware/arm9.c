@@ -2,6 +2,9 @@
 #include "list.h"
 void runNormal(int cpu);
 void runRisky(int cpu, int index);
+int saveStart(const char **name);
+void saveWord(unsigned value);
+int saveEnd(void);
 
 #define T(f, n) n,
 static const char *const names[] = { NORMAL_TESTS RISKY_TESTS };
@@ -103,6 +106,7 @@ static int shownCpu, showAll, scroll, ranCount, stuck;
 static int same[2], different[2];
 static int nextRisky, restarted;
 static int hasExpected;
+static const char *saved = "";
 
 static void add(int kind, int cpu, int test, int word) {
     if (lineCount < 4000) lines[lineCount++] = (struct Line) { kind, cpu, test, word };
@@ -146,6 +150,8 @@ static void showResults(void) {
     text(" BOOTS ", WHITE);
     number(BOOT_COUNT, BOOT_COUNT > 1 ? RED : GREEN);
     if (!hasExpected) text(" NO EXPECTED", RED);
+    text(" ", WHITE);
+    text(saved, saved[0] == 'S' && saved[1] == 'D' ? GREEN : saved[0] == 'S' ? YELLOW : RED);
     newLine();
     if (restarted) {
         text("RESTARTED IN ", RED);
@@ -206,6 +212,31 @@ static void showResults(void) {
     newLine();
 }
 
+static void saveResults(void) {
+    // Write everything so far to the card after each run, with what NooDS U gives, so tests/hardware/results.py can
+    // list the differences; the results are on screen first, in case the driver needs the ARM7, which is busy here
+    saved = "SAVING";
+    showResults();
+    const char *name;
+    if (!saveStart(&name)) {
+        saved = "NOT SAVED";
+        return;
+    }
+    saveWord(0x54535748); // HWTS
+    saveWord(ranCount);
+    saveWord(normalCount);
+    saveWord(BOOT_COUNT);
+    saveWord(restarted);
+    saveWord(stuck ? PROGRESS(1) : 0);
+    for (int cpu = 0; cpu < 2; cpu++)
+        for (int i = 0; i < MAX_TESTS * WORDS; i++) saveWord(RESULTS(cpu)[i]);
+    for (int cpu = 0; cpu < 2; cpu++)
+        for (int test = 0; test < MAX_TESTS; test++)
+            for (int w = 0; w < WORDS; w++) saveWord(expected[cpu][test][w]);
+    int bytes = saveEnd();
+    saved = bytes <= 0 ? "SAVE FAILED" : name[0] == 'N' ? "SD SAVED" : "SAVED TO CHIP";
+}
+
 static int waitArm7(unsigned value) {
     // About 10 seconds of frames
     for (int frames = 0; frames < 600; frames++) {
@@ -251,6 +282,7 @@ void arm9Main(void) {
     stuck = !waitArm7(1);
     ranCount = normalCount;
     buildLines();
+    saveResults();
     showResults();
 
     unsigned short held = 0xFFFF;
@@ -286,6 +318,7 @@ void arm9Main(void) {
             scroll = lineCount;
             buildLines();
             scroll = lineCount > 10 ? lineCount - 10 : 0;
+            saveResults();
         }
         else redraw = 0;
         if (redraw) showResults();

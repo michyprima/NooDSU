@@ -6,7 +6,19 @@ results are built in.
 
 ## Running it
 
-Copy `build/noodsu-test.nds` to a flashcart and start it. It doesn't use any libraries, the touch screen or the save.
+Copy `build/noodsu-test.nds` to a flashcart and start it. It doesn't use the touch screen.
+
+After the first results are on screen, and again after each test START runs, it writes all the results so far to
+`noodsu-hwtest.bin` in the root of the flashcart's card, the same way as `tests/rom`'s ROM, whose saving code it uses: through
+the DLDI driver the flashcart patches in, or else the save chip. The end of the second line says how that went: `SD SAVED`,
+`SAVED TO CHIP`, `NOT SAVED` or `SAVE FAILED`. The DSi's own SD card doesn't work for this, since its driver needs the ARM7,
+which only runs the tests; the results are on screen before saving starts, in case it hangs. To list the differences:
+
+```
+tests/hardware/results.py noodsu-hwtest.bin [all]
+```
+
+The file has NooDS U's results too, so that's all it needs; `all` lists every result, not only the differences.
 
 | Button | What it does |
 |---|---|
@@ -28,9 +40,13 @@ If it hangs, the third line says which ARM9 test was running. A stuck ARM7 is re
 tests/hardware/build.sh <any DS ROM, for the logo> [results from NooDS U]
 ```
 
-It needs devkitARM. The results are what the core leaves at `0x02300000` and `0x02310000` after running the ROM and pressing
-START, as 2 x 110 x 12 little-endian words. Build once without them, run that in NooDS U to get them, and build again; the code
-doesn't move, since they only fill in a table.
+It needs devkitARM and devkitPro's `libgba` for libfat. The results are what the core leaves at `0x02300000` and `0x02310000`
+after running the ROM and pressing START, as 2 x 110 x 12 little-endian words. Build once without them, run that in NooDS U to
+get them, and build again; the code doesn't move, since they only fill in a table. On the Mac, `tests/jit/game.sh` gets them:
+
+```
+tests/jit/game.sh tests/hardware/build/noodsu-test.nds <system files folder> 600 --modes interp start=30 results=results.bin
+```
 
 ## What it doesn't test
 

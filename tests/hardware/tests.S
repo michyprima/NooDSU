@@ -767,6 +767,41 @@ TEST t_ldm_pc_bit0
 
 .ltorg
 
+@ ---- Coprocessor transfers: the ARM7 has no CP15, and neither CPU has a coprocessor 0 ----
+
+TEST t_mrc_id
+    mov r0, #0x55
+    mov r3, #0
+    .word 0xEE100F10 @ MRC p15,0,r0,c0,c0,0 (main ID)
+    mov r3, #1
+    RESULT 0, r0
+    RESULT 1, r3
+    b test_done
+
+TEST t_mrc_p0
+    mov r0, #0x55
+    mov r3, #0
+    .word 0xEE1D0030 @ MRC p0,0,r0,c13,c0,1, which NooDS U reads as CP15's trace process ID
+    mov r3, #1
+    RESULT 0, r0
+    RESULT 1, r3
+    b test_done
+
+TEST t_mcr_p0
+    ARM9_ONLY
+    mov r0, #0
+    .word 0xEE0D0F30 @ MCR p15,0,r0,c13,c0,1 (trace process ID)
+    ldr r0, =0x12345678
+    mov r3, #0
+    .word 0xEE0D0030 @ MCR p0,0,r0,c13,c0,1
+    mov r3, #1
+    .word 0xEE1D1F30 @ MRC p15,0,r1,c13,c0,1
+    RESULT 0, r1
+    RESULT 1, r3
+    b test_done
+
+.ltorg
+
 @ ---- Only after pressing START, since these could hang a DS ----
 
 TEST t_msr_thumb
@@ -831,6 +866,38 @@ BAD_MODE t_bad_mode_0f, 0x0F
 BAD_MODE t_bad_mode_14, 0x14
 BAD_MODE t_bad_mode_18, 0x18
 BAD_MODE t_bad_mode_1e, 0x1E
+
+@ MRC to the PC, which ARMv5 says sets the flags from the value's top bits; the value is in the trace process ID, and
+@ points to a page of B . in case the PC really is written, so the interrupt still gets back
+.macro MRC_TO_PC name, value, flags
+TEST \name
+    ARM9_ONLY
+    ARM_INTERRUPT_WAY_BACK
+    ldr r0, =0x02200000
+    ldr r1, =0xEAFFFFFE @ B .
+    mov r2, #0x80
+3:  str r1, [r0], #4
+    subs r2, r2, #1
+    bne 3b
+    ldr r0, =\value
+    .word 0xEE0D0F30 @ MCR p15,0,r0,c13,c0,1
+    mov r3, #0
+    mov r4, #0
+    msr cpsr_c, #0x1F @ Interrupts on
+    msr cpsr_f, #\flags
+    .word 0xEE1DFF30 @ MRC p15,0,pc,c13,c0,1
+    add r3, r3, #1
+    add r3, r3, #2
+    mrs r4, cpsr
+    b . @ Until the interrupt
+    .align 2
+2:  RESULT 0, r4
+    RESULT 1, r3
+    b test_done
+.endm
+
+MRC_TO_PC t_mrc_pc_low, 0x0220003F, 0xB0000000
+MRC_TO_PC t_mrc_pc_high, 0x5220003F, 0xA0000000
 
 .ltorg
 

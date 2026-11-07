@@ -16,7 +16,7 @@ arm7 = open(sys.argv[2], 'rb').read()
 logo = open(sys.argv[3], 'rb').read()[0xC0:0x15C]
 arm9 += b'\0' * (-len(arm9) % 0x200)
 arm7 += b'\0' * (-len(arm7) % 0x200)
-ARM9_OFFSET = 0x4000
+ARM9_OFFSET = 0x200
 arm7_offset = ARM9_OFFSET + len(arm9)
 total = arm7_offset + len(arm7)
 capacity = 0
@@ -25,7 +25,7 @@ while (0x20000 << capacity) < total:
 
 header = bytearray(0x200)
 header[0x00:0x0C] = b'NOODS U TEST'
-header[0x0C:0x10] = b'NTST'
+header[0x0C:0x10] = b'####' # Flashcarts patch their DLDI driver into homebrew, which they tell by this and the ARM9's offset
 header[0x10:0x12] = b'00'
 header[0x14] = capacity
 struct.pack_into('<IIII', header, 0x20, ARM9_OFFSET, 0x02000000, 0x02000000, len(arm9))
@@ -33,7 +33,7 @@ struct.pack_into('<IIII', header, 0x30, arm7_offset, 0x037F8000, 0x037F8000, len
 struct.pack_into('<I', header, 0x60, 0x00586000)
 struct.pack_into('<I', header, 0x64, 0x001808F8)
 struct.pack_into('<I', header, 0x80, total)
-struct.pack_into('<I', header, 0x84, 0x4000)
+struct.pack_into('<I', header, 0x84, 0x200)
 header[0xC0:0x15C] = logo
 struct.pack_into('<H', header, 0x15C, crc16(logo))
 struct.pack_into('<H', header, 0x15E, crc16(header[:0x15E]))
