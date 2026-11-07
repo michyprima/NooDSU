@@ -810,6 +810,7 @@ void CartridgeNds::directBoot() {
             core->memory.writeMbk7(i, -1, U8TO32(rom, 0x198 + i * 0xC));
             core->memory.writeMbk8(i, -1, U8TO32(rom, 0x19C + i * 0xC));
         }
+        core->memory.writeMbk9(-1, U8TO32(rom, 0x1AC));
 
         // Copy the DSi ROM header into memory
         for (uint32_t i = 0; i < 0x1000; i += 4)

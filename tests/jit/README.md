@@ -80,5 +80,6 @@ to C++, like interpreter handlers and the interleave helper, run for real. Each 
 can run during a stop in ARM9 code.
 
 Mario Kart DS with `press=40` reaches a race by about frame 1500. DSi mode with no ROM and `press=1250` is at the DSi menu
-by frame 1300; the next press, at frame 2500, starts the DSi Browser, which ends at an error screen. Pokemon Black 2 in DSi
-mode with `press=37` names the rival by frame 4400. With generated code in Unicorn, these run at 10 to 35 frames a second.
+by frame 1300; the next press, at frame 2500, starts the DSi Browser, which runs until it finds no network. With
+`keys=1500:0`, Left (key 5) every 40 frames from 1640 to 1880 and `1960:0`, it starts System Settings, up by frame 2900.
+Pokemon Black 2 in DSi mode with `press=37` names the rival by frame 4400. With generated code in Unicorn, these run at 10 to 35 frames a second.

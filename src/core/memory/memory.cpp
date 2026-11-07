@@ -128,6 +128,9 @@ void Memory::saveState(FILE *file) {
         fwrite(mbk6, 4, sizeof(mbk6) / 4, file);
         fwrite(mbk7, 4, sizeof(mbk7) / 4, file);
         fwrite(mbk8, 4, sizeof(mbk8) / 4, file);
+        fwrite(&mbk9, sizeof(mbk9), 1, file);
+        fwrite(&wramLock, sizeof(wramLock), 1, file);
+        fwrite(&wramLockCnt, sizeof(wramLockCnt), 1, file);
     }
 }
 
@@ -186,6 +189,9 @@ void Memory::loadState(FILE *file) {
         fread(mbk6, 4, sizeof(mbk6) / 4, file);
         fread(mbk7, 4, sizeof(mbk7) / 4, file);
         fread(mbk8, 4, sizeof(mbk8) / 4, file);
+        fread(&mbk9, sizeof(mbk9), 1, file);
+        fread(&wramLock, sizeof(wramLock), 1, file);
+        fread(&wramLockCnt, sizeof(wramLockCnt), 1, file);
     }
 
     // Update mapped memory
@@ -307,13 +313,8 @@ void Memory::updateMap9(uint32_t start, uint32_t end, bool tcm) {
                     }
                 }
             }
-            if (!read) {
-                switch (wramCnt) {
-                    case 0: read = write = &wram[(address & 0x7FFF)]; break;
-                    case 1: read = write = &wram[(address & 0x3FFF) + 0x4000]; break;
-                    case 2: read = write = &wram[(address & 0x3FFF)]; break;
-                }
-            }
+            if (!read)
+                read = write = sharedWram(false, address);
             break;
 
         case 0x6000000: { // VRAM
@@ -452,13 +453,8 @@ void Memory::updateMap7(uint32_t start, uint32_t end) {
                             }
                         }
                     }
-                    if (!read) {
-                        switch (wramCnt) {
-                            case 1: read = write = &wram[(address & 0x3FFF)]; break;
-                            case 2: read = write = &wram[(address & 0x3FFF) + 0x4000]; break;
-                            case 3: read = write = &wram[(address & 0x7FFF)]; break;
-                        }
-                    }
+                    if (!read)
+                        read = write = sharedWram(true, address);
                 }
                 if (!read)
                     read = write = &wram7[address & 0xFFFF]; // ARM7 WRAM
@@ -1278,6 +1274,7 @@ template <typename T> T Memory::ioRead9(uint32_t address) {
                 DEF_IO32(0x4004054, data = readMbk6(0)) // MBK6
                 DEF_IO32(0x4004058, data = readMbk7(0)) // MBK7
                 DEF_IO32(0x400405C, data = readMbk8(0)) // MBK8
+                DEF_IO32(0x4004060, data = readMbk9()) // MBK9
                 DEF_IO32(0x4004104, data = core->ndma[0].readSad(0)) // NDMA0SAD (ARM9)
                 DEF_IO32(0x4004108, data = core->ndma[0].readDad(0)) // NDMA0DAD (ARM9)
                 DEF_IO32(0x400410C, data = core->ndma[0].readTcnt(0)) // NDMA0TCNT (ARM9)
@@ -1501,6 +1498,7 @@ template <typename T> T Memory::ioRead7(uint32_t address) {
                 DEF_IO32(0x4004054, data = readMbk6(1)) // MBK6
                 DEF_IO32(0x4004058, data = readMbk7(1)) // MBK7
                 DEF_IO32(0x400405C, data = readMbk8(1)) // MBK8
+                DEF_IO32(0x4004060, data = readMbk9()) // MBK9
                 DEF_IO32(0x4004104, data = core->ndma[1].readSad(0)) // NDMA0SAD (ARM7)
                 DEF_IO32(0x4004108, data = core->ndma[1].readDad(0)) // NDMA0DAD (ARM7)
                 DEF_IO32(0x400410C, data = core->ndma[1].readTcnt(0)) // NDMA0TCNT (ARM7)
@@ -2245,6 +2243,7 @@ template <typename T> void Memory::ioWrite7(uint32_t address, T value) {
                 DEF_IO32(0x4004054, writeMbk6(1, IOWR_PARAMS)) // MBK6
                 DEF_IO32(0x4004058, writeMbk7(1, IOWR_PARAMS)) // MBK7
                 DEF_IO32(0x400405C, writeMbk8(1, IOWR_PARAMS)) // MBK8
+                DEF_IO32(0x4004060, writeMbk9(IOWR_PARAMS)) // MBK9
                 DEF_IO32(0x4004104, core->ndma[1].writeSad(0, IOWR_PARAMS)) // NDMA0SAD (ARM7)
                 DEF_IO32(0x4004108, core->ndma[1].writeDad(0, IOWR_PARAMS)) // NDMA0DAD (ARM7)
                 DEF_IO32(0x400410C, core->ndma[1].writeTcnt(0, IOWR_PARAMS)) // NDMA0TCNT (ARM7)
@@ -2520,6 +2519,27 @@ void Memory::writeVramCnt(int index, uint8_t value) {
     updateVram();
 }
 
+uint8_t *Memory::sharedWram(bool arm7, uint32_t address) {
+    // Find the shared WRAM a CPU sees at an address with a WRAMCNT value, which splits it the opposite way for the ARM7
+    auto offset = [&](uint8_t cnt) {
+        switch (arm7 ? 3 - cnt : cnt) {
+            case 0: return int(address & 0x7FFF);
+            case 1: return int(address & 0x3FFF) + 0x4000;
+            case 2: return int(address & 0x3FFF);
+            default: return -1;
+        }
+    };
+
+    // Locked 4KB blocks stay with the CPU that had them when they were locked, at the address it had them at
+    int current = offset(wramCnt);
+    if (current >= 0 && !(wramLock & BIT(current >> 12)))
+        return &wram[current];
+    int locked = offset(wramLockCnt);
+    if (locked >= 0 && (wramLock & BIT(locked >> 12)))
+        return &wram[locked];
+    return nullptr;
+}
+
 void Memory::writeWramCnt(uint8_t value) {
     // Write to the WRAMCNT register and update WRAM mappings
     wramCnt = value & 0x3;
@@ -2594,4 +2614,19 @@ void Memory::writeMbk8(bool arm7, uint32_t mask, uint32_t value) {
     mask &= 0x1FF83FF8;
     mbk8[arm7] = (mbk8[arm7] & ~mask) | (value & mask);
     arm7 ? updateMap7(0x3000000, 0x3800000) : updateMap9(0x3000000, 0x4000000);
+}
+
+void Memory::writeMbk9(uint32_t mask, uint32_t value) {
+    // Write to the ARM7's NWRAM slot write-protect register
+    mbk9 = (mbk9 & ~(mask & 0xFFFF0F)) | (value & mask & 0xFFFF0F);
+
+    // The top byte isn't documented, but cart headers set it to their WRAMCNT, plus 0xFC for the DSi menu, which then
+    // sets WRAMCNT to 3 but keeps its ES heap at 0x3004000 on the ARM9 while the ARM7 reads a table the ARM9 put at
+    // 0x3000000; so take each bit to lock a 4KB block of shared WRAM where it is
+    if (mask & 0xFF000000) {
+        wramLock = (wramLock & ~(mask >> 24)) | (value & mask) >> 24;
+        wramLockCnt = wramCnt;
+        updateMap9(0x3000000, 0x4000000);
+        updateMap7(0x3000000, 0x3800000);
+    }
 }

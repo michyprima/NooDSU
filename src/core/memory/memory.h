@@ -105,6 +105,7 @@ public:
     uint32_t readMbk6(bool arm7) { return mbk6[arm7]; }
     uint32_t readMbk7(bool arm7) { return mbk7[arm7]; }
     uint32_t readMbk8(bool arm7) { return mbk8[arm7]; }
+    uint32_t readMbk9() { return mbk9; }
 
     void writeDmaFill(int channel, uint32_t mask, uint32_t value);
     void writeVramCnt(int index, uint8_t value);
@@ -118,6 +119,7 @@ public:
     void writeMbk6(bool arm7, uint32_t mask, uint32_t value);
     void writeMbk7(bool arm7, uint32_t mask, uint32_t value);
     void writeMbk8(bool arm7, uint32_t mask, uint32_t value);
+    void writeMbk9(uint32_t mask, uint32_t value);
 
 private:
     Core *core;
@@ -168,7 +170,11 @@ private:
     uint32_t mbk6[2] = {};
     uint32_t mbk7[2] = {};
     uint32_t mbk8[2] = {};
+    uint32_t mbk9 = 0;
+    uint8_t wramLock = 0; // 4KB blocks of shared WRAM that stay where they were when locked
+    uint8_t wramLockCnt = 0; // WRAMCNT when the blocks were locked
 
+    uint8_t *sharedWram(bool arm7, uint32_t address);
     template <typename T> T readFallback(bool arm7, uint32_t address);
     template <typename T> void writeFallback(bool arm7, uint32_t address, T value, bool tcm);
     template <typename T> bool writeJit(bool arm7, uint32_t address, T value, bool tcm);
