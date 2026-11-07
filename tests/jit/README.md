@@ -71,6 +71,10 @@ To watch a run, `--live` also prints each way's lines as they come, marked with 
 screens in a window of its own, at most 60 times a second. The window needs SDL2 (`brew install sdl2`), and is only built
 with `--window`; closing it lets the run carry on without it.
 
+The first run also builds Unicorn, which needs `cmake` and `ninja`: a development version, pinned in `game.sh`, since the
+release checks every write to RAM for code being written over, which makes runs much slower. Set `JIT_TEST_UNICORN` to
+another Unicorn source folder, built in its `build` folder, to use that instead.
+
 It builds in `$TMPDIR/noodsu-jit-test-game`, and leaves each run's output in a `run-<mode>` folder there; set
 `JIT_TEST_CFLAGS` to build with more flags, like `-fsanitize=address,undefined -g`.
 
@@ -91,4 +95,4 @@ can run during a stop in ARM9 code.
 Mario Kart DS with `press=40` reaches a race by about frame 1500. DSi mode with no ROM and `press=1250` is at the DSi menu
 by frame 1300; the next press, at frame 2500, starts the DSi Browser, which runs until it finds no network. With
 `keys=1500:0`, Left (key 5) every 40 frames from 1640 to 1880 and `1960:0`, it starts System Settings, up by frame 2900.
-Pokemon Black 2 in DSi mode with `press=37` names the rival by frame 4400. With generated code in Unicorn, these run at 10 to 35 frames a second.
+Pokemon Black 2 in DSi mode with `press=37` names the rival by frame 4400. With generated code in Unicorn, these run at 15 to 65 frames a second.

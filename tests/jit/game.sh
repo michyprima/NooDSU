@@ -17,9 +17,20 @@ base=${JIT_TEST_BUILD:-${TMPDIR:-/tmp}/noodsu-jit-test}
 build=$base-game; [ "$mutation" = 0 ] || build=$build-m$mutation
 mkdir -p "$build/obj"
 
-# Get the Unicorn PowerPC emulator once, shared with run.sh
-if [ ! -d "$base/venv" ]; then python3 -m venv "$base/venv"; "$base/venv/bin/pip" install -q unicorn; fi
-uni=$(ls -d "$base"/venv/lib/python*/site-packages/unicorn)
+# Build the Unicorn PowerPC emulator once, from a development version: the release checks every write to RAM for code
+# being written over, which makes runs much slower. JIT_TEST_UNICORN can give another Unicorn source folder, built in build/
+rev=2a05c41831c678c22b2c6de471aae15b1cfc9ae3
+uni=${JIT_TEST_UNICORN:-$base-unicorn-${rev:0:7}}
+if ! ls "$uni"/build/libunicorn.* > /dev/null 2>&1; then
+    [ -z "$JIT_TEST_UNICORN" ] || { echo "no Unicorn build in $uni/build"; exit 1; }
+    echo "Building Unicorn, once"
+    rm -rf "$uni.new"; mkdir -p "$uni.new"
+    curl -sfL "https://github.com/unicorn-engine/unicorn/archive/$rev.tar.gz" | tar -xz -C "$uni.new" --strip-components 1
+    cmake -S "$uni.new" -B "$uni.new/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DUNICORN_ARCH=ppc -DUNICORN_BUILD_TESTS=OFF \
+        -DBUILD_SHARED_LIBS=ON > "$uni.new/build.log" && ninja -C "$uni.new/build" >> "$uni.new/build.log" ||
+        { echo "couldn't build Unicorn, see $uni.new/build.log"; exit 1; }
+    rm -rf "$uni"; mv "$uni.new" "$uni"
+fi
 
 # Build from a changed copy of the core, only compiling what's different
 rm -rf "$build/new"; mkdir -p "$build/new"; cp -R "$here/../../src/core/" "$build/new/"
@@ -44,7 +55,7 @@ if [ "$window" = 1 ]; then
     extra=("$build/window.o" $(pkg-config --libs-only-L sdl2) -lSDL2)
 fi
 wait
-clang++ $JIT_TEST_CFLAGS "$build"/obj/*.o "${extra[@]}" -L"$uni/lib" -lunicorn -Wl,-rpath,"$uni/lib" -o "$build/game"
+clang++ $JIT_TEST_CFLAGS "$build"/obj/*.o "${extra[@]}" -L"$uni/build" -lunicorn -Wl,-rpath,"$uni/build" -o "$build/game"
 
 # Run each way in its own folder, since saves and the DSi NAND get written, then compare each with the first
 pids=()
