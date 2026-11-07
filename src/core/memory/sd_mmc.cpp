@@ -234,17 +234,21 @@ void SdMmc::writeBlock() {
     bool hc = (~sdPortSelect & sdhc);
     uint32_t len = (hc ? 0x80 : blockLen);
 
-    // Pop a block of data from a FIFO
-    uint32_t data[0x80];
+    // Pop a block of data from a FIFO, keeping its bytes in order on any host
+    uint8_t data[0x200];
     LOG_INFO("Writing %s block to 0x%X with size 0x%X\n",
         (sdPortSelect & BIT(0)) ? "MMC" : "SD", curAddress, len << 2);
-    for (int i = 0; i < len; i++) data[i] = popFifo();
+    for (int i = 0; i < len; i++) {
+        uint32_t value = popFifo();
+        for (int j = 0; j < 4; j++)
+            data[i * 4 + j] = value >> (j * 8);
+    }
 
     // Write the data to the SD or MMC if present, in 512- or 1-byte units
     if (FILE *dst = (sdPortSelect & BIT(0)) ? nand : sd) {
         std::lock_guard<FileLock> guard(fileLock());
         fseek(dst, hc ? (int64_t(curAddress) << 9) : curAddress, SEEK_SET);
-        fread(data, sizeof(uint32_t), len, dst);
+        fwrite(data, sizeof(uint32_t), len, dst);
     }
 
     // Change state and trigger a DRQ or end interrupt based on blocks left
