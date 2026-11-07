@@ -41,6 +41,10 @@ public:
     void transmit(const uint8_t *frame, size_t size, const uint8_t *clientMac);
     bool receive(std::vector<uint8_t> &frame, const uint8_t *clientMac);
 
+    // The DSi's Wi-Fi chip handles 802.11 itself and trades Ethernet frames with the network directly
+    void sendEthernet(const uint8_t *frame, size_t size);
+    bool receiveEthernet(std::vector<uint8_t> &frame);
+
 private:
     NetSlirp *net = nullptr;
     std::deque<std::vector<uint8_t>> replies;

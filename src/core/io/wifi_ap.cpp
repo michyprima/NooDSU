@@ -195,3 +195,11 @@ bool WifiAp::receive(std::vector<uint8_t> &frame, const uint8_t *clientMac) {
     }
     return false;
 }
+
+void WifiAp::sendEthernet(const uint8_t *frame, size_t size) {
+    net->send(frame, size);
+}
+
+bool WifiAp::receiveEthernet(std::vector<uint8_t> &frame) {
+    return net->receive(frame);
+}

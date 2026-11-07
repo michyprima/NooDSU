@@ -27,8 +27,8 @@
 class Core;
 
 // The DSi's Atheros Wi-Fi chip, behind the SDIO controller; the values follow melonDS's DSi_NWifi
-// It takes the firmware the system uploads and reports being ready, which the DSi menu needs to start any title, but
-// it doesn't connect to anything yet
+// It takes the firmware the system uploads and reports being ready, which the DSi menu needs to start any title, and
+// can find and join the software access point, passing data packets to its network as Ethernet frames
 class DsiWifi {
 public:
     DsiWifi(Core *core): core(core) {}
@@ -41,6 +41,7 @@ public:
     void startTransfer(uint32_t param);
     void readData(uint8_t *data, uint32_t size);
     void writeData(const uint8_t *data, uint32_t size);
+    void countMs();
 
 private:
     Core *core;
@@ -68,6 +69,9 @@ private:
     uint32_t hostIntAddr = 0;
     uint8_t bootPhase = 0; // BMI, HTC, then WMI
     bool firmwareLoaded = false; // Kept across resets, like the chip's own state
+    uint32_t scanMs = 0; // Time left in a scan
+    bool reportAp = true; // Whether scans should find the access point, as the probed network allows
+    bool connected = false;
 
     void updateIrq();
     void updateF1Irq();
@@ -90,6 +94,10 @@ private:
     void bmiCommand();
     void htcCommand();
     void wmiCommand();
+    void connect();
+    void sendPacket(uint16_t size);
+    void receivePackets();
+    void sendBssInfo();
     void sendEvent(uint8_t endpoint, uint16_t id, const uint8_t *data, uint32_t size);
     void sendAck(uint8_t endpoint);
 };

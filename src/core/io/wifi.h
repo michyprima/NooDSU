@@ -46,6 +46,7 @@ public:
     Wifi(Core *core);
     ~Wifi();
     void stopNetwork();
+    WifiAp *getAp() { return ap; }
     void saveState(FILE *file);
     void loadState(FILE *file);
 

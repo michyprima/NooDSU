@@ -187,6 +187,10 @@ void Wifi::countMs() {
     if (!packets.empty())
         receivePackets();
 
+    // Let the DSi's Wi-Fi chip scan and pass packets on
+    if (core->dsiMode)
+        core->dsiWifi.countMs();
+
     if (ap) {
         // Let the access point send its frames, if the DS is on its channel
         // Frames wait while the receive buffer is too full, which slows down the network to match

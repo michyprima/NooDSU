@@ -20,6 +20,7 @@
 
 #include <cstring>
 #include "../core.h"
+#include "wifi_ap.h"
 
 // The card information structures of the two SDIO functions; the rest of each is zero
 static const uint8_t cisData0[] = {
@@ -36,8 +37,9 @@ static const uint8_t cisData1[] = {
     0x81, 0x01, 0x07, 0x82, 0x01, 0xDF, 0xFF, 0x01
 };
 
-// How much mailbox 4 holds; events wait in mailbox 8 for room
+// How much mailbox 4 holds; events wait in mailbox 8 for room, and packets aren't received while it's nearly full
 static const uint32_t MAILBOX_SIZE = 0x600;
+static const uint32_t EVENT_SIZE = 0x8000;
 
 void DsiWifi::saveState(FILE *file) {
     // Write DSi state data to the file
@@ -56,6 +58,9 @@ void DsiWifi::saveState(FILE *file) {
     fwrite(&windowWriteAddr, sizeof(windowWriteAddr), 1, file);
     fwrite(&bootPhase, sizeof(bootPhase), 1, file);
     fwrite(&firmwareLoaded, sizeof(firmwareLoaded), 1, file);
+    fwrite(&scanMs, sizeof(scanMs), 1, file);
+    fwrite(&reportAp, sizeof(reportAp), 1, file);
+    fwrite(&connected, sizeof(connected), 1, file);
 }
 
 void DsiWifi::loadState(FILE *file) {
@@ -75,6 +80,9 @@ void DsiWifi::loadState(FILE *file) {
     fread(&windowWriteAddr, sizeof(windowWriteAddr), 1, file);
     fread(&bootPhase, sizeof(bootPhase), 1, file);
     fread(&firmwareLoaded, sizeof(firmwareLoaded), 1, file);
+    fread(&scanMs, sizeof(scanMs), 1, file);
+    fread(&reportAp, sizeof(reportAp), 1, file);
+    fread(&connected, sizeof(connected), 1, file);
 }
 
 void DsiWifi::reset() {
@@ -88,6 +96,9 @@ void DsiWifi::reset() {
     irq = false;
     windowData = windowReadAddr = windowWriteAddr = 0;
     bootPhase = 0;
+    scanMs = 0;
+    reportAp = true;
+    connected = false;
 
     // Identify the chip from the firmware's Wi-Fi board type, and get the MAC address
     size_t size;
@@ -495,23 +506,51 @@ void DsiWifi::htcCommand() {
 }
 
 void DsiWifi::wmiCommand() {
-    // Handle a wireless module interface command; packets on the data endpoints have nowhere to go yet
+    // Handle a wireless module interface command, or a packet on one of the data endpoints
     uint16_t header = read16(0);
-    read16(0);
+    uint16_t size = read16(0);
     read16(0);
     uint8_t endpoint = header;
-    if (endpoint <= 1) {
+    if (endpoint > 1) {
+        sendPacket(size);
+    }
+    else {
         switch (uint16_t cmd = read16(0)) {
+        case 0x0001: // Connect
+            connect();
+            break;
+
         case 0x0003: { // Disconnect
             uint8_t reply[11] = { 0x03 };
+            memcpy(&reply[2], WifiAp::mac, 6);
             reply[8] = 3; // Reason: requested
+            connected = false;
             sendEvent(1, 0x1003, reply, sizeof(reply));
             break;
         }
 
-        case 0x0007: { // Start scan, which finds nothing
-            uint8_t status[4] = {};
-            sendEvent(1, 0x100A, status, sizeof(status));
+        case 0x0007: { // Start scan, which finds the access point if there is one
+            read32(0); // Force foreground
+            read32(0); // Legacy
+            uint32_t time = read32(0);
+            if (!core->wifi.getAp()) {
+                uint8_t status[4] = {};
+                sendEvent(1, 0x100A, status, sizeof(status));
+                break;
+            }
+            if (reportAp) sendBssInfo();
+            scanMs = std::max<uint32_t>(time, 1);
+            break;
+        }
+
+        case 0x000A: { // Set probed SSID, which limits scans to one network unless the flags are clear
+            readMailbox(0, false);
+            uint8_t flags = readMailbox(0, false);
+            uint8_t len = readMailbox(0, false);
+            char ssid[33] = {};
+            for (int i = 0; i < len && i < 32; i++)
+                ssid[i] = readMailbox(0, false);
+            reportAp = !flags || !strcmp(ssid, WifiAp::ssid);
             break;
         }
 
@@ -539,8 +578,7 @@ void DsiWifi::wmiCommand() {
             break;
         }
 
-        case 0x0001: // Connect, with no access point to connect to
-        case 0x0004: case 0x0005: case 0x0008: case 0x0009: case 0x000A: case 0x000D: case 0x0011: case 0x0012:
+        case 0x0004: case 0x0005: case 0x0008: case 0x0009: case 0x000D: case 0x0011: case 0x0012:
         case 0x0017: case 0x0022: case 0x003D: case 0x0041: case 0x0047: case 0x0048: case 0x0049: case 0xF000:
             // Settings that need no answer
             break;
@@ -552,6 +590,147 @@ void DsiWifi::wmiCommand() {
     }
     if (header & BIT(8)) sendAck(endpoint);
     drain(0);
+}
+
+void DsiWifi::connect() {
+    // Join the access point if it's the one asked for, as an open network, or report that there's no such network
+    uint8_t type = readMailbox(0, false);
+    uint8_t auth11 = readMailbox(0, false);
+    uint8_t auth = readMailbox(0, false);
+    uint8_t pairCrypto = readMailbox(0, false);
+    readMailbox(0, false);
+    uint8_t groupCrypto = readMailbox(0, false);
+    readMailbox(0, false);
+    uint8_t ssidLen = readMailbox(0, false);
+    char ssid[33] = {};
+    for (int i = 0; i < 32; i++)
+        ssid[i] = readMailbox(0, false);
+    ssid[std::min<uint8_t>(ssidLen, 32)] = 0;
+    read16(0); // Channel
+    uint8_t bssid[6];
+    for (int i = 0; i < 6; i++)
+        bssid[i] = readMailbox(0, false);
+
+    static const uint8_t zero[6] = {};
+    bool found = core->wifi.getAp() && (!memcmp(bssid, WifiAp::mac, 6) ||
+        (!memcmp(bssid, zero, 6) && !strcmp(ssid, WifiAp::ssid)));
+    if (!found || type != 1 || auth11 != 1 || auth != 1 || pairCrypto != 1 || groupCrypto != 1) {
+        LOG_WARN("DSi Wi-Fi can't connect to %s: type %d, auth %d/%d, crypto %d/%d\n",
+            ssid, type, auth11, auth, pairCrypto, groupCrypto);
+        uint8_t reply[11] = {};
+        memcpy(&reply[2], bssid, 6);
+        reply[8] = 1; // Reason: no network
+        connected = false;
+        sendEvent(1, 0x1003, reply, sizeof(reply));
+        return;
+    }
+
+    // Report the channel's frequency, the access point, the listen and beacon intervals, and an infrastructure network;
+    // the information element sizes are the ones melonDS uses
+    LOG_INFO("DSi Wi-Fi connected to %s\n", ssid);
+    uint16_t freq = 2407 + WifiAp::channel * 5;
+    uint8_t reply[20] = { uint8_t(freq), uint8_t(freq >> 8) };
+    memcpy(&reply[2], WifiAp::mac, 6);
+    reply[8] = reply[10] = 128;
+    reply[12] = 0x01;
+    reply[16] = 0x16;
+    reply[17] = 0x2F;
+    reply[18] = 0x16;
+    connected = true;
+    sendEvent(1, 0x1002, reply, sizeof(reply));
+}
+
+void DsiWifi::sendPacket(uint16_t size) {
+    // Pass a data packet to the network as an Ethernet frame; it has the chip's header, then 802.3 with LLC/SNAP
+    WifiAp *ap = core->wifi.getAp();
+    if (!connected || !ap || size < 24) return;
+    uint16_t header = read16(0);
+    if (header & 0x0300) return; // Sync and other special frames, which need nothing done
+    std::vector<uint8_t> frame(14);
+    for (int i = 0; i < 12; i++)
+        frame[i] = readMailbox(0, false);
+    uint16_t len = readMailbox(0, false) << 8;
+    len |= readMailbox(0, false);
+    if (len < 8 || len > size - 16) {
+        LOG_WARN("Bad DSi Wi-Fi packet length: 0x%X\n", len);
+        return;
+    }
+    static const uint8_t snap[] = { 0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00 };
+    for (int i = 0; i < 6; i++) {
+        if (readMailbox(0, false) != snap[i]) return;
+    }
+    frame[12] = readMailbox(0, false);
+    frame[13] = readMailbox(0, false);
+    for (int i = 0; i < len - 8; i++)
+        frame.push_back(readMailbox(0, false));
+    ap->sendEthernet(frame.data(), frame.size());
+}
+
+void DsiWifi::receivePackets() {
+    // Pass packets from the network for this chip to the data endpoint, while there's room for them
+    WifiAp *ap = core->wifi.getAp();
+    std::vector<uint8_t> frame;
+    for (int n = 0; n < 4 && mailbox[8].size() + 0x800 <= EVENT_SIZE; n++) {
+        if (!ap->receiveEthernet(frame)) break;
+        if (frame.size() < 14 || frame.size() > 1514) continue; // Larger frames wouldn't fit in mailbox 4
+        if (!(frame[0] & 0x01) && memcmp(&frame[0], &eeprom[0xA], 6)) continue;
+        if (!memcmp(&frame[6], &eeprom[0xA], 6)) continue;
+
+        // Send it with the chip's header, the addresses, the big-endian length, and an LLC/SNAP header
+        uint32_t len = frame.size() - 14;
+        mailbox[8].push_back(2); // Endpoint
+        mailbox[8].push_back(0);
+        write16(8, 16 + 8 + len);
+        write16(8, 0);
+        write16(8, 0x0080);
+        mailbox[8].insert(mailbox[8].end(), &frame[0], &frame[12]);
+        mailbox[8].push_back((len + 8) >> 8);
+        mailbox[8].push_back(len + 8);
+        static const uint8_t snap[] = { 0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00 };
+        mailbox[8].insert(mailbox[8].end(), snap, snap + sizeof(snap));
+        mailbox[8].insert(mailbox[8].end(), &frame[12], frame.data() + frame.size());
+        drainEvents();
+    }
+}
+
+void DsiWifi::sendBssInfo() {
+    // Report the access point as found by a scan, with the frequency, a beacon, the signal, the access point's address
+    // and an empty information element mask, then the body of its beacon
+    uint16_t freq = 2407 + WifiAp::channel * 5;
+    const uint8_t ssidLen = sizeof(WifiAp::ssid) - 1;
+    uint8_t info[] = {
+        uint8_t(freq), uint8_t(freq >> 8), 0x01, 0x1B, 0xBC, 0xFF,
+        WifiAp::mac[0], WifiAp::mac[1], WifiAp::mac[2], WifiAp::mac[3], WifiAp::mac[4], WifiAp::mac[5],
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Timestamp
+        0x80, 0x00, // Beacon interval
+        0x21, 0x00, // Capabilities
+        0x01, 0x08, 0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24, // Rates
+        0x03, 0x01, WifiAp::channel, // Channel
+        0x05, 0x04, 0x00, 0x00, 0x00, 0x00, // Traffic indication map
+        0x00, ssidLen // SSID, which follows
+    };
+
+    // Unlike other events this has no trailer, and the control bytes are 0xFF as the real chip sends them
+    mailbox[8].push_back(1); // Endpoint
+    mailbox[8].push_back(0);
+    write16(8, sizeof(info) + ssidLen + 2);
+    mailbox[8].push_back(0xFF);
+    mailbox[8].push_back(0xFF);
+    write16(8, 0x1004);
+    mailbox[8].insert(mailbox[8].end(), info, info + sizeof(info));
+    mailbox[8].insert(mailbox[8].end(), WifiAp::ssid, WifiAp::ssid + ssidLen);
+    drainEvents();
+}
+
+void DsiWifi::countMs() {
+    // Finish a scan once its time is up, and receive packets while connected
+    if (scanMs && --scanMs == 0) {
+        uint8_t status[4] = {};
+        sendEvent(1, 0x100A, status, sizeof(status));
+    }
+    if (connected && core->wifi.getAp())
+        receivePackets();
 }
 
 void DsiWifi::sendEvent(uint8_t endpoint, uint16_t id, const uint8_t *data, uint32_t size) {
