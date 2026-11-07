@@ -37,15 +37,45 @@ recorded, and 6-11 are the first six words of its data afterwards. `tests.S` say
 If it hangs, the third line says which ARM9 test was running. A stuck ARM7 is reported on screen after about 10 seconds. A
 test that causes a CPU exception shows `DEADDEAD` in word 3, with the mode and return address in words 4 and 5.
 
+## The shared WRAM test
+
+`build/noodsu-wram.nds` is a second ROM, for a DSi in DSi mode. It settles what the top byte of MBK9 does, which nothing
+documents: cart headers set it with WRAMCNT, and the DSi menu sets it to 0xFC, then needs part of shared WRAM on each CPU
+after giving it all to the ARM7. NooDS U takes each bit to lock a 4KB block of shared WRAM with the CPU that had it.
+
+It runs by itself and saves `noodsu-wramtest.bin` like the other ROM. To see what it found, and how that compares with
+NooDS U:
+
+```
+tests/hardware/wram.py noodsu-wramtest.bin [NooDS U's]
+```
+
+NooDS U's comes from a RAM dump, `tests/jit/game.sh tests/hardware/build/noodsu-wram.nds <system files folder> 300 --modes
+interp dsi ram=wram.bin`, which `wram.py` reads too.
+
+Each of its six phases sets WRAMCNT, maybe writes MBK9, then switches WRAMCNT between 0 and 3. Both CPUs then read each
+4KB block at 0x3000000, write a marker and read it back. On screen and from `wram.py`, a digit means a block still holds
+what the ARM9 wrote to that block before the switch, `W` that it could be written but held nothing from before, and `-`
+that it couldn't be written.
+
+It asks the ARM7 for one short thing at a time, the way the instruction test does, and the ARM9 reaches shared WRAM by
+DMA, since libnds gives the ARM9's protection unit no region there. The ARM7 looks with interrupts off and from main RAM,
+since with WRAMCNT at 0 it sees its own WRAM there, and puts back each word it writes. It keeps a copy of shared WRAM in
+main RAM and puts it back at the end, with MBK9 and WRAMCNT as they were. It doesn't start if shared WRAM isn't all the
+ARM7's, or if new WRAM is mapped over 0x3000000, and says how many words of shared WRAM weren't 0 before it started.
+
+If it hangs, the third line gives the ARM9's step and the last command the ARM7 finished. If the ARM7 stops answering for
+2 seconds, it says so and gives shared WRAM back to the ARM7.
+
 ## Building it
 
 ```
 tests/hardware/build.sh [results from NooDS U]
 ```
 
-It needs devkitPro's `nds-dev`. The results are NooDS U's for both CPUs, as 2 x 110 x 12 little-endian words, which go in a
-table of the same size either way, so the code doesn't move. Build once without them, run that in NooDS U to get them, and
-build again. On the Mac, `tests/jit/game.sh` gets them:
+It builds both ROMs, and needs devkitPro's `nds-dev`. The results are NooDS U's for the instruction test's CPUs, as 2 x
+110 x 12 little-endian words, which go in a table of the same size either way, so the code doesn't move. Build once without
+them, run that in NooDS U to get them, and build again. On the Mac, `tests/jit/game.sh` gets them:
 
 ```
 tests/jit/game.sh tests/hardware/build/noodsu-test.nds <system files folder> 600 --modes interp start=30 results=results.bin

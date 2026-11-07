@@ -21,9 +21,18 @@ EOF
 
 common="-g -Os -marm -D__NDS__ -I$dkp/calico/include -I$dkp/libnds/include -L$dkp/calico/lib -L$dkp/libnds/lib"
 "$tools-gcc" $common -march=armv5te -mtune=arm946e-s -DARM9 -specs="$dkp/calico/share/ds9.specs" \
-    "$here/tests.S" "$here/common.c" "$here/arm9.c" "$out/expected.c" -lfat -lnds9 -lcalico_ds9 -o "$out/arm9.elf"
+    "$here/tests.S" "$here/common.c" "$here/screen.c" "$here/arm9.c" "$out/expected.c" -lfat -lnds9 -lcalico_ds9 -o "$out/arm9.elf"
 "$tools-gcc" $common -march=armv4t -mtune=arm7tdmi -Wa,-march=armv5te -DARM7 -specs="$dkp/calico/share/ds7.specs" \
     "$here/tests.S" "$here/common.c" "$here/arm7.c" -lnds7 -lcalico_ds7 -o "$out/arm7.elf"
 "$dkp/tools/bin/ndstool" -c "$out/noodsu-test.nds" -7 "$out/arm7.elf" -9 "$out/arm9.elf" \
     -b "$dkp/calico/share/nds-icon.bmp" "NooDS U test;Instructions on a real DS;" > /dev/null
 echo "Built $out/noodsu-test.nds"
+
+# The shared WRAM test, a ROM of its own
+"$tools-gcc" $common -march=armv5te -mtune=arm946e-s -DARM9 -specs="$dkp/calico/share/ds9.specs" \
+    "$here/screen.c" "$here/wram9.c" -lfat -lnds9 -lcalico_ds9 -o "$out/wram9.elf"
+"$tools-gcc" $common -march=armv4t -mtune=arm7tdmi -DARM7 -specs="$dkp/calico/share/ds7.specs" \
+    "$here/wram7.S" "$here/wram7.c" -lnds7 -lcalico_ds7 -o "$out/wram7.elf"
+"$dkp/tools/bin/ndstool" -c "$out/noodsu-wram.nds" -7 "$out/wram7.elf" -9 "$out/wram9.elf" \
+    -b "$dkp/calico/share/nds-icon.bmp" "NooDS U WRAM test;Shared WRAM on a real DSi;" > /dev/null
+echo "Built $out/noodsu-wram.nds"

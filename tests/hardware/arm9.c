@@ -3,6 +3,7 @@
 #include <nds.h>
 #include <fat.h>
 #include "list.h"
+#include "screen.h"
 void runNormal(int cpu);
 void runRisky(int cpu, int index);
 
@@ -16,78 +17,6 @@ static const int normalCount = 0 NORMAL_TESTS, totalCount = 0 NORMAL_TESTS RISKY
 // From running this same ROM in NooDS U, which build.sh puts in expected.c
 extern volatile const unsigned expected[2][MAX_TESTS][WORDS];
 static struct Shared block;
-
-#define SCREEN ((volatile unsigned short*)0x06800000)
-#define KEYS (*(volatile unsigned short*)0x04000130)
-#define VCOUNT (*(volatile unsigned short*)0x04000006)
-
-static const unsigned char font[][5] = {
-    {0,0,0,0,0},{0,0,0x5F,0,0},{0,7,0,7,0},{0x14,0x7F,0x14,0x7F,0x14},{0x24,0x2A,0x7F,0x2A,0x12},{0x23,0x13,8,0x64,0x62},
-    {0x36,0x49,0x55,0x22,0x50},{0,5,3,0,0},{0,0x1C,0x22,0x41,0},{0,0x41,0x22,0x1C,0},{0x14,8,0x3E,8,0x14},{8,8,0x3E,8,8},
-    {0,0x50,0x30,0,0},{8,8,8,8,8},{0,0x60,0x60,0,0},{0x20,0x10,8,4,2},{0x3E,0x51,0x49,0x45,0x3E},{0,0x42,0x7F,0x40,0},
-    {0x42,0x61,0x51,0x49,0x46},{0x21,0x41,0x45,0x4B,0x31},{0x18,0x14,0x12,0x7F,0x10},{0x27,0x45,0x45,0x45,0x39},
-    {0x3C,0x4A,0x49,0x49,0x30},{1,0x71,9,5,3},{0x36,0x49,0x49,0x49,0x36},{6,0x49,0x49,0x29,0x1E},{0,0x36,0x36,0,0},
-    {0,0x56,0x36,0,0},{8,0x14,0x22,0x41,0},{0x14,0x14,0x14,0x14,0x14},{0,0x41,0x22,0x14,8},{2,1,0x51,9,6},
-    {0x32,0x49,0x79,0x41,0x3E},{0x7E,0x11,0x11,0x11,0x7E},{0x7F,0x49,0x49,0x49,0x36},{0x3E,0x41,0x41,0x41,0x22},
-    {0x7F,0x41,0x41,0x22,0x1C},{0x7F,0x49,0x49,0x49,0x41},{0x7F,9,9,9,1},{0x3E,0x41,0x49,0x49,0x7A},{0x7F,8,8,8,0x7F},
-    {0,0x41,0x7F,0x41,0},{0x20,0x40,0x41,0x3F,1},{0x7F,8,0x14,0x22,0x41},{0x7F,0x40,0x40,0x40,0x40},{0x7F,2,0xC,2,0x7F},
-    {0x7F,4,8,0x10,0x7F},{0x3E,0x41,0x41,0x41,0x3E},{0x7F,9,9,9,6},{0x3E,0x41,0x51,0x21,0x5E},{0x7F,9,0x19,0x29,0x46},
-    {0x46,0x49,0x49,0x49,0x31},{1,1,0x7F,1,1},{0x3F,0x40,0x40,0x40,0x3F},{0x1F,0x20,0x40,0x20,0x1F},{0x3F,0x40,0x38,0x40,0x3F},
-    {0x63,0x14,8,0x14,0x63},{7,8,0x70,8,7},{0x61,0x51,0x49,0x45,0x43},
-};
-
-#define BIT_KEY(n) (1 << (n))
-#define WHITE 0xFFFF
-#define GREEN 0xC3E0
-#define RED 0x801F
-#define YELLOW 0x83FF
-#define BLACK 0x8000
-
-static void drawChar(int column, int row, char c, unsigned short color) {
-    if (c < 32 || c > 90) c = '?';
-    const unsigned char *glyph = font[c - 32];
-    for (int x = 0; x < 6; x++) {
-        unsigned char bits = x < 5 ? glyph[x] : 0;
-        for (int y = 0; y < 8; y++)
-            SCREEN[(row * 8 + y) * 256 + column * 6 + x + 1] = (bits >> y) & 1 ? color : BLACK;
-    }
-}
-
-static int textColumn, textRow;
-
-static void text(const char *s, unsigned short color) {
-    for (; *s; s++) {
-        if (textColumn >= 42) continue;
-        drawChar(textColumn++, textRow, *s, color);
-    }
-}
-
-static void hex(unsigned value, unsigned short color) {
-    static const char digits[] = "0123456789ABCDEF";
-    for (int i = 28; i >= 0; i -= 4) {
-        char s[2] = { digits[(value >> i) & 0xF], 0 };
-        text(s, color);
-    }
-}
-
-static void number(int value, unsigned short color) {
-    char s[8];
-    int n = 0;
-    do { s[n++] = '0' + value % 10; value /= 10; } while (value);
-    while (n) { char one[2] = { s[--n], 0 }; text(one, color); }
-}
-
-static void newLine(void) {
-    while (textColumn < 42) drawChar(textColumn++, textRow, ' ', WHITE);
-    textColumn = 0;
-    textRow++;
-}
-
-static void clearFrom(int row) {
-    textRow = row;
-    textColumn = 0;
-    while (textRow < 24) newLine();
-}
 
 void onTest(int cpu, int index) {
     // Say what's running, so a hang shows where it happened
@@ -206,21 +135,6 @@ static void showResults(void) {
     newLine();
 }
 
-static FILE *openSave(const char **where) {
-    // The folder the ROM started from, then the root of the DSi's SD card or a flashcart's
-    static int mounted = -1;
-    if (mounted < 0) mounted = fatInitDefault();
-    if (!mounted) return NULL;
-    static const char *const paths[] = { "noodsu-hwtest.bin", "sd:/noodsu-hwtest.bin", "fat:/noodsu-hwtest.bin" };
-    for (unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
-        FILE *file = fopen(paths[i], "wb");
-        if (!file) continue;
-        *where = paths[i];
-        return file;
-    }
-    return NULL;
-}
-
 static void put(FILE *file, unsigned value, unsigned *hash) {
     fwrite(&value, 4, 1, file);
     for (int i = 0; i < 32; i += 8) *hash = (*hash ^ ((value >> i) & 0xFF)) * 16777619u;
@@ -232,7 +146,7 @@ static void saveResults(void) {
     saved = "SAVING";
     showResults();
     const char *where;
-    FILE *file = openSave(&where);
+    FILE *file = openSave("noodsu-hwtest.bin", &where);
     if (!file) {
         saved = "NOT SAVED";
         return;
@@ -283,10 +197,7 @@ static int runArm7(unsigned command) {
 }
 
 int main(void) {
-    *(volatile unsigned*)0x04000304 = 0x8003;
-    *(volatile unsigned char*)0x04000240 = 0x80;
-    *(volatile unsigned*)0x04000000 = 0x00020000;
-    for (int i = 0; i < 256 * 192; i++) SCREEN[i] = BLACK;
+    screenInit();
     hasExpected = expected[0][0][0] != 0x4E4F4E45;
     shared = &block;
     shared->magic[0] = SHARED_MAGIC0;
