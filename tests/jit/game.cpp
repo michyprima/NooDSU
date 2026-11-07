@@ -18,13 +18,15 @@
 
 extern void (*rigSetup)(Jit &jit);
 
-// Addresses in the emulator; areas marked live are read and written through callbacks to the core's own state, so
-// nothing has to be copied between them and there's no chance of a stale value
+// Addresses in the emulator; areas marked live are read through callbacks to the core's own state, and areas marked
+// copied are the core's values in the emulator's byte order, copied in when generated code is entered or a call from it
+// returns and back when it calls or returns, which is when C++ runs, so neither side ever sees a stale value
 static const uint32_t
-    ARM_STATE = 0x10000, // Live: the interpreter, at its own offsets, with the banked register pointers after it
+    ARM_STATE = 0x10000, // Copied: the interpreter, at its own offsets, with the banked register pointers after it
     VIRT_REGS = 0x7000, VIRT_SPSR = 0x7040, // Offsets of the pointers, which are 64-bit on the Mac; displacements are 16-bit
-    EVENTS = 0x20000, EVENT_SLOT = 0x100, // Live: the event queue, pointing to a slot for the first event
-    LIMIT = 0x21000, GLOBAL = 0x22000, DTCM_REG = 0x23000, // Live
+    STATE_SIZE = 0x8000,
+    EVENTS = 0x20000, EVENT_SLOT = 0x100, // Copied: the event queue, pointing to a slot for the first event
+    LIMIT = 0x21000, GLOBAL = 0x22000, DTCM_REG = 0x23000, WORDS_SIZE = 0x4000, // Copied
     CACHE_AREA = 0x30000, CACHE = CACHE_AREA + 0x1000, // Live: the code changed flag, then the block cache
     STACK = 0x60000, STACK_TOP = 0x7FF00, END = 0x80000,
     COND_TABLE = 0x200000,
@@ -34,6 +36,9 @@ static const uint32_t
     RAM = 0x20000000, // Main RAM, shared with the core
     CORE = 0x40000000; // The whole core object, shared, for every other memory the maps point to
 
+// Memory generated code doesn't run from, which Unicorn then doesn't watch for code being written over
+static const int DATA = UC_PROT_READ | UC_PROT_WRITE;
+
 struct Engine {
     uc_engine *uc = nullptr;
     Jit *jit = nullptr;
@@ -42,6 +47,8 @@ struct Engine {
     const uint32_t *limit = nullptr; // The limit generated code was entered with
     bool running = false;
     uint8_t **readMap = nullptr, **writeMap = nullptr;
+    uint32_t *state = nullptr, *words = nullptr; // The copies, mapped at ARM_STATE and EVENTS
+    uint32_t given[sizeof(Interpreter) / 4 + 17]; // The interpreter's words and pointers as they were copied in
 };
 
 struct Handler {
@@ -100,56 +107,54 @@ static uint64_t part(uint32_t word, uint64_t offset, unsigned size) {
     return word;
 }
 
-static uint64_t readState(uc_engine*, uint64_t offset, unsigned size, void *user) {
-    // The interpreter's fields are read at their own size, which is what a big-endian host would give
-    Engine &en = *(Engine*)user;
-    if (offset >= VIRT_REGS && offset < VIRT_REGS + 64)
-        return part(emuState(en, en.arm->registers[(offset - VIRT_REGS) / 4]), offset, size);
-    if (offset == VIRT_SPSR)
-        return part(en.arm->spsr ? emuState(en, en.arm->spsr) : 0, offset, size);
-    if (offset + size > sizeof(Interpreter) || (offset & (size - 1)))
-        fatal("read of %u bytes at interpreter offset %llX", size, (unsigned long long)offset);
-    uint8_t *field = (uint8_t*)en.arm + offset;
-    return (size == 4) ? *(uint32_t*)field : (size == 2) ? *(uint16_t*)field : *field;
+// Where the interpreter's words are in the copy: the pointers after it, and its only field read by the byte
+static const uint32_t VIRT_WORD = VIRT_REGS / 4, DSI_CYCLE = offsetof(Interpreter, dsiCycle);
+static const uint32_t WORD_EVENT = 0, WORD_SLOT = (EVENT_SLOT + offsetof(SchedEvent, cycles)) / 4, WORD_LIMIT = (LIMIT - EVENTS) / 4,
+    WORD_GLOBAL = (GLOBAL - EVENTS) / 4, WORD_DTCM = (DTCM_REG - EVENTS) / 4;
+
+static void copyIn(Engine &en) {
+    // Copy the core's values for generated code, the interpreter's words as a big-endian host would read them
+    const uint32_t *arm = (const uint32_t*)en.arm;
+    for (size_t i = 0; i < sizeof(Interpreter) / 4; i++)
+        en.state[i] = swap32(arm[i]);
+    ((uint8_t*)en.state)[DSI_CYCLE] = en.arm->dsiCycle;
+    for (int r = 0; r < 16; r++)
+        en.state[VIRT_WORD + r] = swap32(emuState(en, en.arm->registers[r]));
+    en.state[VIRT_WORD + 16] = swap32(en.arm->spsr ? emuState(en, en.arm->spsr) : 0);
+    memcpy(en.given, en.state, sizeof(Interpreter));
+    memcpy(&en.given[sizeof(Interpreter) / 4], &en.state[VIRT_WORD], 17 * 4);
+    en.words[WORD_EVENT] = swap32(EVENTS + EVENT_SLOT);
+    en.words[WORD_SLOT] = swap32(core->events[0].cycles);
+    en.words[WORD_LIMIT] = swap32(*en.limit);
+    en.words[WORD_GLOBAL] = swap32(core->globalCycles);
+    en.words[WORD_DTCM] = swap32(core->cp15.dtcmReg);
 }
 
-static void writeState(uc_engine*, uint64_t offset, unsigned size, uint64_t value, void *user) {
-    Engine &en = *(Engine*)user;
-    if (offset + size > sizeof(Interpreter) || (offset & (size - 1)))
-        fatal("write of %u bytes at interpreter offset %llX", size, (unsigned long long)offset);
-    uint8_t *field = (uint8_t*)en.arm + offset;
-    if (size == 4) *(uint32_t*)field = value;
-    else if (size == 2) *(uint16_t*)field = value;
-    else *field = value;
-}
-
-static uint64_t readEvents(uc_engine*, uint64_t offset, unsigned size, void*) {
-    uint32_t cycles = EVENT_SLOT + offsetof(SchedEvent, cycles);
-    if (offset == 0) return part(EVENTS + EVENT_SLOT, offset, size);
-    if ((offset & ~3) == cycles) return part(core->events[0].cycles, offset, size);
-    fatal("read of event offset %llX", (unsigned long long)offset);
-    return 0;
-}
-
-static uint64_t readLimit(uc_engine*, uint64_t offset, unsigned size, void *user) {
-    Engine &en = *(Engine*)user;
-    if (offset & ~3) fatal("read of limit offset %llX", (unsigned long long)offset);
-    return part(*en.limit, offset, size);
-}
-
-static uint64_t readGlobal(uc_engine*, uint64_t offset, unsigned size, void*) {
-    if (offset & ~3) fatal("read of global cycles offset %llX", (unsigned long long)offset);
-    return part(core->globalCycles, offset, size);
-}
-
-static void writeGlobal(uc_engine*, uint64_t offset, unsigned size, uint64_t value, void*) {
-    if (offset || size != 4) fatal("write of %u bytes at global cycles offset %llX", size, (unsigned long long)offset);
-    core->globalCycles = value;
-}
-
-static uint64_t readDtcm(uc_engine*, uint64_t offset, unsigned size, void*) {
-    if (offset & ~3) fatal("read of DTCM register offset %llX", (unsigned long long)offset);
-    return part(core->cp15.dtcmReg, offset, size);
+static void copyOut(Engine &en) {
+    // Copy back what generated code changed, which may only be the registers, flags and cycle counts
+    uint32_t *arm = (uint32_t*)en.arm;
+    const uint32_t usr = offsetof(Interpreter, registersUsr), cpsr = offsetof(Interpreter, cpsr);
+    const uint32_t spsrs = offsetof(Interpreter, spsrFiq), cycles = offsetof(Interpreter, cycles);
+    for (uint32_t i = 0; i < sizeof(Interpreter) / 4; i++) {
+        if (en.state[i] == en.given[i]) continue;
+        uint32_t offset = i * 4;
+        if (offset == (DSI_CYCLE & ~3)) {
+            // Only the byte it's read by may change, since the word holds other fields too
+            if ((swap32(en.state[i]) & 0x00FFFFFF) != (swap32(en.given[i]) & 0x00FFFFFF))
+                fatal("write to the interpreter at offset %X", offset);
+            en.arm->dsiCycle = ((uint8_t*)en.state)[DSI_CYCLE];
+            continue;
+        }
+        if ((offset < usr || offset > cpsr) && (offset < spsrs || offset > cycles))
+            fatal("write to the interpreter at offset %X", offset);
+        arm[i] = swap32(en.state[i]);
+    }
+    if (memcmp(&en.state[VIRT_WORD], &en.given[sizeof(Interpreter) / 4], 17 * 4))
+        fatal("write to the interpreter's pointers");
+    if (en.words[WORD_EVENT] != swap32(EVENTS + EVENT_SLOT) || en.words[WORD_SLOT] != swap32(core->events[0].cycles) ||
+        en.words[WORD_LIMIT] != swap32(*en.limit) || en.words[WORD_DTCM] != swap32(core->cp15.dtcmReg))
+        fatal("write to the event queue, the limit or the DTCM register");
+    core->globalCycles = swap32(en.words[WORD_GLOBAL]);
 }
 
 static uint64_t readCache(uc_engine*, uint64_t offset, unsigned size, void *user) {
@@ -175,13 +180,16 @@ static void writeFixed(uc_engine*, uint64_t offset, unsigned, uint64_t, void *us
 }
 
 static void clobberVolatile(uc_engine *uc, bool keepR3) {
-    // The ABI lets C++ change these, so generated code can't be relying on them
-    for (int i = keepR3 ? 4 : 3; i <= 12; i++)
-        setReg(uc, UC_PPC_REG_0 + i, 0xDEAD0000 + i);
-    setReg(uc, UC_PPC_REG_0, 0xDEAD0000);
-    setReg(uc, UC_PPC_REG_CTR, 0xDEAD1000);
-    setReg(uc, UC_PPC_REG_CR, 0x20000000);
-    setReg(uc, UC_PPC_REG_XER, 0);
+    // The ABI lets C++ change these, so generated code can't be relying on them; r3 comes first, so it can be left out
+    static const int regs[] = { UC_PPC_REG_3, UC_PPC_REG_4, UC_PPC_REG_5, UC_PPC_REG_6, UC_PPC_REG_7, UC_PPC_REG_8,
+        UC_PPC_REG_9, UC_PPC_REG_10, UC_PPC_REG_11, UC_PPC_REG_12, UC_PPC_REG_0, UC_PPC_REG_CTR, UC_PPC_REG_CR, UC_PPC_REG_XER };
+    static const uint32_t values[] = { 0xDEAD0003, 0xDEAD0004, 0xDEAD0005, 0xDEAD0006, 0xDEAD0007, 0xDEAD0008, 0xDEAD0009,
+        0xDEAD000A, 0xDEAD000B, 0xDEAD000C, 0xDEAD0000, 0xDEAD1000, 0x20000000, 0 };
+    static void *const pointers[] = { (void*)&values[0], (void*)&values[1], (void*)&values[2], (void*)&values[3],
+        (void*)&values[4], (void*)&values[5], (void*)&values[6], (void*)&values[7], (void*)&values[8], (void*)&values[9],
+        (void*)&values[10], (void*)&values[11], (void*)&values[12], (void*)&values[13] };
+    int skip = keepR3 ? 1 : 0;
+    uc_reg_write_batch(uc, regs + skip, pointers + skip, 14 - skip);
 }
 
 static void hookCall(uc_engine *uc, uint64_t address, uint32_t, void *user) {
@@ -191,6 +199,7 @@ static void hookCall(uc_engine *uc, uint64_t address, uint32_t, void *user) {
     uint32_t result = 0;
     bool keepR3 = true;
     calls++;
+    copyOut(en);
     if (address >= FAKE_HANDLERS && address < FAKE) {
         size_t index = (address - FAKE_HANDLERS) / 4;
         if (index >= handlers.size() || (address & 3)) fatal("call to unknown handler %llX", (unsigned long long)address);
@@ -237,6 +246,7 @@ static void hookCall(uc_engine *uc, uint64_t address, uint32_t, void *user) {
     else {
         fatal("call to %llX", (unsigned long long)address);
     }
+    copyIn(en);
     clobberVolatile(uc, keepR3);
     if (keepR3) setReg(uc, UC_PPC_REG_3, result);
 }
@@ -280,7 +290,7 @@ static void mapRam() {
     if (mem.ram == ramMapped && mem.ramSize == ramMappedSize) return;
     for (Engine &en: engines) {
         if (ramMapped) uc_mem_unmap(en.uc, RAM, ramMappedSize);
-        if (uc_mem_map_ptr(en.uc, RAM, mem.ramSize, UC_PROT_ALL, mem.ram) != UC_ERR_OK) fatal("couldn't map main RAM");
+        if (uc_mem_map_ptr(en.uc, RAM, mem.ramSize, DATA, mem.ram) != UC_ERR_OK) fatal("couldn't map main RAM");
     }
     ramMapped = mem.ram;
     ramMappedSize = mem.ramSize;
@@ -303,7 +313,9 @@ void rigEnter(Jit &jit, const uint32_t *limit, void *code) {
     setReg(uc, UC_PPC_REG_7, GLOBAL);
     setReg(uc, UC_PPC_REG_8, CACHE);
     setReg(uc, UC_PPC_REG_LR, END);
+    copyIn(en);
     uc_err err = uc_emu_start(uc, emuCode(jit.codeEnter), END, 0, 0);
+    copyOut(en);
     uint32_t pc = reg(uc, UC_PPC_REG_PC);
     if (err != UC_ERR_OK || pc != END) {
         uint32_t op = 0;
@@ -344,21 +356,21 @@ static void startEngine(Engine &en, bool arm7) {
     if (uc_open(UC_ARCH_PPC, uc_mode(UC_MODE_PPC32 | UC_MODE_BIG_ENDIAN), &en.uc) != UC_ERR_OK) fatal("couldn't start Unicorn");
     uc_engine *uc = en.uc;
     uc_ctl_set_cpu_model(uc, UC_CPU_PPC32_750_V3_1);
-    static const char *names[] = { "the interpreter's pointers", "the event queue", "the limit", "the DTCM register",
-        "the block cache", "a memory map" };
-    bool ok = uc_mmio_map(uc, ARM_STATE, 0x10000, readState, &en, writeState, &en) == UC_ERR_OK &&
-        uc_mmio_map(uc, EVENTS, 0x1000, readEvents, nullptr, writeFixed, (void*)names[1]) == UC_ERR_OK &&
-        uc_mmio_map(uc, LIMIT, 0x1000, readLimit, &en, writeFixed, (void*)names[2]) == UC_ERR_OK &&
-        uc_mmio_map(uc, GLOBAL, 0x1000, readGlobal, nullptr, writeGlobal, nullptr) == UC_ERR_OK &&
-        uc_mmio_map(uc, DTCM_REG, 0x1000, readDtcm, nullptr, writeFixed, (void*)names[3]) == UC_ERR_OK &&
-        uc_mmio_map(uc, CACHE_AREA, 0x11000, readCache, &en, writeFixed, (void*)names[4]) == UC_ERR_OK &&
-        uc_mmio_map(uc, READ_MAP, 0x400000, readMap, en.readMap, writeFixed, (void*)names[5]) == UC_ERR_OK &&
-        uc_mmio_map(uc, WRITE_MAP, 0x400000, readMap, en.writeMap, writeFixed, (void*)names[5]) == UC_ERR_OK &&
-        uc_mem_map(uc, STACK, END + 0x1000 - STACK, UC_PROT_ALL) == UC_ERR_OK &&
-        uc_mem_map(uc, COND_TABLE, 0x1000, UC_PROT_ALL) == UC_ERR_OK &&
+    static const char *names[] = { "the block cache", "a memory map" };
+    if (posix_memalign((void**)&en.state, 0x1000, STATE_SIZE) || posix_memalign((void**)&en.words, 0x1000, WORDS_SIZE))
+        fatal("couldn't allocate the copies of the core's state");
+    memset(en.state, 0, STATE_SIZE);
+    memset(en.words, 0, WORDS_SIZE);
+    bool ok = uc_mem_map_ptr(uc, ARM_STATE, STATE_SIZE, DATA, en.state) == UC_ERR_OK &&
+        uc_mem_map_ptr(uc, EVENTS, WORDS_SIZE, DATA, en.words) == UC_ERR_OK &&
+        uc_mmio_map(uc, CACHE_AREA, 0x11000, readCache, &en, writeFixed, (void*)names[0]) == UC_ERR_OK &&
+        uc_mmio_map(uc, READ_MAP, 0x400000, readMap, en.readMap, writeFixed, (void*)names[1]) == UC_ERR_OK &&
+        uc_mmio_map(uc, WRITE_MAP, 0x400000, readMap, en.writeMap, writeFixed, (void*)names[1]) == UC_ERR_OK &&
+        uc_mem_map(uc, STACK, END + 0x1000 - STACK, DATA) == UC_ERR_OK &&
+        uc_mem_map(uc, COND_TABLE, 0x1000, DATA) == UC_ERR_OK &&
         uc_mem_map(uc, FAKE_HANDLERS, FAKE_INTERLEAVE + 0x1000 - FAKE_HANDLERS, UC_PROT_ALL) == UC_ERR_OK &&
         uc_mem_map(uc, CODE, CODE_SIZE, UC_PROT_ALL) == UC_ERR_OK &&
-        uc_mem_map_ptr(uc, CORE, coreSize, UC_PROT_ALL, core) == UC_ERR_OK;
+        uc_mem_map_ptr(uc, CORE, coreSize, DATA, core) == UC_ERR_OK;
     if (!ok) fatal("couldn't set up the emulator's memory");
     uc_mem_write(uc, COND_TABLE, Interpreter::condition, 256);
     std::vector<uint32_t> blr((FAKE_INTERLEAVE + 0x1000 - FAKE_HANDLERS) / 4, swap32(0x4E800020));

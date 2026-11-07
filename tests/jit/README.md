@@ -77,10 +77,14 @@ It builds in `$TMPDIR/noodsu-jit-test-game`, and leaves each run's output in a `
 Fast timing lets generated code count cycles in batches, so its runs differ from the interpreter's by design; it can still be
 run alone to see that a game works. With exact timing, any difference is a bug.
 
-The emulator reads the core's own state while generated code runs, rather than a copy: the interpreter, the scheduler, the
-block cache and the memory maps are areas whose reads and writes go to the core, with the 64-bit pointers in them turned
-into the emulator's 32-bit addresses. Main RAM and the core object are mapped into the emulator directly, so memory the maps
-point to is shared; anywhere else gets a null pointer, which sends accesses through the slow path. Calls from generated code
+The emulator works on the core's own state while generated code runs. The block cache and the memory maps are areas whose
+reads go to the core, with the 64-bit pointers in them turned into the emulator's 32-bit addresses. The interpreter and the
+scheduler's values are read and written far more often, so they're copied into the emulator in its byte order when generated
+code is entered or a call from it returns, and copied back when it calls or returns, which is the only time C++ runs; a
+write anywhere generated code shouldn't write stops the run. Main RAM and the core object are mapped into the emulator
+directly, so memory the maps point to is shared; anywhere else gets a null pointer, which sends accesses through the slow
+path. Memory generated code doesn't run from is mapped without execute permission, so Unicorn doesn't check writes to it
+for code being written over. Calls from generated code
 to C++, like interpreter handlers and the interleave helper, run for real. Each CPU has its own emulator, since ARM7 code
 can run during a stop in ARM9 code.
 
