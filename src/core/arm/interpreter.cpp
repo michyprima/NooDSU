@@ -124,11 +124,12 @@ void Interpreter::runCoreNone(Core &core) {
     }
 }
 
+template void Interpreter::runCoreSingle<false, -1>(Core &core);
 template void Interpreter::runCoreSingle<false, 0>(Core &core);
 template void Interpreter::runCoreSingle<true, 0>(Core &core);
 template void Interpreter::runCoreSingle<true, 1>(Core &core);
 template <bool _arm7, int shift> void Interpreter::runCoreSingle(Core &core) {
-    // Run the core with one active CPU
+    // Run the core with one active CPU, its cycles shifted left, or halved for the DSi's ARM9 with a shift of -1
     Interpreter &arm = core.interpreter[_arm7];
     static const uint32_t noLimit = 0xFFFFFFFF;
     while (core.running.exchange(true)) {
@@ -140,7 +141,7 @@ template <bool _arm7, int shift> void Interpreter::runCoreSingle(Core &core) {
         if (arm.pipelineStale) arm.refillPipeline();
 
         while (core.events[0].cycles > arm.cycles) {
-            // Run compiled code if possible, falling back to the interpreter; the ARM7 only has it in NDS mode
+            // Run compiled code if possible, falling back to the interpreter; the ARM7 doesn't have it in GBA mode
             // Blocks leave the global cycles at the start of their last instruction, so catch up after
             Jit &jit = _arm7 ? core.jit7 : core.jit;
             if ((!_arm7 || shift) && jit.enabled) {
@@ -150,7 +151,8 @@ template <bool _arm7, int shift> void Interpreter::runCoreSingle(Core &core) {
                 }
                 if (arm.pipelineStale) arm.refillPipeline();
             }
-            arm.cycles = (core.globalCycles += arm.runOpcode() << shift);
+            int cycles = arm.runOpcode();
+            arm.cycles = (core.globalCycles += (shift < 0) ? arm.dsiCycles(cycles) : (cycles << (shift & 1)));
             if (!_arm7) EP_INC(EC_INTERP9);
         }
         EP_ADD(_arm7 ? EP_ARM7 : EP_ARM9, cpu);
@@ -166,11 +168,13 @@ template <bool _arm7, int shift> void Interpreter::runCoreSingle(Core &core) {
     }
 }
 
-void Interpreter::runCoreNds(Core &core) {
-    // Run the core with both CPUs active in NDS mode, switching between them every instruction unless timing
-    // is allowed to be less exact
+template void Interpreter::runCoreNds<false>(Core &core);
+template void Interpreter::runCoreNds<true>(Core &core);
+template <bool dsi> void Interpreter::runCoreNds(Core &core) {
+    // Run the core with both CPUs active, switching between them every instruction unless timing is allowed to be
+    // less exact; in DSi mode, the ARM9 runs twice as fast
     if (Settings::fastTiming)
-        return runCoreNdsFast(core);
+        return runCoreNdsFast<dsi>(core);
     Interpreter &arm9 = core.interpreter[0];
     Interpreter &arm7 = core.interpreter[1];
     while (core.running.exchange(true)) {
@@ -182,7 +186,8 @@ void Interpreter::runCoreNds(Core &core) {
             if (core.globalCycles >= arm9.cycles) {
                 if (core.jit.enabled && core.jit.run(&arm7.cycles)) continue;
                 if (arm9.pipelineStale) arm9.refillPipeline();
-                arm9.cycles = core.globalCycles + arm9.runOpcode();
+                int cycles = arm9.runOpcode();
+                arm9.cycles = core.globalCycles + (dsi ? arm9.dsiCycles(cycles) : cycles);
                 EP_INC(EC_INTERP9);
             }
             if (core.globalCycles >= arm7.cycles) {
@@ -205,8 +210,8 @@ void Interpreter::runCoreNds(Core &core) {
     }
 }
 
-void Interpreter::runCoreNdsFast(Core &core) {
-    // Run the core with both CPUs active in NDS mode, letting the ARM9 run ahead of the ARM7 by up to a slice
+template <bool dsi> void Interpreter::runCoreNdsFast(Core &core) {
+    // Run the core with both CPUs active, letting the ARM9 run ahead of the ARM7 by up to a slice
     // The ARM9 still stops at scheduled tasks, so only the ARM7 is behind, and it catches up from its own time
     // This switches between the CPUs much less often, at the cost of timing between them being less exact
     Interpreter &arm9 = core.interpreter[0];
@@ -227,7 +232,8 @@ void Interpreter::runCoreNdsFast(Core &core) {
                 core.sliceLimit = arm7.cycles + Core::FAST_SLICE;
                 if (core.jit.enabled && core.jit.run(&core.sliceLimit)) continue;
                 if (arm9.pipelineStale) arm9.refillPipeline();
-                uint32_t next = core.globalCycles + arm9.runOpcode();
+                int cycles = arm9.runOpcode();
+                uint32_t next = core.globalCycles + (dsi ? arm9.dsiCycles(cycles) : cycles);
                 EP_INC(EC_INTERP9);
                 arm9.cycles = next;
                 if (next <= core.sliceLimit && next < core.events[0].cycles) {
@@ -294,35 +300,6 @@ bool Interpreter::runArm7UntilArm9(Core &core) {
         if (core.events[0].cycles <= core.globalCycles) return false;
         if (core.globalCycles >= arm9.cycles) return true;
         stepArm7(core);
-    }
-}
-
-void Interpreter::runCoreDsi(Core &core) {
-    // Run the core in DSi mode
-    Interpreter &arm9 = core.interpreter[0];
-    Interpreter &arm7 = core.interpreter[1];
-    while (core.running.exchange(true)) {
-        // Run both CPUs until the next scheduled task
-        while (core.events[0].cycles > core.globalCycles) {
-            // Run the ARM9 twice as fast as usual
-            if (core.globalCycles >= arm9.cycles) {
-                int cycles = arm9.runOpcode() + arm9.dsiCycle;
-                arm9.cycles = core.globalCycles + (cycles >> 1);
-                arm9.dsiCycle = (cycles & 0x1);
-            }
-
-            // Run the ARM7 at half speed and advance to the next opcode cycle
-            if (core.globalCycles >= arm7.cycles)
-                arm7.cycles = core.globalCycles + (arm7.runOpcode() << 1);
-            core.globalCycles = std::min<uint32_t>(arm9.cycles, arm7.cycles);
-        }
-
-        // Jump to the next task and run all that are scheduled now
-        core.globalCycles = core.events[0].cycles;
-        while (core.events[0].cycles <= core.globalCycles) {
-            EP_TASK(core);
-            core.events.popFront();
-        }
     }
 }
 

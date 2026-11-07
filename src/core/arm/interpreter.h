@@ -49,9 +49,8 @@ public:
 
     static void runCoreNone(Core &core);
     template <bool, int> static void runCoreSingle(Core &core);
-    static void runCoreNds(Core &core);
-    static void runCoreNdsFast(Core &core);
-    static void runCoreDsi(Core &core);
+    template <bool dsi> static void runCoreNds(Core &core);
+    template <bool dsi> static void runCoreNdsFast(Core &core);
     static bool runArm7UntilArm9(Core &core);
     static bool runArm7Behind(Core &core);
     static void stepArm7(Core &core);
@@ -113,6 +112,12 @@ private:
     static const uint8_t bitCount[0x100];
 
     int runOpcode();
+    int dsiCycles(int cycles) {
+        // The DSi's ARM9 runs twice as fast, so each cycle counts as half, with an odd half kept for the next instruction
+        cycles += dsiCycle;
+        dsiCycle = cycles & 0x1;
+        return cycles >> 1;
+    }
     int exception(uint8_t vector);
     void flushPipeline();
     void refillPipeline();
