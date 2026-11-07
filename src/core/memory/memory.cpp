@@ -2704,8 +2704,10 @@ void Memory::writeScfgExt9(uint32_t mask, uint32_t value) {
     scfgExt[1] = (scfgExt[1] & ~(mask & 0x00003080)) | (value & mask & 0x00003080);
 
     // The DSi's launcher limits RAM for a DS title while it still needs all of it, until its last handshake with the
-    // ARM7; like melonDS, recognize it by where it does that and wait for the handshake
-    if (core->interpreter[0].getPC() == 0x23FEED0 && core->ipc.readIpcSync(0) == 0x0505)
+    // ARM7; like melonDS, recognize it by where it does that and wait for the handshake. That's its last bit of code at
+    // 0x23FEE00, which is all that's checked, since the JIT only keeps the program counter at the start of each block
+    uint32_t pc = core->interpreter[0].getPC();
+    if (pc >= 0x23FEE00 && pc < 0x23FF000 && core->ipc.readIpcSync(0) == 0x0505)
         ramPending = true;
     else
         updateRamSize();
