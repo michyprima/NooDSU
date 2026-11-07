@@ -1628,6 +1628,7 @@ template <typename T> T Memory::ioRead7(uint32_t address) {
                 DEF_IO16(0x4004A36, data = core->sdio.readCardIrqStatus()) // SDIO_CARD_IRQ_STATUS
                 DEF_IO16(0x4004A38, data = core->sdio.readCardIrqMask()) // SDIO_CARD_IRQ_MASK
                 DEF_IO16(0x4004AD8, data = core->sdio.readDataCtl()) // SDIO_DATA_CTL
+                DEF_IO16(0x4004AE0, data = core->sdio.readSoftReset()) // SDIO_SOFT_RESET
                 DEF_IO16(0x4004B00, data = core->sdio.readData32Irq()) // SDIO_DATA32_IRQ
                 DEF_IO16(0x4004B04, data = core->sdio.readData32Blklen()) // SDIO_DATA32_BLKLEN
                 DEF_IO32(0x4004B0C, data = core->sdio.readData32Fifo()) // SDIO_DATA32_FIFO
@@ -2440,6 +2441,7 @@ template <typename T> void Memory::ioWrite7(uint32_t address, T value) {
                 DEF_IO16(0x4004A36, core->sdio.writeCardIrqStatus(IOWR_PARAMS)) // SDIO_CARD_IRQ_STATUS
                 DEF_IO16(0x4004A38, core->sdio.writeCardIrqMask(IOWR_PARAMS)) // SDIO_CARD_IRQ_MASK
                 DEF_IO16(0x4004AD8, core->sdio.writeDataCtl(IOWR_PARAMS)) // SDIO_DATA_CTL
+                DEF_IO16(0x4004AE0, core->sdio.writeSoftReset(IOWR_PARAMS)) // SDIO_SOFT_RESET
                 DEF_IO16(0x4004B00, core->sdio.writeData32Irq(IOWR_PARAMS)) // SDIO_DATA32_IRQ
                 DEF_IO16(0x4004B04, core->sdio.writeData32Blklen(IOWR_PARAMS)) // SDIO_DATA32_BLKLEN
                 DEF_IO32(0x4004B0C, core->sdio.writeData32Fifo(IOWR_PARAMS)) // SDIO_DATA32_FIFO

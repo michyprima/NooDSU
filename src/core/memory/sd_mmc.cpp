@@ -53,6 +53,7 @@ void SdMmc::saveState(FILE *file) {
     fwrite(&sdCardIrqCtl, sizeof(sdCardIrqCtl), 1, file);
     fwrite(&sdCardIrqStatus, sizeof(sdCardIrqStatus), 1, file);
     fwrite(&sdCardIrqMask, sizeof(sdCardIrqMask), 1, file);
+    fwrite(&sdSoftReset, sizeof(sdSoftReset), 1, file);
     SaveStates::writeFifo(dataFifo16, file);
     SaveStates::writeFifo(dataFifo32, file);
 }
@@ -82,6 +83,7 @@ void SdMmc::loadState(FILE *file) {
     fread(&sdCardIrqCtl, sizeof(sdCardIrqCtl), 1, file);
     fread(&sdCardIrqStatus, sizeof(sdCardIrqStatus), 1, file);
     fread(&sdCardIrqMask, sizeof(sdCardIrqMask), 1, file);
+    fread(&sdSoftReset, sizeof(sdSoftReset), 1, file);
     SaveStates::readFifo(dataFifo16, file);
     SaveStates::readFifo(dataFifo32, file);
 }
@@ -634,5 +636,17 @@ void SdMmc::updateCardIrq() {
     if (!old && (sdCardIrqStatus & ~sdCardIrqMask)) {
         core->interpreter[1].sendInterrupt(irqBit());
         core->interpreter[1].sendInterrupt(irqBit() + 1);
+    }
+}
+
+void SdMmc::writeSoftReset(uint16_t mask, uint16_t value) {
+    // Write to the SD_SOFT_RESET register, where clearing bit 0 resets the card; the system does this to start the
+    // Wi-Fi chip over, like after using the DS Wi-Fi hardware
+    mask &= 0x0001;
+    bool reset = (sdSoftReset & ~value & mask & BIT(0));
+    sdSoftReset = (sdSoftReset & ~mask) | (value & mask);
+    if (reset && sdio) {
+        core->dsiWifi.reset();
+        updateCardIrq();
     }
 }

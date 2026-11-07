@@ -54,6 +54,7 @@ public:
     uint16_t readCardIrqCtl() { return sdCardIrqCtl; }
     uint16_t readCardIrqStatus() { return sdCardIrqStatus; }
     uint16_t readCardIrqMask() { return sdCardIrqMask; }
+    uint16_t readSoftReset() { return sdSoftReset; }
 
     void writeCmd(uint16_t mask, uint16_t value);
     void writePortSelect(uint16_t mask, uint16_t value);
@@ -70,6 +71,7 @@ public:
     void writeCardIrqCtl(uint16_t mask, uint16_t value);
     void writeCardIrqStatus(uint16_t mask, uint16_t value);
     void writeCardIrqMask(uint16_t mask, uint16_t value);
+    void writeSoftReset(uint16_t mask, uint16_t value);
     void updateCardIrq();
 
 private:
@@ -106,6 +108,7 @@ private:
     uint16_t sdCardIrqCtl = 0;
     uint16_t sdCardIrqStatus = 0;
     uint16_t sdCardIrqMask = 0xC007;
+    uint16_t sdSoftReset = 0x0007;
 
     uint32_t consoleId[0x2] = {};
     uint32_t mmcCid[0x4] = {};
