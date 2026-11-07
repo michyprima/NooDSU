@@ -86,6 +86,12 @@ int HleBios::execute(uint8_t vector, uint32_t **registers) {
         // Let the interpreter handle HLE interrupts
         return core->interpreter[arm7].handleHleIrq();
 
+    case 0x04: // Undefined instruction
+        // There's no handler to run, so adjust the PC back and carry on after the instruction
+        LOG_CRIT("Undefined instruction on ARM%d with HLE BIOS\n", arm7 ? 7 : 9);
+        *registers[15] += 4;
+        return 1;
+
     default:
         LOG_CRIT("Unimplemented ARM%d BIOS vector: 0x%02X\n", (arm7 ? 7 : 9), vector);
         return 3;

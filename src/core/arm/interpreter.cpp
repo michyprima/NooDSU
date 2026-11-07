@@ -591,6 +591,12 @@ int Interpreter::finishHleIrq() {
     return 3;
 }
 
+int Interpreter::undefined() {
+    // Take the undefined instruction exception, returning to the instruction after this ARM one
+    *registers[15] -= 4;
+    return exception(0x04);
+}
+
 int Interpreter::unkArm(uint32_t opcode) {
     // Handle an unknown ARM opcode
     LOG_CRIT("Unknown ARM%d ARM opcode: 0x%X\n", arm7 ? 7 : 9, opcode);

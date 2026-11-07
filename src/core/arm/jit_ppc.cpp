@@ -847,8 +847,8 @@ static int nativeKind(uint32_t op, bool arm7) {
     }
     if ((op & 0x0E000000) == 0x0A000000) // B/BL
         return NK_BRANCH;
-    if ((op & 0x0F000010) == 0x0E000010) { // MCR/MRC, which the ARM7 ignores
-        if (arm7) return NK_NONE;
+    if ((op & 0x0F000010) == 0x0E000010) { // MCR/MRC, undefined on the ARM7 and for coprocessors other than CP15
+        if (arm7 || ((op >> 8) & 0xF) != 15) return NK_NONE;
         if (cacheControl(op)) return NK_COPROCESSOR;
         return ((op & 0x0F1F00FF) == 0x0E190011 && rd != 15) ? NK_COPROCESSOR : NK_NONE;
     }

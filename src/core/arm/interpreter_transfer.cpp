@@ -1148,19 +1148,23 @@ int Interpreter::mrsRs(uint32_t opcode) { // MRS Rd,SPSR
 }
 
 int Interpreter::mrc(uint32_t opcode) { // MRC Pn,<cpopc>,Rd,Cn,Cm,<cp>
-    // Read from a CP15 register
-    if (arm7) return 1; // ARM9 exclusive
-    uint32_t *op2 = registers[(opcode >> 12) & 0xF];
+    // Read from a CP15 register; the ARM7 has no coprocessors and the ARM9 only has CP15, so anything else is undefined
+    // Reading into the program counter sets the condition flags from the value's top bits instead, like on a real DSi
+    if (arm7 || ((opcode >> 8) & 0xF) != 15) return undefined();
     uint8_t op3 = (opcode >> 16) & 0xF;
     uint8_t op4 = opcode & 0xF;
     uint8_t op5 = (opcode >> 5) & 0x7;
-    *op2 = core->cp15.read(op3, op4, op5);
+    uint32_t value = core->cp15.read(op3, op4, op5);
+    if (((opcode >> 12) & 0xF) == 15)
+        cpsr = (cpsr & ~0xF0000000) | (value & 0xF0000000);
+    else
+        *registers[(opcode >> 12) & 0xF] = value;
     return 1;
 }
 
 int Interpreter::mcr(uint32_t opcode) { // MCR Pn,<cpopc>,Rd,Cn,Cm,<cp>
-    // Write to a CP15 register
-    if (arm7) return 1; // ARM9 exclusive
+    // Write to a CP15 register, or take the undefined instruction exception like MRC
+    if (arm7 || ((opcode >> 8) & 0xF) != 15) return undefined();
     uint32_t op2 = *registers[(opcode >> 12) & 0xF];
     uint8_t op3 = (opcode >> 16) & 0xF;
     uint8_t op4 = opcode & 0xF;
