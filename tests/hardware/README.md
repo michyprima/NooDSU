@@ -40,8 +40,8 @@ test that causes a CPU exception shows `DEADDEAD` in word 3, with the mode and r
 ## The shared WRAM test
 
 `build/noodsu-wram.nds` is a second ROM, for a DSi in DSi mode. It settles what the top byte of MBK9 does, which nothing
-documents: cart headers set it with WRAMCNT, and the DSi menu sets it to 0xFC, then needs part of shared WRAM on each CPU
-after giving it all to the ARM7. NooDS U takes each bit to lock a 4KB block of shared WRAM with the CPU that had it.
+documents: cart headers set it with WRAMCNT, and the DSi menu sets it to 0xFC. On a DSi it reads back as 0 and does
+nothing, and every block follows WRAMCNT as on a DS, which is what NooDS U does.
 
 It runs by itself and saves `noodsu-wramtest.bin` like the other ROM. To see what it found, and how that compares with
 NooDS U:
