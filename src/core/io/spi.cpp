@@ -339,10 +339,11 @@ void Spi::clearTouch() {
 }
 
 void Spi::writeTscDsi(uint8_t value) {
-    // Handle the DSi touchscreen controller: the first byte picks a register and whether to read it, then each byte
-    // reads or writes one, moving to the next
+    // Handle the DSi touchscreen controller: the first byte picks a register and whether to read it, sending back 0,
+    // then each byte reads or writes one, moving to the next
     if (writeCount == 0) {
         tscIndex = value;
+        spiData = 0;
         return;
     }
 
