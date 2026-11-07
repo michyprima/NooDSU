@@ -51,6 +51,9 @@ build again. On the Mac, `tests/jit/game.sh` gets them:
 tests/jit/game.sh tests/hardware/build/noodsu-test.nds <system files folder> 600 --modes interp start=30 results=results.bin
 ```
 
+Get them in the mode the ROM will run in on the console, adding `dsi` to that for a DSi in DSi mode. Tests that cause an
+exception record a return address in the BIOS's handler, which differs between the DS and DSi BIOS.
+
 ## What it doesn't test
 
 Things that would need a way back from jumping somewhere unknown: `MUL`, `LDRH` or `LDRD` with the PC as the destination, `LDM`
