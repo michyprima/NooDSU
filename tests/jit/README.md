@@ -79,4 +79,5 @@ to C++, like interpreter handlers and the interleave helper, run for real. Each 
 can run during a stop in ARM9 code.
 
 Mario Kart DS with `press=40` reaches a race by about frame 1500, and DSi mode with no ROM and `touch=97 press=61` gets past
-the health and safety screen. With generated code in Unicorn, these run at 15 to 35 frames a second.
+the health and safety screen. Pokemon Black 2 in DSi mode with `press=37` names the rival by frame 4400. With generated
+code in Unicorn, these run at 10 to 35 frames a second.
