@@ -129,6 +129,7 @@ void Memory::saveState(FILE *file) {
         fwrite(mbk7, 4, sizeof(mbk7) / 4, file);
         fwrite(mbk8, 4, sizeof(mbk8) / 4, file);
         fwrite(&mbk9, sizeof(mbk9), 1, file);
+        fwrite(scfgExt, 4, sizeof(scfgExt) / 4, file);
     }
 }
 
@@ -188,6 +189,7 @@ void Memory::loadState(FILE *file) {
         fread(mbk7, 4, sizeof(mbk7) / 4, file);
         fread(mbk8, 4, sizeof(mbk8) / 4, file);
         fread(&mbk9, sizeof(mbk9), 1, file);
+        fread(scfgExt, 4, sizeof(scfgExt) / 4, file);
     }
 
     // Update mapped memory
@@ -1254,9 +1256,16 @@ template <typename T> T Memory::ioRead9(uint32_t address) {
 
         // Check registers exclusive to DSi mode
         if (core->dsiMode) {
+            // The SCFG and MBK registers read as 0 once the ARM9 loses access to them
+            if (base >= 0x4004000 && base < 0x4004064 && !(scfgExt[0] & BIT(31))) {
+                base = 0;
+                size = 1;
+                data = 0;
+                goto next;
+            }
             switch (base) {
                 DEF_IO32(0x4004000, data = 0x1) // SCFG_A9ROM (stub)
-                DEF_IO32(0x4004008, data = 0x80008000) // SCFG_EXT9 (stub)
+                DEF_IO32(0x4004008, data = readScfgExt(0)) // SCFG_EXT9
                 DEF_IO08(0x4004040, data = readMbk1(0)) // MBK1.0
                 DEF_IO08(0x4004041, data = readMbk1(1)) // MBK1.1
                 DEF_IO08(0x4004042, data = readMbk1(2)) // MBK1.2
@@ -1476,11 +1485,18 @@ template <typename T> T Memory::ioRead7(uint32_t address) {
 
         // Check registers exclusive to DSi mode
         if (core->dsiMode) {
+            // The SCFG and MBK registers read as 0 once the ARM7 loses access to them
+            if (base >= 0x4004000 && base < 0x4004064 && !(scfgExt[1] & BIT(31))) {
+                base = 0;
+                size = 1;
+                data = 0;
+                goto next;
+            }
             switch (base) {
                 DEF_IO32(0x4000218, data = core->interpreter[1].readIe(1)) // IE2
                 DEF_IO32(0x400021C, data = core->interpreter[1].readIrf(1)) // IF2
                 DEF_IO32(0x4004000, data = 0x1) // SCFG_ROM (stub)
-                DEF_IO32(0x4004008, data = 0x80008000) // SCFG_EXT7 (stub)
+                DEF_IO32(0x4004008, data = readScfgExt(1)) // SCFG_EXT7
                 DEF_IO08(0x4004040, data = readMbk1(0)) // MBK1.0
                 DEF_IO08(0x4004041, data = readMbk1(1)) // MBK1.1
                 DEF_IO08(0x4004042, data = readMbk1(2)) // MBK1.2
@@ -1965,7 +1981,14 @@ template <typename T> void Memory::ioWrite9(uint32_t address, T value) {
 
         // Check registers exclusive to DSi mode
         if (core->dsiMode) {
+            // The SCFG and MBK registers ignore writes once the ARM9 loses access to them
+            if (base >= 0x4004000 && base < 0x4004064 && !(scfgExt[0] & BIT(31))) {
+                base = 0;
+                size = 1;
+                goto next;
+            }
             switch (base) {
+                DEF_IO32(0x4004008, writeScfgExt9(IOWR_PARAMS)) // SCFG_EXT9
                 DEF_IO08(0x4004040, writeMbk1(0, IOWR_PARAMS8)) // MBK1.0
                 DEF_IO08(0x4004041, writeMbk1(1, IOWR_PARAMS8)) // MBK1.1
                 DEF_IO08(0x4004042, writeMbk1(2, IOWR_PARAMS8)) // MBK1.2
@@ -2243,9 +2266,16 @@ template <typename T> void Memory::ioWrite7(uint32_t address, T value) {
 
         // Check registers exclusive to DSi mode
         if (core->dsiMode) {
+            // The SCFG and MBK registers ignore writes once the ARM7 loses access to them
+            if (base >= 0x4004000 && base < 0x4004064 && !(scfgExt[1] & BIT(31))) {
+                base = 0;
+                size = 1;
+                goto next;
+            }
             switch (base) {
                 DEF_IO32(0x4000218, core->interpreter[1].writeIe(1, IOWR_PARAMS)) // IE2
                 DEF_IO32(0x400021C, core->interpreter[1].writeIrf(1, IOWR_PARAMS)) // IF2
+                DEF_IO32(0x4004008, writeScfgExt7(IOWR_PARAMS)) // SCFG_EXT7
                 DEF_IO32(0x4004054, writeMbk6(1, IOWR_PARAMS)) // MBK6
                 DEF_IO32(0x4004058, writeMbk7(1, IOWR_PARAMS)) // MBK7
                 DEF_IO32(0x400405C, writeMbk8(1, IOWR_PARAMS)) // MBK8
@@ -2605,4 +2635,16 @@ void Memory::writeMbk9(uint32_t mask, uint32_t value) {
     // Write to the ARM7's NWRAM slot write-protect register, which the DSi menu reads back when launching titles; the top
     // byte, which cart headers set to their WRAMCNT, reads as 0 and does nothing on a real DSi
     mbk9 = (mbk9 & ~(mask & 0xFFFF0F)) | (value & mask & 0xFFFF0F);
+}
+
+void Memory::writeScfgExt9(uint32_t mask, uint32_t value) {
+    // Write to the ARM9's DSi feature register, which also sets the ARM7's copies of a few bits (masks from melonDS)
+    scfgExt[0] = (scfgExt[0] & ~(mask & 0x8007F19F)) | (value & mask & 0x8007F19F);
+    scfgExt[1] = (scfgExt[1] & ~(mask & 0x00003080)) | (value & mask & 0x00003080);
+}
+
+void Memory::writeScfgExt7(uint32_t mask, uint32_t value) {
+    // Write to the ARM7's DSi feature register, which also sets the ARM9's new WRAM and second slot bits
+    scfgExt[0] = (scfgExt[0] & ~(mask & 0x03000000)) | (value & mask & 0x03000000);
+    scfgExt[1] = (scfgExt[1] & ~(mask & 0x93FF0F07)) | (value & mask & 0x93FF0F07);
 }

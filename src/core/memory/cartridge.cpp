@@ -812,9 +812,18 @@ void CartridgeNds::directBoot() {
         }
         core->memory.writeMbk9(-1, U8TO32(rom, 0x1AC));
 
+        // Enable the DSi features as the system does for a DSi title, with some of the ARM7's from the header. The system
+        // also takes access to the SCFG and MBK registers from the header, and sets things up for titles it turns off;
+        // like melonDS, leave access on instead, so the title's own startup code sets those up and turns it off
+        core->memory.setScfgExt(0x8307F100, 0x93FBFB00 | (U8TO32(rom, 0x1B8) & 0x00040407));
+
         // Copy the DSi ROM header into memory
         for (uint32_t i = 0; i < 0x1000; i += 4)
             core->memory.write<uint32_t>(0, 0x2FFE000 + i, U8TO32(rom, i));
+    }
+    else if (core->dsiMode) {
+        // Leave only the DS features, as the system does for a DS title
+        core->memory.setScfgExt(0x03000000, 0x12A03000);
     }
 
     // Copy the NDS ROM header into memory, which DSi games read too, like for where their files are

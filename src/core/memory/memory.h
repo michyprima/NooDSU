@@ -106,6 +106,7 @@ public:
     uint32_t readMbk7(bool arm7) { return mbk7[arm7]; }
     uint32_t readMbk8(bool arm7) { return mbk8[arm7]; }
     uint32_t readMbk9() { return mbk9; }
+    uint32_t readScfgExt(bool arm7) { return scfgExt[arm7]; }
 
     void writeDmaFill(int channel, uint32_t mask, uint32_t value);
     void writeVramCnt(int index, uint8_t value);
@@ -120,6 +121,9 @@ public:
     void writeMbk7(bool arm7, uint32_t mask, uint32_t value);
     void writeMbk8(bool arm7, uint32_t mask, uint32_t value);
     void writeMbk9(uint32_t mask, uint32_t value);
+    void writeScfgExt9(uint32_t mask, uint32_t value);
+    void writeScfgExt7(uint32_t mask, uint32_t value);
+    void setScfgExt(uint32_t ext9, uint32_t ext7) { scfgExt[0] = ext9; scfgExt[1] = ext7; }
 
 private:
     Core *core;
@@ -171,6 +175,7 @@ private:
     uint32_t mbk7[2] = {};
     uint32_t mbk8[2] = {};
     uint32_t mbk9 = 0;
+    uint32_t scfgExt[2] = { 0x8307F100, 0x93FFFB06 }; // As the DSi firmware runs with them
 
     template <typename T> T readFallback(bool arm7, uint32_t address);
     template <typename T> void writeFallback(bool arm7, uint32_t address, T value, bool tcm);
