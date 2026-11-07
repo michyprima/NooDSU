@@ -1,16 +1,18 @@
 #!/bin/bash
 # Runs a game with the JIT's generated PowerPC in Unicorn and compares it with other ways of running it, see README.md
 # Usage: game.sh <ROM, or - for none> <folder with the system files> <frames> [--mutate N] [--modes "interp native"] [--live]
-# [--window] [game options]
+# [--window] [--input] [--wifi] [game options]
 set -e
 here=$(cd "$(dirname "$0")"; pwd)
 rom=-; [ "$1" = - ] || rom=$(cd "$(dirname "$1")"; pwd)/$(basename "$1"); cfg=$(cd "$2"; pwd); frames=$3; shift 3
-mutation=0; modes="interp native"; live=0; window=0
+mutation=0; modes="interp native"; live=0; window=0; input=0; wifi=0
 while true; do
     if [ "$1" = --mutate ]; then mutation=$2; shift 2
     elif [ "$1" = --modes ]; then modes=$2; shift 2
     elif [ "$1" = --live ]; then live=1; shift
     elif [ "$1" = --window ]; then window=1; shift
+    elif [ "$1" = --input ]; then window=1; input=1; shift
+    elif [ "$1" = --wifi ]; then wifi=1; shift
     else break; fi
 done
 base=${JIT_TEST_BUILD:-${TMPDIR:-/tmp}/noodsu-jit-test}
@@ -45,7 +47,7 @@ done
 if [ ! -e "$build/obj/game.o" ] || [ "$here/game.cpp" -nt "$build/obj/game.o" ] || [ "$build/src/core.h" -nt "$build/obj/game.o" ]; then
     clang++ $flags -c "$here/game.cpp" -o "$build/obj/game.o" &
 fi
-clang -O2 -c "$here/shim/slirp.c" -o "$build/obj/slirp.o" &
+clang -O2 -c "$here/shim/slirp.c" -o "$build/slirp.o" &
 
 # The window needs SDL2, so it's only built and linked in when asked for, outside the other objects
 extra=()
@@ -53,6 +55,14 @@ if [ "$window" = 1 ]; then
     sdl=$(pkg-config --cflags sdl2) || { echo "--window needs SDL2 (brew install sdl2)"; exit 1; }
     clang++ -std=c++17 -O2 -w $sdl -c "$here/window.cpp" -o "$build/window.o" &
     extra=("$build/window.o" $(pkg-config --libs-only-L sdl2) -lSDL2)
+fi
+
+# Wi-Fi needs the real libslirp (brew install libslirp) in place of the stubs, for the access point's network
+if [ "$wifi" = 1 ]; then
+    slirp=$(pkg-config --libs slirp) || { echo "--wifi needs libslirp (brew install libslirp)"; exit 1; }
+    extra+=($slirp)
+else
+    extra+=("$build/slirp.o")
 fi
 wait
 clang++ $JIT_TEST_CFLAGS "$build"/obj/*.o "${extra[@]}" -L"$uni/build" -lunicorn -Wl,-rpath,"$uni/build" -o "$build/game"
@@ -62,7 +72,7 @@ pids=()
 for m in $modes; do
     rm -rf "$build/run-$m"; mkdir -p "$build/run-$m"
     [ ! -e "$cfg/nand.bin" ] || cp -c "$cfg/nand.bin" "$build/run-$m/nand.bin" 2>/dev/null || cp "$cfg/nand.bin" "$build/run-$m/nand.bin"
-    opts=(); [ "$live" = 0 ] || opts+=(live); [ "$window" = 0 ] || opts+=(window)
+    opts=(); [ "$live" = 0 ] || opts+=(live); [ "$window" = 0 ] || opts+=(window); [ "$input" = 0 ] || opts+=(input); [ "$wifi" = 0 ] || opts+=(wifi)
     if [ "$live" = 1 ]; then
         # Show each line as it's written too, marked with the mode
         (set -o pipefail; cd "$build/run-$m"; "$build/game" "$cfg" "$rom" $m "$frames" "$@" "${opts[@]}" 2> err.txt | tee out.txt | sed -l "s/^/$m: /") &

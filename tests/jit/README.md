@@ -52,7 +52,7 @@ millions of blocks, and how all of that adds up over time.
 
 ```
 tests/jit/game.sh <ROM, or - for none> <folder with the system files> <frames> [--modes "interp native"] [--mutate N] [--live]
-    [--window] [options]
+    [--window] [--input] [--wifi] [options]
 ```
 
 The folder needs `bios9.bin`, `bios7.bin` and `firmware.bin`, plus `bios9i.bin`, `bios7i.bin`, `firmwarei.bin` and `nand.bin`
@@ -63,13 +63,24 @@ program counters, then hashes of RAM and WRAM, and every way is compared with th
 - `fast` for fast timing, `dsi` for DSi mode, and `firmware` to start a ROM from the firmware's menu instead of directly
 - `press=N`, `start=N` and `touch=N` to press A, press START or touch the middle of the bottom screen every N frames
 - `keys=frame:key,...` to press keys at given frames, numbered like KEYINPUT's bits, then 10 and 11 for X and Y
+- `taps=frame:x:y,...` to touch the bottom screen at given frames and positions, for 8 frames each
+- `realtime` to run at most 60 frames a second, to watch a run in its window or give a network real time to answer
 - `trace=N` to also print both CPUs' registers at the start of every scanline from frame N
 - `ppm=file` to save the last frame, `ram=file` to save main RAM at the end, and `results=file` to save what
   `tests/hardware`'s ROM recorded, for its build
 
 To watch a run, `--live` also prints each way's lines as they come, marked with its mode, and `--window` shows each way's
 screens in a window of its own, at most 60 times a second. The window needs SDL2 (`brew install sdl2`), and is only built
-with `--window`; closing it lets the run carry on without it.
+with `--window`; closing it lets the run carry on without it, while quitting from the menu bar ends the run.
+
+`--input` also takes input from the window, at 60 frames a second: clicking or dragging on the bottom screen touches it,
+and the keyboard has the buttons: arrows for the D-pad, X for A, Z for B, S for X, A for Y, Q for L, W for R, Enter for
+START and right Shift for SELECT. Input only counts while the window has focus, and closing the window ends the run; give
+enough frames to play, since it also stops after them.
+
+`--wifi` turns on the software access point and links the real libslirp (`brew install libslirp`) in place of the stubs, so
+runs can go online, like System Settings' connection test. What comes back from the network differs from run to run, so
+runs with it aren't expected to match each other.
 
 The first run also builds Unicorn, which needs `cmake` and `ninja`: a development version, pinned in `game.sh`, since the
 release checks every write to RAM for code being written over, which makes runs much slower. Set `JIT_TEST_UNICORN` to

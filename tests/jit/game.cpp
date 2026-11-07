@@ -1,6 +1,7 @@
 // Runs whole games on a Mac with the JIT's generated PowerPC in Unicorn, to compare with the interpreter frame by frame
 // See README.md; game.sh builds this against a copy of the core changed by patch.py in game mode
 
+#include <array>
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
@@ -8,6 +9,7 @@
 #include <cstring>
 #include <string>
 #include <unistd.h>
+#include <thread>
 #include <vector>
 
 #define private public
@@ -382,6 +384,8 @@ static void startEngine(Engine &en, bool arm7) {
 // Set by window.cpp when game.sh links it in for --window
 bool (*windowOpen)(const char *title, int position) = nullptr;
 void (*windowShow)(const uint32_t *frame) = nullptr;
+bool (*windowInput)(int &x, int &y, uint32_t &keys) = nullptr;
+int (*windowState)() = nullptr;
 
 static uint64_t hash(const void *data, size_t size, uint64_t h = 0xCBF29CE484222325ULL) {
     const uint8_t *p = (const uint8_t*)data;
@@ -392,14 +396,15 @@ static uint64_t hash(const void *data, size_t size, uint64_t h = 0xCBF29CE484222
 int main(int argc, char **argv) {
     if (argc < 5) {
         printf("Usage: game <system files folder> <rom, or - for none> <interp|portable|native> <frames> [fast] [dsi] [firmware] [press=N] "
-            "[start=N] [touch=N] [trace=frame] [ppm=path] [results=path] [ram=path] [keys=frame:key,...] [live] [window]\n");
+            "[start=N] [touch=N] [trace=frame] [ppm=path] [results=path] [ram=path] [keys=frame:key,...] [taps=frame:x:y,...] [wifi] [realtime] [live] [window] [input]\n");
         return 2;
     }
     std::string files = argv[1], mode = argv[3];
     int frames = atoi(argv[4]), press = 0, startKey = 0, touch = 0, traceFrom = -1;
-    bool fast = false, dsi = false, firmware = false, window = false;
+    bool fast = false, dsi = false, firmware = false, window = false, wifi = false, realtime = false, input = false;
     std::string ppm, results, ramFile;
     std::vector<std::pair<int, int>> inputs; // Frame and key to press then, for 2 frames
+    std::vector<std::array<int, 3>> taps; // Frame and bottom screen position to touch then, for 8 frames
     for (int i = 5; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "fast") fast = true;
@@ -407,6 +412,9 @@ int main(int argc, char **argv) {
         else if (arg == "firmware") firmware = true;
         else if (arg == "live") setvbuf(stdout, nullptr, _IOLBF, 0); // Each line as it's printed, for game.sh's --live
         else if (arg == "window") window = true;
+        else if (arg == "input") input = realtime = true; // Mouse and keyboard from the window, at a playable speed
+        else if (arg == "realtime") realtime = true; // 60 frames a second, to watch a run or give a network time
+        else if (arg == "wifi") wifi = true; // Needs game.sh's --wifi for the real libslirp
         else if (arg.rfind("press=", 0) == 0) press = atoi(arg.c_str() + 6);
         else if (arg.rfind("start=", 0) == 0) startKey = atoi(arg.c_str() + 6);
         else if (arg.rfind("touch=", 0) == 0) touch = atoi(arg.c_str() + 6);
@@ -423,11 +431,22 @@ int main(int argc, char **argv) {
                 at = (end == std::string::npos) ? arg.size() : end + 1;
             }
         }
+        else if (arg.rfind("taps=", 0) == 0) {
+            // Comma-separated frame:x:y triples
+            for (size_t at = 5; at < arg.size();) {
+                size_t end = arg.find(',', at);
+                std::string tap = arg.substr(at, end == std::string::npos ? std::string::npos : end - at);
+                size_t c1 = tap.find(':'), c2 = tap.find(':', c1 + 1);
+                taps.push_back({ atoi(tap.c_str()), atoi(tap.c_str() + c1 + 1), atoi(tap.c_str() + c2 + 1) });
+                at = (end == std::string::npos) ? arg.size() : end + 1;
+            }
+        }
         else fatal("unknown option %s", arg.c_str());
     }
     if (mode != "interp" && mode != "portable" && mode != "native") fatal("unknown mode %s", mode.c_str());
     if (window) {
         if (!windowOpen) fatal("the window needs game.sh's --window");
+        if (input && !window) fatal("input needs the window");
         int position = (mode == "interp") ? 0 : (mode == "portable") ? 1 : 2;
         if (!windowOpen(("NooDS U harness: " + mode).c_str(), position)) fatal("couldn't open a window");
     }
@@ -455,7 +474,7 @@ int main(int argc, char **argv) {
     Settings::highRes3D = 0;
     Settings::hardware3D = 0;
     Settings::screenFilter = 0;
-    Settings::wifi = 0;
+    Settings::wifi = wifi;
     Rtc::fixedTime = 1767225600; // 2026-01-01
     try {
         core = new Core(std::string(argv[2]) == "-" ? "" : argv[2]);
@@ -497,6 +516,11 @@ int main(int argc, char **argv) {
     uint64_t last = 0;
     auto start = std::chrono::steady_clock::now();
     for (int i = 0; i < frames; i++) {
+        // Quitting from the menu bar ends the run early, and so does closing the window when it gives the input
+        if (window && (windowState() == 2 || (input && windowState() == 1))) {
+            frames = i;
+            break;
+        }
         frameNow = i;
         if (press && i % press == 0) core->input.pressKey(0);
         if (press && i % press == 2) core->input.releaseKey(0);
@@ -508,7 +532,28 @@ int main(int argc, char **argv) {
         }
         if (touch && i % touch == 0) { core->input.pressScreen(); core->spi.setTouch(128, 96); }
         if (touch && i % touch == 10) { core->input.releaseScreen(); core->spi.clearTouch(); }
+        if (input) {
+            // Press and release what changed in the window since the last frame
+            static uint32_t held = 0;
+            static bool touching = false;
+            int x, y;
+            uint32_t keys;
+            bool touch = windowInput(x, y, keys);
+            for (int k = 0; k < 12; k++) {
+                if ((keys & ~held) & (1 << k)) core->input.pressKey(k);
+                if ((held & ~keys) & (1 << k)) core->input.releaseKey(k);
+            }
+            held = keys;
+            if (touch) { core->input.pressScreen(); core->spi.setTouch(x, y); }
+            else if (touching) { core->input.releaseScreen(); core->spi.clearTouch(); }
+            touching = touch;
+        }
+        for (auto &tap: taps) {
+            if (i == tap[0]) { core->input.pressScreen(); core->spi.setTouch(tap[1], tap[2]); }
+            if (i == tap[0] + 8) { core->input.releaseScreen(); core->spi.clearTouch(); }
+        }
         do core->runCore(); while (!core->frameEnded.exchange(false));
+        if (realtime) std::this_thread::sleep_until(start + std::chrono::microseconds(int64_t(i + 1) * 1000000 / 60));
         if (core->gpu.getFrame(frame, false)) {
             last = hash(frame, 256 * 192 * 2 * 4);
             if (window) windowShow(frame);
