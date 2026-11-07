@@ -59,7 +59,7 @@ for DSi mode. Each way of running is given by `--modes`: `interp` without the JI
 and `native` with generated code. Each prints a line per frame with a hash of the screens, the cycle counts and both CPUs'
 program counters, then hashes of RAM and WRAM, and every way is compared with the first. Options are:
 
-- `fast` for fast timing, and `dsi` for DSi mode
+- `fast` for fast timing, `dsi` for DSi mode, and `firmware` to start a ROM from the firmware's menu instead of directly
 - `press=N`, `start=N` and `touch=N` to press A, press START or touch the middle of the bottom screen every N frames
 - `keys=frame:key,...` to press keys at given frames, numbered like KEYINPUT's bits, then 10 and 11 for X and Y
 - `trace=N` to also print both CPUs' registers at the start of every scanline from frame N

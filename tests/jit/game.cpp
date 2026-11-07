@@ -375,19 +375,20 @@ static uint64_t hash(const void *data, size_t size, uint64_t h = 0xCBF29CE484222
 
 int main(int argc, char **argv) {
     if (argc < 5) {
-        printf("Usage: game <system files folder> <rom, or - for none> <interp|portable|native> <frames> [fast] [dsi] [press=N] "
+        printf("Usage: game <system files folder> <rom, or - for none> <interp|portable|native> <frames> [fast] [dsi] [firmware] [press=N] "
             "[start=N] [touch=N] [trace=frame] [ppm=path] [results=path] [ram=path] [keys=frame:key,...]\n");
         return 2;
     }
     std::string files = argv[1], mode = argv[3];
     int frames = atoi(argv[4]), press = 0, startKey = 0, touch = 0, traceFrom = -1;
-    bool fast = false, dsi = false;
+    bool fast = false, dsi = false, firmware = false;
     std::string ppm, results, ramFile;
     std::vector<std::pair<int, int>> inputs; // Frame and key to press then, for 2 frames
     for (int i = 5; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "fast") fast = true;
         else if (arg == "dsi") dsi = true;
+        else if (arg == "firmware") firmware = true;
         else if (arg.rfind("press=", 0) == 0) press = atoi(arg.c_str() + 6);
         else if (arg.rfind("start=", 0) == 0) startKey = atoi(arg.c_str() + 6);
         else if (arg.rfind("touch=", 0) == 0) touch = atoi(arg.c_str() + 6);
@@ -420,7 +421,7 @@ int main(int argc, char **argv) {
     Settings::jit = mode != "interp";
     Settings::fastTiming = fast;
     Settings::dsiMode = dsi;
-    Settings::directBoot = 1;
+    Settings::directBoot = !firmware;
     Settings::savesFolder = 1;
     Settings::threaded2D = 0;
     Settings::threaded3D = 0;
