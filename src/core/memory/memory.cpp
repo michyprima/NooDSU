@@ -279,7 +279,7 @@ void Memory::updateMap9(uint32_t start, uint32_t end, bool tcm) {
                 break;
 
         case 0x2000000: // Main RAM
-            read = write = &ram[address & (core->dsiMode ? 0xFFFFFF : 0x3FFFFF)];
+            read = write = &ram[address & ramMask()];
             break;
 
         case 0x3000000: // Shared WRAM
@@ -423,7 +423,7 @@ void Memory::updateMap7(uint32_t start, uint32_t end) {
                     break;
 
             case 0x2000000: // Main RAM
-                read = write = &ram[address & (core->dsiMode ? 0xFFFFFF : 0x3FFFFF)];
+                read = write = &ram[address & ramMask()];
                 break;
 
             case 0x3000000: // WRAM
@@ -2639,8 +2639,34 @@ void Memory::writeMbk9(uint32_t mask, uint32_t value) {
 
 void Memory::writeScfgExt9(uint32_t mask, uint32_t value) {
     // Write to the ARM9's DSi feature register, which also sets the ARM7's copies of a few bits (masks from melonDS)
+    uint32_t old = scfgExt[0];
     scfgExt[0] = (scfgExt[0] & ~(mask & 0x8007F19F)) | (value & mask & 0x8007F19F);
     scfgExt[1] = (scfgExt[1] & ~(mask & 0x00003080)) | (value & mask & 0x00003080);
+    updateRamSize(old);
+}
+
+void Memory::setScfgExt(uint32_t ext9, uint32_t ext7) {
+    // Set both DSi feature registers, as the system does before starting a title
+    uint32_t old = scfgExt[0];
+    scfgExt[0] = ext9;
+    scfgExt[1] = ext7;
+    updateRamSize(old);
+}
+
+uint32_t Memory::ramMask() {
+    // Get the main RAM mirror mask; the DSi's 16MB is limited to the DS's 4MB when SCFG_EXT9 asks for it, as for DS titles
+    return (core->dsiMode && (scfgExt[0] & BIT(15))) ? 0xFFFFFF : 0x3FFFFF;
+}
+
+void Memory::updateRamSize(uint32_t oldExt9) {
+    // Show the ARM9's RAM size to the ARM7, and remap main RAM if it changed
+    scfgExt[1] = (scfgExt[1] & ~0xC000) | (scfgExt[0] & 0xC000);
+    if (!((oldExt9 ^ scfgExt[0]) & BIT(15))) return;
+    updateMap9(0x2000000, 0x3000000);
+    updateMap7(0x2000000, 0x3000000);
+    if (!core->dsiMode) return;
+    updateMap9(0xC000000, 0xD000000);
+    updateMap7(0xC000000, 0xD000000);
 }
 
 void Memory::writeScfgExt7(uint32_t mask, uint32_t value) {

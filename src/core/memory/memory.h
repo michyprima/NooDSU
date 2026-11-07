@@ -123,7 +123,7 @@ public:
     void writeMbk9(uint32_t mask, uint32_t value);
     void writeScfgExt9(uint32_t mask, uint32_t value);
     void writeScfgExt7(uint32_t mask, uint32_t value);
-    void setScfgExt(uint32_t ext9, uint32_t ext7) { scfgExt[0] = ext9; scfgExt[1] = ext7; }
+    void setScfgExt(uint32_t ext9, uint32_t ext7);
 
 private:
     Core *core;
@@ -176,6 +176,9 @@ private:
     uint32_t mbk8[2] = {};
     uint32_t mbk9 = 0;
     uint32_t scfgExt[2] = { 0x8307F100, 0x93FFFB06 }; // As the DSi firmware runs with them
+
+    uint32_t ramMask();
+    void updateRamSize(uint32_t oldExt9);
 
     template <typename T> T readFallback(bool arm7, uint32_t address);
     template <typename T> void writeFallback(bool arm7, uint32_t address, T value, bool tcm);

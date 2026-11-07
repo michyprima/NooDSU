@@ -382,7 +382,9 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
             memory.write<uint16_t>(0, 0x4000304, 0x0001); // POWCNT1
             memory.write<uint16_t>(1, 0x4000504, 0x0200); // SOUNDBIAS
 
-            // Set some memory values as the BIOS/firmware would
+            cartridgeNds.directBoot();
+
+            // Set some memory values as the BIOS/firmware would, once main RAM is the size the title gets
             memory.write<uint32_t>(0, 0x2FFF800, 0x00001FC2); // Chip ID 1
             memory.write<uint32_t>(0, 0x2FFF804, 0x00001FC2); // Chip ID 2
             memory.write<uint16_t>(0, 0x2FFF850, 0x5835); // ARM7 BIOS CRC
@@ -393,7 +395,6 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
             memory.write<uint16_t>(0, 0x2FFFC10, 0x5835); // Copy of ARM7 BIOS CRC
             memory.write<uint16_t>(0, 0x2FFFC40, 0x0001); // Boot indicator
 
-            cartridgeNds.directBoot();
             interpreter[0].directBoot();
             interpreter[1].directBoot();
             spi.directBoot();
