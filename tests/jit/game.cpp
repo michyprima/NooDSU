@@ -376,13 +376,13 @@ static uint64_t hash(const void *data, size_t size, uint64_t h = 0xCBF29CE484222
 int main(int argc, char **argv) {
     if (argc < 5) {
         printf("Usage: game <system files folder> <rom, or - for none> <interp|portable|native> <frames> [fast] [dsi] [press=N] "
-            "[start=N] [touch=N] [trace=frame] [ppm=path] [results=path]\n");
+            "[start=N] [touch=N] [trace=frame] [ppm=path] [results=path] [ram=path]\n");
         return 2;
     }
     std::string files = argv[1], mode = argv[3];
     int frames = atoi(argv[4]), press = 0, startKey = 0, touch = 0, traceFrom = -1;
     bool fast = false, dsi = false;
-    std::string ppm, results;
+    std::string ppm, results, ramFile;
     for (int i = 5; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "fast") fast = true;
@@ -393,6 +393,7 @@ int main(int argc, char **argv) {
         else if (arg.rfind("trace=", 0) == 0) traceFrom = atoi(arg.c_str() + 6);
         else if (arg.rfind("ppm=", 0) == 0) ppm = arg.substr(4);
         else if (arg.rfind("results=", 0) == 0) results = arg.substr(8);
+        else if (arg.rfind("ram=", 0) == 0) ramFile = arg.substr(4);
         else fatal("unknown option %s", arg.c_str());
     }
     if (mode != "interp" && mode != "portable" && mode != "native") fatal("unknown mode %s", mode.c_str());
@@ -482,6 +483,11 @@ int main(int argc, char **argv) {
     double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     fprintf(stderr, "%s: %d frames in %.1f s, %llu entries into generated code, %llu calls from it\n", mode.c_str(),
         frames, seconds, (unsigned long long)enters, (unsigned long long)calls);
+    if (!ramFile.empty()) {
+        FILE *out = fopen(ramFile.c_str(), "wb");
+        fwrite(mem.ram, 1, mem.ramSize, out);
+        fclose(out);
+    }
     if (!results.empty()) {
         // What tests/hardware's ROM records for each CPU, which its build takes as the results to compare with; they're
         // in a block in main RAM marked with two words
