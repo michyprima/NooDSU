@@ -192,9 +192,10 @@ void Jit::clearCache() {
 }
 
 void Jit::mapChanged(uint32_t start) {
-    // Forget cached guest addresses if ITCM or WRAM might have been remapped, and stop any running code
-    // Main RAM and the BIOS are always at the same addresses, so other changes don't matter
-    if (start >= (arm7 ? 0x04000000 : 0x02000000)) return;
+    // Forget cached guest addresses if memory with code might have been remapped, and stop any running code
+    // The ARM9 only runs code from ITCM, main RAM and the BIOS, and the ARM7 from below I/O; main RAM and the BIOSes only
+    // change when a DSi switches to a DS title's RAM size and BIOSes, so other changes don't matter
+    if (arm7 ? (start >= 0x04000000) : (start >= 0x03000000 && start < 0xFFFF0000)) return;
     clearCache();
     codeChanged = 1;
 
