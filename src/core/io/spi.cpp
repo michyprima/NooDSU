@@ -39,6 +39,13 @@ void Spi::saveState(FILE *file) {
     fwrite(&command, sizeof(command), 1, file);
     fwrite(&spiCnt, sizeof(spiCnt), 1, file);
     fwrite(&spiData, sizeof(spiData), 1, file);
+    fwrite(&tscDsiMode, sizeof(tscDsiMode), 1, file);
+    fwrite(&tscIndex, sizeof(tscIndex), 1, file);
+    fwrite(&tscPage, sizeof(tscPage), 1, file);
+    fwrite(tscPage3, sizeof(tscPage3), 1, file);
+    fwrite(&tscPressed, sizeof(tscPressed), 1, file);
+    fwrite(&tscChangedX, sizeof(tscChangedX), 1, file);
+    fwrite(&tscChangedY, sizeof(tscChangedY), 1, file);
 }
 
 void Spi::loadState(FILE *file) {
@@ -48,6 +55,13 @@ void Spi::loadState(FILE *file) {
     fread(&command, sizeof(command), 1, file);
     fread(&spiCnt, sizeof(spiCnt), 1, file);
     fread(&spiData, sizeof(spiData), 1, file);
+    fread(&tscDsiMode, sizeof(tscDsiMode), 1, file);
+    fread(&tscIndex, sizeof(tscIndex), 1, file);
+    fread(&tscPage, sizeof(tscPage), 1, file);
+    fread(tscPage3, sizeof(tscPage3), 1, file);
+    fread(&tscPressed, sizeof(tscPressed), 1, file);
+    fread(&tscChangedX, sizeof(tscChangedX), 1, file);
+    fread(&tscChangedY, sizeof(tscChangedY), 1, file);
 }
 
 uint16_t Spi::crc16(uint32_t value, uint8_t *data, size_t size) {
@@ -80,6 +94,13 @@ bool Spi::loadFirmware() {
     // Ensure firmware memory isn't already allocated
     if (firmware)
         delete[] firmware;
+
+    // Start the DSi's touchscreen controller in its own mode, with its page 3 registers as melonDS has them
+    tscDsiMode = core->dsiMode;
+    static const uint8_t page3[] = { 0x00, 0x00, 0x18, 0x87, 0x22, 0x04, 0x20, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
+        0xAD, 0xA0, 0x88, 0x81 };
+    memset(tscPage3, 0, sizeof(tscPage3));
+    memcpy(tscPage3, page3, sizeof(page3));
 
     // Load the firmware from a file if it exists
     std::string &path = core->dsiMode ? Settings::dsiFirmPath : Settings::ndsFirmPath;
@@ -317,6 +338,65 @@ void Spi::clearTouch() {
     touchY = 0xFFF;
 }
 
+void Spi::writeTscDsi(uint8_t value) {
+    // Handle the DSi touchscreen controller: the first byte picks a register and whether to read it, then each byte
+    // reads or writes one, moving to the next
+    if (writeCount == 0) {
+        tscIndex = value;
+        return;
+    }
+
+    // Read the pen state, noting a change for the next coordinates read
+    bool pressed = (touchY != 0xFFF);
+    if (pressed != tscPressed) {
+        tscPressed = pressed;
+        tscChangedX = tscChangedY = true;
+    }
+
+    uint8_t reg = tscIndex >> 1;
+    bool read = tscIndex & 0x1;
+    if (reg == 0) { // Page select
+        if (read) spiData = tscPage;
+        else tscPage = value;
+    }
+    else if (tscPage == 0x03) {
+        // Registers 0x09 and 0x0E show whether the pen is down
+        if (reg == 0x09) tscPage3[reg] = pressed ? 0x80 : 0x40;
+        if (reg == 0x0E) tscPage3[reg] = (tscPage3[reg] & ~0x01) | !pressed;
+        if (read) spiData = tscPage3[reg];
+        else if (reg == 0x0D || reg == 0x0E)
+            tscPage3[reg] = (tscPage3[reg] & 0x03) | (value & 0xFC);
+    }
+    else if (tscPage == 0xFC && read) {
+        // Buffers of X then Y coordinates, big-endian, with bit 15 set when the pen state changed and 0x7000 when up
+        if (reg < 0x15) {
+            bool x = reg < 0x0B;
+            bool &changed = x ? tscChangedX : tscChangedY;
+            uint16_t coord = pressed ? (x ? touchX : touchY) : 0x7000;
+            if (changed) coord |= 0x8000;
+            spiData = (reg & 0x1) ? (coord >> 8) : coord;
+            changed = false;
+        }
+        else {
+            spiData = 0;
+        }
+    }
+    else if (tscPage == 0xFF && reg == 0x05) {
+        // Choosing DS mode, which stays until the next reset
+        if (read) {
+            spiData = tscDsiMode;
+        }
+        else if (!value) {
+            tscDsiMode = false;
+            return;
+        }
+    }
+    else {
+        spiData = 0;
+    }
+    tscIndex += 2;
+}
+
 void Spi::sendMicData(const int16_t *samples, size_t count, size_t rate) {
     mutex.lock();
 
@@ -351,7 +431,10 @@ void Spi::writeSpiData(uint8_t value) {
         return;
     }
 
-    if (writeCount == 0) {
+    if (((spiCnt & 0x0300) >> 8) == 2 && tscDsiMode) {
+        writeTscDsi(value);
+    }
+    else if (writeCount == 0) {
         // On the first write, set the command byte
         command = value;
         address = 0;

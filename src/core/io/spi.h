@@ -95,6 +95,15 @@ private:
     uint32_t address = 0;
     uint8_t command = 0;
 
+    // The DSi's touchscreen controller starts in its own mode, with registers in pages, until DS mode is chosen
+    bool tscDsiMode = false;
+    uint8_t tscIndex = 0; // The register being accessed, times 2, plus 1 to read
+    uint8_t tscPage = 0;
+    uint8_t tscPage3[0x80] = {};
+    bool tscPressed = false; // The pen state last reported, and whether X and Y are yet to report a change
+    bool tscChangedX = false;
+    bool tscChangedY = false;
+
     uint16_t spiCnt = 0;
     uint8_t spiData = 0;
 
@@ -103,4 +112,5 @@ private:
     size_t apOffset();
     void loadWfcSettings();
     void addAccessPoint();
+    void writeTscDsi(uint8_t value);
 };
