@@ -458,11 +458,11 @@ void Core::updateRun() {
     else if (gbaMode)
         runFunc = &Interpreter::runCoreSingle<true, 0>;
     else if (!interpreter[0].halted && !interpreter[1].halted)
-        runFunc = dsiMode ? &Interpreter::runCoreNds<true> : &Interpreter::runCoreNds<false>;
+        runFunc = memory.fastArm9() ? &Interpreter::runCoreNds<true> : &Interpreter::runCoreNds<false>;
     else if (interpreter[0].halted)
         runFunc = &Interpreter::runCoreSingle<true, 1>;
     else
-        runFunc = dsiMode ? &Interpreter::runCoreSingle<false, -1> : &Interpreter::runCoreSingle<false, 0>;
+        runFunc = memory.fastArm9() ? &Interpreter::runCoreSingle<false, -1> : &Interpreter::runCoreSingle<false, 0>;
     running.store(false);
 }
 

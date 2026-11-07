@@ -98,7 +98,7 @@ void Jit::enable(bool value) {
         value = false;
     if (!value) reset();
     enabled = value;
-    halfCycles = core->dsiMode && !arm7;
+    halfCycles = nextHalfCycles = core->memory.fastArm9() && !arm7;
 
     // Set up the memory that code is compiled from, with the writable parts first so their pages are numbered first
     // Main RAM and the ARM7 BIOS are bigger in DSi mode
@@ -528,13 +528,15 @@ bool Jit::run(const uint32_t *limit) {
     if (!codeArea && !codeFailed)
         initCodegen();
 
-    // Code generated with fast timing counts cycles differently, so start over if the setting changed
-    if (bool(Settings::fastTiming) != codeFast) {
+    // Code generated with fast timing or for the ARM9's other speed counts cycles differently, so start over if either
+    // changed
+    if (bool(Settings::fastTiming) != codeFast || nextHalfCycles != halfCycles) {
         reset();
         for (size_t i = 0; i < graveyard.size(); i++)
             delete graveyard[i];
         graveyard.clear();
-        codeFast = !codeFast;
+        codeFast = Settings::fastTiming;
+        halfCycles = nextHalfCycles;
     }
 
     // Find the host memory for the next instruction, if it's somewhere code can be compiled from

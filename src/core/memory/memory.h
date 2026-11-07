@@ -110,6 +110,8 @@ public:
     uint32_t readMbk9() { return mbk9; }
     uint32_t readScfgExt(bool arm7) { return scfgExt[arm7]; }
     uint16_t readScfgRom() { return scfgRom; }
+    uint16_t readScfgClk() { return scfgClk; }
+    bool fastArm9();
     uint32_t readKeyTable(int i, bool dsiCart = false);
     uint16_t readScfgMc();
     uint16_t readCardInsertDelay() { return cardInsertDelay; }
@@ -135,6 +137,7 @@ public:
     void setScfgExt(uint32_t ext9, uint32_t ext7);
     void applyPendingRam();
     void writeScfgRom(uint16_t mask, uint16_t value);
+    void writeScfgClk(uint16_t mask, uint16_t value);
     void writeScfgMc(uint16_t mask, uint16_t value);
     void writeCardInsertDelay(uint16_t mask, uint16_t value);
     void writeCardPowerOffDelay(uint16_t mask, uint16_t value);
@@ -196,6 +199,7 @@ private:
     uint32_t mbk9 = 0;
     uint32_t scfgExt[2] = { 0x8307F100, 0x93FFFB06 }; // As the DSi firmware runs with them
     uint16_t scfgRom = 0x0101; // Which BIOS each CPU sees; the boot stage before the firmware hides their upper halves
+    uint16_t scfgClk = 0x0187; // The ARM9's clock, 133MHz while bit 0 is set, and other new hardware's clocks
     bool bigRam = true, ramPending = false; // Whether main RAM is mapped as 16MB, and a change waiting for the launcher
     uint16_t scfgMc = 0x0010; // Card slot power states; the second slot is always empty on a DSi
     uint16_t cardInsertDelay = 0xFFFF, cardPowerOffDelay = 0xFFFF;

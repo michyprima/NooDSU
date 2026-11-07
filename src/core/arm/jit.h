@@ -147,6 +147,7 @@ public:
     bool lineHasCode(uint8_t *host);
     bool writeCode(uint8_t *host, int size);
     void mapChanged(uint32_t start);
+    void setHalfCycles(bool value) { nextHalfCycles = value && !arm7; }
 
 private:
     Core *core;
@@ -161,7 +162,8 @@ private:
     std::vector<JitBlock*> table;
     std::vector<JitPage> pages;
     int codePages = 0;
-    bool halfCycles = false; // Whether this is the DSi's ARM9, which runs twice as fast and counts half cycles
+    bool halfCycles = false; // Whether this is the DSi's ARM9 at 133MHz, which counts half cycles
+    bool nextHalfCycles = false; // The speed to count at once no code is running, since code calls stubs for one speed
 
     // The entry before the cache holds a flag that's set when code changes, so it's next to the cache
     // Running code stops at the next instruction when the flag is set, in case its own code changed
@@ -185,7 +187,7 @@ private:
     void *codeRefresh = nullptr;
     uint32_t pcBehind = 0; // How far the program counter register will be behind at this point in a block being generated
     bool thumbCode = false; // Whether the block being generated is THUMB
-    void *codePost[2][2] = {}, *codeSlowPost[2] = {}; // Indexed by impure, then by storing the program counter
+    void *codePost[2][2][2] = {}, *codeSlowPost[2] = {}; // Indexed by half cycles, impure, then storing the PC
     void *codeCond[14] = {}, *codeFlags[5] = {}, *codeMemory[6] = {}, *codeShift[4] = {}, *codeShiftCarry[4] = {}, *codeMultiplyCycles = nullptr, *codeOverflowQ = nullptr, *codeMsr[2] = {};
     int offPc = 0, offCpsr = 0, offSpsr = 0, offCycles = 0, offEventCycles = 0, offUsr = 0, offRegs = 0, offIe = 0, offIrf = 0;
     int offDsiCycle = 0;

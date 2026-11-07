@@ -351,50 +351,53 @@ void Jit::emitStubs(PpcEmitter &e) {
     e.blr();
 
     // After an instruction, with its cycles in r3: add them, doubled for the half-speed ARM7 and halved for the DSi's
-    // ARM9, then continue if nothing else needs to run first; impure versions also check if code changed, since the
-    // block might be stale
-    for (int store = 0; store < 2; store++) {
-        for (int impure = 0; impure < 2; impure++) {
-            codePost[impure][store] = e.here();
-            if (arm7) e.add(3, 3, 3);
-            uint32_t *none = nullptr;
-            if (halfCycles) {
-                // Keep an odd half cycle for the next instruction, like the interpreter
-                e.lbz(4, offDsiCycle, R_ARM);
-                e.add(3, 3, 4);
-                e.rlwinm(4, 3, 0, 31, 31);
-                e.stb(4, offDsiCycle, R_ARM);
-                e.rlwinm_(3, 3, 31, 1, 31);
-                none = e.here();
-                e.beq(nullptr);
-            }
-            e.add(3, 3, R_CYCLES);
-            if (impure) {
-                e.lwz(4, -int(sizeof(JitCacheEntry)), R_CACHE);
-                e.cmpwi(4, 0);
-                e.bne(codeSlowPost[store]);
-            }
-            e.cmplw(3, R_NEXT);
-            e.bge(codeSlowPost[store]);
-            e.mr(R_CYCLES, 3);
-            e.blr();
-            if (!none) continue;
+    // ARM9 at 133MHz, then continue if nothing else needs to run first; impure versions also check if code changed,
+    // since the block might be stale. The DSi's ARM9 gets versions for both of its speeds
+    for (int half = 0; half < ((core->dsiMode && !arm7) ? 2 : 1); half++) {
+        for (int store = 0; store < 2; store++) {
+            for (int impure = 0; impure < 2; impure++) {
+                codePost[half][impure][store] = e.here();
+                if (arm7) e.add(3, 3, 3);
+                uint32_t *none = nullptr;
+                if (half) {
+                    // Keep an odd half cycle for the next instruction, like the interpreter
+                    e.lbz(4, offDsiCycle, R_ARM);
+                    e.add(3, 3, 4);
+                    e.rlwinm(4, 3, 0, 31, 31);
+                    e.stb(4, offDsiCycle, R_ARM);
+                    e.rlwinm_(3, 3, 31, 1, 31);
+                    none = e.here();
+                    e.beq(nullptr);
+                }
+                e.add(3, 3, R_CYCLES);
+                if (impure) {
+                    e.lwz(4, -int(sizeof(JitCacheEntry)), R_CACHE);
+                    e.cmpwi(4, 0);
+                    e.bne(codeSlowPost[store]);
+                }
+                e.cmplw(3, R_NEXT);
+                e.bge(codeSlowPost[store]);
+                e.mr(R_CYCLES, 3);
+                e.blr();
+                if (!none) continue;
 
-            // An instruction that took no time also stops at the limit, since the run loop would run the ARM7 next if
-            // it was due when the instruction started, which is now; it stops for an event made due now as well
-            e.patchBc(none);
-            e.mr(3, R_CYCLES);
-            if (impure) {
-                e.lwz(4, -int(sizeof(JitCacheEntry)), R_CACHE);
-                e.cmpwi(4, 0);
-                e.bne(codeSlowPost[store]);
+                // An instruction that took no time also stops at the limit, since the run loop would run the ARM7
+                // next if it was due when the instruction started, which is now; it stops for an event made due now
+                // as well
+                e.patchBc(none);
+                e.mr(3, R_CYCLES);
+                if (impure) {
+                    e.lwz(4, -int(sizeof(JitCacheEntry)), R_CACHE);
+                    e.cmpwi(4, 0);
+                    e.bne(codeSlowPost[store]);
+                }
+                e.cmplw(3, R_NEXT);
+                e.bge(codeSlowPost[store]);
+                e.lwz(4, 0, R_LIMIT);
+                e.cmplw(3, 4);
+                e.bge(codeSlowPost[store]);
+                e.blr();
             }
-            e.cmplw(3, R_NEXT);
-            e.bge(codeSlowPost[store]);
-            e.lwz(4, 0, R_LIMIT);
-            e.cmplw(3, 4);
-            e.bge(codeSlowPost[store]);
-            e.blr();
         }
     }
 
@@ -1780,7 +1783,7 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
         e.stw(5, offPc, R_ARM);
         e.addi(3, R_BATCH, 3);
         if (run) e.li(R_BATCH, 0);
-        e.call(codePost[0][0]);
+        e.call(codePost[halfCycles][0][0]);
         block->links.push_back({ e.here(), target | thumbCond, nullptr });
         e.b(codeDispatch);
 
@@ -1788,7 +1791,7 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
         e.patchBc(skip);
         e.addi(3, R_BATCH, 1);
         if (run) e.li(R_BATCH, 0);
-        e.call(codePost[0][1]);
+        e.call(codePost[halfCycles][0][1]);
         if (i + 1 == block->instrs.size()) e.stw(R_PC, offPc, R_ARM);
         return;
     }
@@ -1854,7 +1857,7 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
     // Then check for jumps, which leave the program counter in memory different from the register
     // Branches to known addresses jump through a site that's linked to the target block once it exists
     stepPc(e);
-    e.call(codePost[!isPure(raw, block->thumb)][!memoryPc]);
+    e.call(codePost[halfCycles][!isPure(raw, block->thumb)][!memoryPc]);
     if (block->thumb && (raw & 0xF800) == 0xE000) {
         // Unconditional branches jump straight to their target like ARM ones
         block->links.push_back({ e.here(), (pc + ((int32_t)(raw << 21) >> 20)) | 1, nullptr });

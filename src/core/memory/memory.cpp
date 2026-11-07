@@ -133,6 +133,7 @@ void Memory::saveState(FILE *file) {
         fwrite(&mbk9, sizeof(mbk9), 1, file);
         fwrite(scfgExt, 4, sizeof(scfgExt) / 4, file);
         fwrite(&scfgRom, sizeof(scfgRom), 1, file);
+        fwrite(&scfgClk, sizeof(scfgClk), 1, file);
         fwrite(&bigRam, sizeof(bigRam), 1, file);
         fwrite(&ramPending, sizeof(ramPending), 1, file);
         fwrite(&scfgMc, sizeof(scfgMc), 1, file);
@@ -202,6 +203,8 @@ void Memory::loadState(FILE *file) {
         fread(&mbk9, sizeof(mbk9), 1, file);
         fread(scfgExt, 4, sizeof(scfgExt) / 4, file);
         fread(&scfgRom, sizeof(scfgRom), 1, file);
+        fread(&scfgClk, sizeof(scfgClk), 1, file);
+        core->jit.setHalfCycles(fastArm9());
         fread(&bigRam, sizeof(bigRam), 1, file);
         fread(&ramPending, sizeof(ramPending), 1, file);
         fread(&scfgMc, sizeof(scfgMc), 1, file);
@@ -1306,6 +1309,7 @@ template <typename T> T Memory::ioRead9(uint32_t address) {
             }
             switch (base) {
                 DEF_IO08(0x4004000, data = readScfgRom()) // SCFG_A9ROM
+                DEF_IO16(0x4004004, data = readScfgClk()) // SCFG_CLK
                 DEF_IO32(0x4004008, data = readScfgExt(0)) // SCFG_EXT9
                 DEF_IO16(0x4004010, data = readScfgMc()) // SCFG_MC
                 DEF_IO08(0x4004040, data = readMbk1(0)) // MBK1.0
@@ -2035,6 +2039,7 @@ template <typename T> void Memory::ioWrite9(uint32_t address, T value) {
                 goto next;
             }
             switch (base) {
+                DEF_IO16(0x4004004, writeScfgClk(IOWR_PARAMS)) // SCFG_CLK
                 DEF_IO32(0x4004008, writeScfgExt9(IOWR_PARAMS)) // SCFG_EXT9
                 DEF_IO08(0x4004040, writeMbk1(0, IOWR_PARAMS8)) // MBK1.0
                 DEF_IO08(0x4004041, writeMbk1(1, IOWR_PARAMS8)) // MBK1.1
@@ -2800,6 +2805,7 @@ void Memory::prepareTitle(bool dsiTitle) {
     cardInsertDelay = 0x1988;
     cardPowerOffDelay = 0x264C;
     writeScfgRom(0xFFFF, dsiTitle ? 0x0101 : 0x0303);
+    writeScfgClk(0xFFFF, dsiTitle ? 0x0187 : 0x0100);
 }
 
 void Memory::cardPowerOff() {
@@ -2828,4 +2834,22 @@ void Memory::writeScfgExt7(uint32_t mask, uint32_t value) {
     // Write to the ARM7's DSi feature register, which also sets the ARM9's new WRAM and second slot bits
     scfgExt[0] = (scfgExt[0] & ~(mask & 0x03000000)) | (value & mask & 0x03000000);
     scfgExt[1] = (scfgExt[1] & ~(mask & 0x93FF0F07)) | (value & mask & 0x93FF0F07);
+}
+
+bool Memory::fastArm9() {
+    // Check if the ARM9 runs at the DSi's 133MHz, twice as fast as on a DS
+    return core->dsiMode && (scfgClk & BIT(0));
+}
+
+void Memory::writeScfgClk(uint16_t mask, uint16_t value) {
+    // Write to the ARM9's clock register; bit 0 runs the ARM9 at 133MHz instead of the DS's 67MHz, which the system
+    // turns off for DS titles, and the others clock the DSP, the camera and new WRAM (not emulated)
+    uint16_t old = scfgClk;
+    mask &= 0x0187;
+    scfgClk = (scfgClk & ~mask) | (value & mask);
+    if (!((old ^ scfgClk) & BIT(0))) return;
+
+    // Count the ARM9's cycles at the new speed, picking the run loop again once the current instruction is done
+    core->jit.setHalfCycles(scfgClk & BIT(0));
+    core->schedule(UPDATE_RUN, 0);
 }
