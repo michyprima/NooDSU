@@ -111,6 +111,8 @@ bool SaveStates::saveState() {
     core->ndma[1].saveState(file);
     core->rtc.saveState(file);
     core->sdMmc.saveState(file);
+    core->sdio.saveState(file);
+    core->dsiWifi.saveState(file);
     core->spi.saveState(file);
     core->spu.saveState(file);
     core->timers[0].saveState(file);
@@ -158,6 +160,8 @@ bool SaveStates::loadState() {
     core->ndma[1].loadState(file);
     core->rtc.loadState(file);
     core->sdMmc.loadState(file);
+    core->sdio.loadState(file);
+    core->dsiWifi.loadState(file);
     core->spi.loadState(file);
     core->spu.loadState(file);
     core->timers[0].loadState(file);

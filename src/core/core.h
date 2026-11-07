@@ -46,6 +46,7 @@
 #include "hle/hle_bios.h"
 #include "io/aes.h"
 #include "io/div_sqrt.h"
+#include "io/dsi_wifi.h"
 #include "io/i2c.h"
 #include "io/input.h"
 #include "io/ipc.h"
@@ -107,6 +108,8 @@ enum SchedTask {
     NDMA7_UPDATE,
     SDMMC_READ_BLOCK,
     SDMMC_WRITE_BLOCK,
+    SDIO_READ_BLOCK,
+    SDIO_WRITE_BLOCK,
     MAX_TASKS
 };
 
@@ -200,6 +203,8 @@ public:
     Rtc rtc;
     SaveStates saveStates;
     SdMmc sdMmc;
+    SdMmc sdio;
+    DsiWifi dsiWifi;
     Spi spi;
     Spu spu;
     Timers timers[2];

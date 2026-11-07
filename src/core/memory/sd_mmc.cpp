@@ -31,25 +31,28 @@ SdMmc::~SdMmc() {
 void SdMmc::saveState(FILE *file) {
     // Write DSi state data to the file
     if (!core->dsiMode) return;
-    fread(&cardStatus, sizeof(cardStatus), 1, file);
-    fread(&opCond, sizeof(opCond), 1, file);
-    fread(&blockLen, sizeof(blockLen), 1, file);
-    fread(&curAddress, sizeof(curAddress), 1, file);
-    fread(&curBlock, sizeof(curBlock), 1, file);
-    fread(&sdCmd, sizeof(sdCmd), 1, file);
-    fread(&sdPortSelect, sizeof(sdPortSelect), 1, file);
-    fread(&sdCmdParam, sizeof(sdCmdParam), 1, file);
-    fread(&sdData16Blkcnt, sizeof(sdData16Blkcnt), 1, file);
-    fread(sdResponse, 4, sizeof(sdResponse) / 4, file);
-    fread(&sdIrqStatus, sizeof(sdIrqStatus), 1, file);
-    fread(&sdIrqMask, sizeof(sdIrqMask), 1, file);
-    fread(&sdData16Blklen, sizeof(sdData16Blklen), 1, file);
-    fread(&sdErrDetail, sizeof(sdErrDetail), 1, file);
-    fread(&sdData16Fifo, sizeof(sdData16Fifo), 1, file);
-    fread(&sdDataCtl, sizeof(sdDataCtl), 1, file);
-    fread(&sdData32Irq, sizeof(sdData32Irq), 1, file);
-    fread(&sdData32Blklen, sizeof(sdData32Blklen), 1, file);
-    fread(&sdData32Fifo, sizeof(sdData32Fifo), 1, file);
+    fwrite(&cardStatus, sizeof(cardStatus), 1, file);
+    fwrite(&opCond, sizeof(opCond), 1, file);
+    fwrite(&blockLen, sizeof(blockLen), 1, file);
+    fwrite(&curAddress, sizeof(curAddress), 1, file);
+    fwrite(&curBlock, sizeof(curBlock), 1, file);
+    fwrite(&sdCmd, sizeof(sdCmd), 1, file);
+    fwrite(&sdPortSelect, sizeof(sdPortSelect), 1, file);
+    fwrite(&sdCmdParam, sizeof(sdCmdParam), 1, file);
+    fwrite(&sdData16Blkcnt, sizeof(sdData16Blkcnt), 1, file);
+    fwrite(sdResponse, 4, sizeof(sdResponse) / 4, file);
+    fwrite(&sdIrqStatus, sizeof(sdIrqStatus), 1, file);
+    fwrite(&sdIrqMask, sizeof(sdIrqMask), 1, file);
+    fwrite(&sdData16Blklen, sizeof(sdData16Blklen), 1, file);
+    fwrite(&sdErrDetail, sizeof(sdErrDetail), 1, file);
+    fwrite(&sdData16Fifo, sizeof(sdData16Fifo), 1, file);
+    fwrite(&sdDataCtl, sizeof(sdDataCtl), 1, file);
+    fwrite(&sdData32Irq, sizeof(sdData32Irq), 1, file);
+    fwrite(&sdData32Blklen, sizeof(sdData32Blklen), 1, file);
+    fwrite(&sdData32Fifo, sizeof(sdData32Fifo), 1, file);
+    fwrite(&sdCardIrqCtl, sizeof(sdCardIrqCtl), 1, file);
+    fwrite(&sdCardIrqStatus, sizeof(sdCardIrqStatus), 1, file);
+    fwrite(&sdCardIrqMask, sizeof(sdCardIrqMask), 1, file);
     SaveStates::writeFifo(dataFifo16, file);
     SaveStates::writeFifo(dataFifo32, file);
 }
@@ -76,6 +79,9 @@ void SdMmc::loadState(FILE *file) {
     fread(&sdData32Irq, sizeof(sdData32Irq), 1, file);
     fread(&sdData32Blklen, sizeof(sdData32Blklen), 1, file);
     fread(&sdData32Fifo, sizeof(sdData32Fifo), 1, file);
+    fread(&sdCardIrqCtl, sizeof(sdCardIrqCtl), 1, file);
+    fread(&sdCardIrqStatus, sizeof(sdCardIrqStatus), 1, file);
+    fread(&sdCardIrqMask, sizeof(sdCardIrqMask), 1, file);
     SaveStates::readFifo(dataFifo16, file);
     SaveStates::readFifo(dataFifo32, file);
 }
@@ -101,30 +107,40 @@ uint32_t *SdMmc::init() {
     return mmcCid;
 }
 
+void SdMmc::scheduleRead() {
+    // Read the next block of data a little later
+    core->schedule(sdio ? SDIO_READ_BLOCK : SDMMC_READ_BLOCK, 1);
+}
+
+void SdMmc::scheduleWrite() {
+    // Write the next block of data a little later
+    core->schedule(sdio ? SDIO_WRITE_BLOCK : SDMMC_WRITE_BLOCK, 1);
+}
+
 void SdMmc::sendInterrupt(int bit) {
     // Set the interrupt's request bit
     sdIrqStatus |= BIT(bit);
 
     // Send an interrupt to the ARM9 if the new bit is unmasked
     if (~sdIrqMask & BIT(bit))
-        core->interpreter[1].sendInterrupt(40);
+        core->interpreter[1].sendInterrupt(irqBit());
 }
 
 void SdMmc::startWrite() {
     // Change to write state and trigger an initial DRQ
     cardStatus = (cardStatus & ~0x1E00) | (0x6 << 9);
-    core->ndma[1].setDrq(0x8);
+    core->ndma[1].setDrq(drqType());
 
     // Write a block right away if the FIFO is full, or trigger a FIFO empty interrupt
     if (sdDataCtl & BIT(1)) { // 32-bit
         if ((dataFifo32.size() << 2) >= sdData32Blklen)
-            core->schedule(SDMMC_WRITE_BLOCK, 1);
+            scheduleWrite();
         else if (dataFifo32.empty() && (sdData32Irq & BIT(12)))
-            core->interpreter[1].sendInterrupt(40);
+            core->interpreter[1].sendInterrupt(irqBit());
     }
     else { // 16-bit
         if ((dataFifo16.size() << 1) >= sdData16Blklen)
-            core->schedule(SDMMC_WRITE_BLOCK, 1);
+            scheduleWrite();
         else if (dataFifo16.empty())
             sendInterrupt(25);
     }
@@ -143,7 +159,7 @@ uint32_t SdMmc::popFifo() {
         // Trigger a 32-bit FIFO empty interrupt if enabled and finish a block
         sdData32Irq &= ~BIT(9); // Empty
         if (sdData32Irq & BIT(12))
-            core->interpreter[1].sendInterrupt(40);
+            core->interpreter[1].sendInterrupt(irqBit());
         curBlock--;
         return value;
     }
@@ -177,7 +193,7 @@ void SdMmc::pushFifo(uint32_t value) {
         // Trigger a 32-bit FIFO full interrupt if enabled and finish a block
         sdData32Irq |= BIT(8);
         if (sdData32Irq & BIT(11))
-            core->interpreter[1].sendInterrupt(40);
+            core->interpreter[1].sendInterrupt(irqBit());
         curBlock--;
         return;
     }
@@ -207,9 +223,16 @@ void SdMmc::readBlock() {
     bool hc = (~sdPortSelect & sdhc);
     uint32_t len = (hc ? 0x80 : blockLen);
 
-    // Read a block of data from the SD or MMC if present, in 512- or 1-byte units
+    // Read a block of data from the SD or MMC if present, in 512- or 1-byte units, or from the Wi-Fi chip in blocks as
+    // long as the block length
     uint8_t data[0x200];
-    if (FILE *src = (sdPortSelect & BIT(0)) ? nand : sd) {
+    if (sdio) {
+        uint32_t size = sdData16Blklen ? sdData16Blklen : 0x200;
+        memset(data, 0, sizeof(data));
+        core->dsiWifi.readData(data, size);
+        len = (size + 3) >> 2;
+    }
+    else if (FILE *src = (sdPortSelect & BIT(0)) ? nand : sd) {
         std::lock_guard<FileLock> guard(fileLock());
         fseek(src, hc ? (int64_t(curAddress) << 9) : curAddress, SEEK_SET);
         fread(data, sizeof(uint32_t), len, src);
@@ -220,32 +243,36 @@ void SdMmc::readBlock() {
 
     // Push the data to a FIFO
     LOG_INFO("Reading %s block from 0x%X with size 0x%X\n",
-        (sdPortSelect & BIT(0)) ? "MMC" : "SD", curAddress, len << 2);
+        name(), curAddress, len << 2);
     for (int i = 0; i < len; i++) pushFifo(U8TO32(data, i * 4));
 
     // Change to read or idle state based on blocks left and trigger a DRQ
     cardStatus = (cardStatus & ~0x1E00) | ((curBlock ? 0x5 : 0x4) << 9);
     curAddress += hc ? 1 : (len << 2);
-    core->ndma[1].setDrq(0x8);
+    core->ndma[1].setDrq(drqType());
 }
 
 void SdMmc::writeBlock() {
     // Check for high capacity and hardcode the block length if so
     bool hc = (~sdPortSelect & sdhc);
     uint32_t len = (hc ? 0x80 : blockLen);
+    if (sdio) len = ((sdData16Blklen ? sdData16Blklen : 0x200) + 3) >> 2;
 
     // Pop a block of data from a FIFO, keeping its bytes in order on any host
     uint8_t data[0x200];
     LOG_INFO("Writing %s block to 0x%X with size 0x%X\n",
-        (sdPortSelect & BIT(0)) ? "MMC" : "SD", curAddress, len << 2);
+        name(), curAddress, len << 2);
     for (int i = 0; i < len; i++) {
         uint32_t value = popFifo();
         for (int j = 0; j < 4; j++)
             data[i * 4 + j] = value >> (j * 8);
     }
 
-    // Write the data to the SD or MMC if present, in 512- or 1-byte units
-    if (FILE *dst = (sdPortSelect & BIT(0)) ? nand : sd) {
+    // Write the data to the SD or MMC if present, in 512- or 1-byte units, or to the Wi-Fi chip
+    if (sdio) {
+        core->dsiWifi.writeData(data, sdData16Blklen ? sdData16Blklen : 0x200);
+    }
+    else if (FILE *dst = (sdPortSelect & BIT(0)) ? nand : sd) {
         std::lock_guard<FileLock> guard(fileLock());
         fseek(dst, hc ? (int64_t(curAddress) << 9) : curAddress, SEEK_SET);
         fwrite(data, sizeof(uint32_t), len, dst);
@@ -255,13 +282,16 @@ void SdMmc::writeBlock() {
     cardStatus = (cardStatus & ~0x1E00) | ((curBlock ? 0x6 : 0x4) << 9);
     curAddress += hc ? 1 : (len << 2);
     if (!curBlock) return sendInterrupt(2);
-    core->ndma[1].setDrq(0x8);
+    core->ndma[1].setDrq(drqType());
 }
 
 void SdMmc::runCommand() {
+    // Commands for the Wi-Fi chip are its own
+    if (sdio) return runSdioCommand();
+
     // Ensure the command is being run in normal mode
     if (cardStatus & BIT(5)) {
-        LOG_WARN("Tried to run %s CMD in app mode\n", (sdPortSelect & BIT(0)) ? "MMC" : "SD");
+        LOG_WARN("Tried to run %s CMD in app mode\n", name());
         cardStatus &= ~BIT(5);
         return;
     }
@@ -283,12 +313,12 @@ void SdMmc::runCommand() {
     case 1: // SEND_OP_COND
     case 3: // SET_RELATIVE_ADDR
         // Stub commands that want response bit 31 to be set
-        LOG_WARN("Stubbed %s command: CMD%d\n", (sdPortSelect & BIT(0)) ? "MMC" : "SD", cmd);
+        LOG_WARN("Stubbed %s command: CMD%d\n", name(), cmd);
         return pushResponse(0x80000000);
 
     default:
         // Assume response R1 for unknown commands
-        LOG_WARN("Unknown %s command: CMD%d\n", (sdPortSelect & BIT(0)) ? "MMC" : "SD", cmd);
+        LOG_WARN("Unknown %s command: CMD%d\n", name(), cmd);
         return pushResponse(cardStatus);
     }
 }
@@ -296,7 +326,7 @@ void SdMmc::runCommand() {
 void SdMmc::runAppCommand() {
     // Ensure the command is being run in app mode
     if (~cardStatus & BIT(5)) {
-        LOG_WARN("Tried to run %s ACMD in normal mode\n", (sdPortSelect & BIT(0)) ? "MMC" : "SD");
+        LOG_WARN("Tried to run %s ACMD in normal mode\n", name());
         return;
     }
 
@@ -311,9 +341,32 @@ void SdMmc::runAppCommand() {
 
     default:
         // Assume response R1 for unknown commands
-        LOG_WARN("Unknown %s command: ACMD%d\n", (sdPortSelect & BIT(0)) ? "MMC" : "SD", cmd);
+        LOG_WARN("Unknown %s command: ACMD%d\n", name(), cmd);
         return pushResponse(cardStatus);
     }
+}
+
+void SdMmc::runSdioCommand() {
+    // Execute an SDIO command for the Wi-Fi chip, with the response of a single function card
+    switch (uint8_t cmd = sdCmd & 0x3F) {
+        case 3: return pushResponse(0); // SEND_RELATIVE_ADDR
+        case 5: return pushResponse(0x80FFFF00); // IO_SEND_OP_COND
+        case 7: return pushResponse(0); // SELECT_CARD
+        case 52: return pushResponse(core->dsiWifi.ioDirect(sdCmdParam) | 0x1000); // IO_RW_DIRECT
+        case 53: return ioExtended(); // IO_RW_EXTENDED
+
+    default:
+        LOG_WARN("Unknown SDIO command: CMD%d\n", cmd);
+        return pushResponse(0);
+    }
+}
+
+void SdMmc::ioExtended() {
+    // Start a transfer of bytes or blocks to or from the Wi-Fi chip, which goes through the FIFOs like SD blocks
+    core->dsiWifi.startTransfer(sdCmdParam);
+    curBlock = (sdCmdParam & BIT(27)) ? sdData16Blkcnt : 1;
+    pushResponse(0x1000);
+    (sdCmdParam & BIT(31)) ? startWrite() : scheduleRead();
 }
 
 void SdMmc::setIfCond() {
@@ -349,7 +402,7 @@ void SdMmc::readSingleBlock() {
     curAddress = sdCmdParam;
     curBlock = 1;
     pushResponse(cardStatus);
-    core->schedule(SDMMC_READ_BLOCK, 1);
+    scheduleRead();
 }
 
 void SdMmc::readMultiBlock() {
@@ -357,7 +410,7 @@ void SdMmc::readMultiBlock() {
     curAddress = sdCmdParam;
     curBlock = sdData16Blkcnt;
     pushResponse(cardStatus);
-    core->schedule(SDMMC_READ_BLOCK, 1);
+    scheduleRead();
 }
 
 void SdMmc::writeSingleBlock() {
@@ -413,8 +466,8 @@ uint16_t SdMmc::readData16Fifo() {
 
     // Trigger a 16-bit FIFO empty interrupt and read another block or finish with a data end interrupt
     sendInterrupt(25);
-    core->ndma[1].clearDrq(0x8);
-    (cardStatus & 0x1E00) == (0x5 << 9) ? core->schedule(SDMMC_READ_BLOCK, 1) : sendInterrupt(2);
+    core->ndma[1].clearDrq(drqType());
+    (cardStatus & 0x1E00) == (0x5 << 9) ? scheduleRead() : sendInterrupt(2);
     return sdData16Fifo;
 }
 
@@ -429,11 +482,11 @@ uint32_t SdMmc::readData32Fifo() {
     // Trigger a 32-bit FIFO empty interrupt if enabled
     sdData32Irq &= ~BIT(9);
     if (sdData32Irq & BIT(12))
-        core->interpreter[1].sendInterrupt(40);
-    core->ndma[1].clearDrq(0x8);
+        core->interpreter[1].sendInterrupt(irqBit());
+    core->ndma[1].clearDrq(drqType());
 
     // Read another block or finish with a data end interrupt
-    (cardStatus & 0x1E00) == (0x5 << 9) ? core->schedule(SDMMC_READ_BLOCK, 1) : sendInterrupt(2);
+    (cardStatus & 0x1E00) == (0x5 << 9) ? scheduleRead() : sendInterrupt(2);
     return sdData32Fifo;
 }
 
@@ -449,7 +502,7 @@ void SdMmc::writeCmd(uint16_t mask, uint16_t value) {
         case 1: return runAppCommand();
 
     default:
-        LOG_WARN("Unknown %s command type: %d\n", (sdPortSelect & BIT(0)) ? "MMC" : "SD", type);
+        LOG_WARN("Unknown %s command type: %d\n", name(), type);
         return;
     }
 }
@@ -484,7 +537,7 @@ void SdMmc::writeIrqMask(uint32_t mask, uint32_t value) {
 
     // Trigger an ARM9 interrupt if a requested bit was newly unmasked
     if (sdIrqStatus & old & ~sdIrqMask)
-        core->interpreter[1].sendInterrupt(40);
+        core->interpreter[1].sendInterrupt(irqBit());
 }
 
 void SdMmc::writeData16Blklen(uint16_t mask, uint16_t value) {
@@ -502,9 +555,9 @@ void SdMmc::writeData16Fifo(uint16_t mask, uint16_t value) {
 
     // Trigger a 16-bit FIFO full interrupt and write a block if in write mode
     sendInterrupt(24);
-    core->ndma[1].clearDrq(0x8);
+    core->ndma[1].clearDrq(drqType());
     if ((cardStatus & 0x1E00) == (0x6 << 9))
-        core->schedule(SDMMC_WRITE_BLOCK, 1);
+        scheduleWrite();
 }
 
 void SdMmc::writeDataCtl(uint16_t mask, uint16_t value) {
@@ -542,10 +595,44 @@ void SdMmc::writeData32Fifo(uint32_t mask, uint32_t value) {
     // Trigger a 32-bit FIFO full interrupt if enabled
     sdData32Irq |= BIT(8);
     if (sdData32Irq & BIT(11))
-        core->interpreter[1].sendInterrupt(40);
-    core->ndma[1].clearDrq(0x8);
+        core->interpreter[1].sendInterrupt(irqBit());
+    core->ndma[1].clearDrq(drqType());
 
     // Write a block if in write mode
     if ((cardStatus & 0x1E00) == (0x6 << 9))
-        core->schedule(SDMMC_WRITE_BLOCK, 1);
+        scheduleWrite();
+}
+
+void SdMmc::writeCardIrqCtl(uint16_t mask, uint16_t value) {
+    // Write to the SD_CARD_IRQ_CTL register, which enables taking interrupts from the card
+    mask &= 0x0305;
+    sdCardIrqCtl = (sdCardIrqCtl & ~mask) | (value & mask);
+    updateCardIrq();
+}
+
+void SdMmc::writeCardIrqStatus(uint16_t mask, uint16_t value) {
+    // Acknowledge bits in the SD_CARD_IRQ_STATUS register
+    sdCardIrqStatus &= (value | ~mask);
+}
+
+void SdMmc::writeCardIrqMask(uint16_t mask, uint16_t value) {
+    // Write to the SD_CARD_IRQ_MASK register, and interrupt if a pending bit was newly unmasked
+    mask &= 0xC007;
+    uint16_t old = sdCardIrqStatus & ~sdCardIrqMask;
+    sdCardIrqMask = (sdCardIrqMask & ~mask) | (value & mask);
+    if (!old && (sdCardIrqStatus & ~sdCardIrqMask)) {
+        core->interpreter[1].sendInterrupt(irqBit());
+        core->interpreter[1].sendInterrupt(irqBit() + 1);
+    }
+}
+
+void SdMmc::updateCardIrq() {
+    // Follow the Wi-Fi chip's interrupt line while card interrupts are enabled, interrupting on a new unmasked one
+    if (!sdio || (~sdCardIrqCtl & BIT(0))) return;
+    uint16_t old = sdCardIrqStatus & ~sdCardIrqMask;
+    sdCardIrqStatus = (sdCardIrqStatus & ~BIT(0)) | core->dsiWifi.readIrq();
+    if (!old && (sdCardIrqStatus & ~sdCardIrqMask)) {
+        core->interpreter[1].sendInterrupt(irqBit());
+        core->interpreter[1].sendInterrupt(irqBit() + 1);
+    }
 }

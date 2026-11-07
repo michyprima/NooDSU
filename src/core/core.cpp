@@ -134,7 +134,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
         gpu3DRenderer(this), hleArm7(this), hleBios { HleBios(this, 0, HleBios::swiTable9), HleBios(this, 1, HleBios::
         swiTable7), HleBios(this, 1, HleBios::swiTableGba) }, i2c(this), input(this), interpreter { Interpreter(
         this, 0), Interpreter(this, 1) }, ipc(this), jit(this, 0), jit7(this, 1), memory(this), ndma { Ndma(this, 0), Ndma(this, 1) }, rtc(this),
-        saveStates(this), sdMmc(this), spi(this), spu(this), timers { Timers(this, 0), Timers(this, 1) }, wifi(this) {
+        saveStates(this), sdMmc(this, false), sdio(this, true), dsiWifi(this), spi(this), spu(this), timers { Timers(this, 0), Timers(this, 1) }, wifi(this) {
     // Set DSi mode now and ignore changes to it later
     dsiMode = Settings::dsiMode;
     updateRun();
@@ -145,6 +145,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
     if (!memory.loadBios7() && req) throw dsiMode ? ERROR_DSI_BIOS : ERROR_NDS_BIOS;
     if (!spi.loadFirmware() && req) throw dsiMode ? ERROR_DSI_FIRM : ERROR_NDS_FIRM;
     realGbaBios = memory.loadGbaBios();
+    if (dsiMode) dsiWifi.reset();
 
     // Define the tasks that can be scheduled
     tasks[UPDATE_RUN] = std::bind(&Core::updateRun, this);
@@ -184,6 +185,8 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
     tasks[NDMA7_UPDATE] = std::bind(&Ndma::update, &ndma[1]);
     tasks[SDMMC_READ_BLOCK] = std::bind(&SdMmc::readBlock, &sdMmc);
     tasks[SDMMC_WRITE_BLOCK] = std::bind(&SdMmc::writeBlock, &sdMmc);
+    tasks[SDIO_READ_BLOCK] = std::bind(&SdMmc::readBlock, &sdio);
+    tasks[SDIO_WRITE_BLOCK] = std::bind(&SdMmc::writeBlock, &sdio);
 
     // Schedule initial tasks for NDS mode
     schedule(RESET_CYCLES, 0x7FFFFFFF);

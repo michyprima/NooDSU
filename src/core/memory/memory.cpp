@@ -1546,6 +1546,26 @@ template <typename T> T Memory::ioRead7(uint32_t address) {
                 DEF_IO16(0x4004900, data = core->sdMmc.readData32Irq()) // SD_DATA32_IRQ
                 DEF_IO16(0x4004904, data = core->sdMmc.readData32Blklen()) // SD_DATA32_BLKLEN
                 DEF_IO32(0x400490C, data = core->sdMmc.readData32Fifo()) // SD_DATA32_FIFO
+                DEF_IO16(0x4004A00, data = core->sdio.readCmd()) // SDIO_CMD
+                DEF_IO16(0x4004A02, data = core->sdio.readPortSelect()) // SDIO_PORT_SELECT
+                DEF_IO32(0x4004A04, data = core->sdio.readCmdParam()) // SDIO_CMD_PARAM
+                DEF_IO16(0x4004A0A, data = core->sdio.readData16Blkcnt()) // SDIO_DATA16_BLKCNT
+                DEF_IO32(0x4004A0C, data = core->sdio.readResponse(0)) // SDIO_RESPONSE0
+                DEF_IO32(0x4004A10, data = core->sdio.readResponse(1)) // SDIO_RESPONSE1
+                DEF_IO32(0x4004A14, data = core->sdio.readResponse(2)) // SDIO_RESPONSE2
+                DEF_IO32(0x4004A18, data = core->sdio.readResponse(3)) // SDIO_RESPONSE3
+                DEF_IO32(0x4004A1C, data = core->sdio.readIrqStatus()) // SDIO_IRQ_STATUS
+                DEF_IO32(0x4004A20, data = core->sdio.readIrqMask()) // SDIO_IRQ_MASK
+                DEF_IO16(0x4004A26, data = core->sdio.readData16Blklen()) // SDIO_DATA16_BLKLEN
+                DEF_IO32(0x4004A2C, data = core->sdio.readErrDetail()) // SDIO_ERR_DETAIL
+                DEF_IO16(0x4004A30, data = core->sdio.readData16Fifo()) // SDIO_DATA16_FIFO
+                DEF_IO16(0x4004A34, data = core->sdio.readCardIrqCtl()) // SDIO_CARD_IRQ_CTL
+                DEF_IO16(0x4004A36, data = core->sdio.readCardIrqStatus()) // SDIO_CARD_IRQ_STATUS
+                DEF_IO16(0x4004A38, data = core->sdio.readCardIrqMask()) // SDIO_CARD_IRQ_MASK
+                DEF_IO16(0x4004AD8, data = core->sdio.readDataCtl()) // SDIO_DATA_CTL
+                DEF_IO16(0x4004B00, data = core->sdio.readData32Irq()) // SDIO_DATA32_IRQ
+                DEF_IO16(0x4004B04, data = core->sdio.readData32Blklen()) // SDIO_DATA32_BLKLEN
+                DEF_IO32(0x4004B0C, data = core->sdio.readData32Fifo()) // SDIO_DATA32_FIFO
                 DEF_IO32(0x4004D00, data = core->sdMmc.readConsoleId(0)) // CONSOLE_ID0
                 DEF_IO32(0x4004D04, data = core->sdMmc.readConsoleId(1)) // CONSOLE_ID1
             }
@@ -2322,6 +2342,21 @@ template <typename T> void Memory::ioWrite7(uint32_t address, T value) {
                 DEF_IO16(0x4004900, core->sdMmc.writeData32Irq(IOWR_PARAMS)) // SD_DATA32_IRQ
                 DEF_IO16(0x4004904, core->sdMmc.writeData32Blklen(IOWR_PARAMS)) // SD_DATA32_BLKLEN
                 DEF_IO32(0x400490C, core->sdMmc.writeData32Fifo(IOWR_PARAMS)) // SD_DATA32_FIFO
+                DEF_IO16(0x4004A00, core->sdio.writeCmd(IOWR_PARAMS)) // SDIO_CMD
+                DEF_IO16(0x4004A02, core->sdio.writePortSelect(IOWR_PARAMS)) // SDIO_PORT_SELECT
+                DEF_IO32(0x4004A04, core->sdio.writeCmdParam(IOWR_PARAMS)) // SDIO_CMD_PARAM
+                DEF_IO16(0x4004A0A, core->sdio.writeData16Blkcnt(IOWR_PARAMS)) // SDIO_DATA16_BLKCNT
+                DEF_IO32(0x4004A1C, core->sdio.writeIrqStatus(IOWR_PARAMS)) // SDIO_IRQ_STATUS
+                DEF_IO32(0x4004A20, core->sdio.writeIrqMask(IOWR_PARAMS)) // SDIO_IRQ_MASK
+                DEF_IO16(0x4004A26, core->sdio.writeData16Blklen(IOWR_PARAMS)) // SDIO_DATA16_BLKLEN
+                DEF_IO16(0x4004A30, core->sdio.writeData16Fifo(IOWR_PARAMS)) // SDIO_DATA16_FIFO
+                DEF_IO16(0x4004A34, core->sdio.writeCardIrqCtl(IOWR_PARAMS)) // SDIO_CARD_IRQ_CTL
+                DEF_IO16(0x4004A36, core->sdio.writeCardIrqStatus(IOWR_PARAMS)) // SDIO_CARD_IRQ_STATUS
+                DEF_IO16(0x4004A38, core->sdio.writeCardIrqMask(IOWR_PARAMS)) // SDIO_CARD_IRQ_MASK
+                DEF_IO16(0x4004AD8, core->sdio.writeDataCtl(IOWR_PARAMS)) // SDIO_DATA_CTL
+                DEF_IO16(0x4004B00, core->sdio.writeData32Irq(IOWR_PARAMS)) // SDIO_DATA32_IRQ
+                DEF_IO16(0x4004B04, core->sdio.writeData32Blklen(IOWR_PARAMS)) // SDIO_DATA32_BLKLEN
+                DEF_IO32(0x4004B0C, core->sdio.writeData32Fifo(IOWR_PARAMS)) // SDIO_DATA32_FIFO
             }
         }
 

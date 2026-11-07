@@ -24,9 +24,10 @@
 
 class Core;
 
+// The DSi's SD/MMC controllers: the first reaches the SD card and the NAND, and the second the Wi-Fi chip over SDIO
 class SdMmc {
 public:
-    SdMmc(Core *core): core(core) {}
+    SdMmc(Core *core, bool sdio): core(core), sdio(sdio) {}
     ~SdMmc();
     void saveState(FILE *file);
     void loadState(FILE *file);
@@ -50,6 +51,9 @@ public:
     uint16_t readData32Blklen() { return sdData32Blklen; }
     uint32_t readData32Fifo();
     uint32_t readConsoleId(int i) { return consoleId[i]; }
+    uint16_t readCardIrqCtl() { return sdCardIrqCtl; }
+    uint16_t readCardIrqStatus() { return sdCardIrqStatus; }
+    uint16_t readCardIrqMask() { return sdCardIrqMask; }
 
     void writeCmd(uint16_t mask, uint16_t value);
     void writePortSelect(uint16_t mask, uint16_t value);
@@ -63,9 +67,14 @@ public:
     void writeData32Irq(uint16_t mask, uint16_t value);
     void writeData32Blklen(uint16_t mask, uint16_t value);
     void writeData32Fifo(uint32_t mask, uint32_t value);
+    void writeCardIrqCtl(uint16_t mask, uint16_t value);
+    void writeCardIrqStatus(uint16_t mask, uint16_t value);
+    void writeCardIrqMask(uint16_t mask, uint16_t value);
+    void updateCardIrq();
 
 private:
     Core *core;
+    bool sdio;
 
     FILE *nand = nullptr;
     FILE *sd = nullptr;
@@ -86,7 +95,7 @@ private:
     uint16_t sdData16Blkcnt = 0;
     uint32_t sdResponse[4] = {};
     uint32_t sdIrqStatus = 0xA0;
-    uint32_t sdIrqMask = 0;
+    uint32_t sdIrqMask = 0x8B7F031D;
     uint16_t sdData16Blklen = 0;
     uint32_t sdErrDetail = 0;
     uint16_t sdData16Fifo = 0;
@@ -94,10 +103,18 @@ private:
     uint16_t sdData32Irq = 0;
     uint32_t sdData32Blklen = 0;
     uint32_t sdData32Fifo = 0;
+    uint16_t sdCardIrqCtl = 0;
+    uint16_t sdCardIrqStatus = 0;
+    uint16_t sdCardIrqMask = 0xC007;
 
     uint32_t consoleId[0x2] = {};
     uint32_t mmcCid[0x4] = {};
 
+    int irqBit() { return sdio ? 42 : 40; }
+    uint8_t drqType() { return sdio ? 0x9 : 0x8; }
+    const char *name() { return sdio ? "SDIO" : (sdPortSelect & 0x1) ? "MMC" : "SD"; }
+    void scheduleRead();
+    void scheduleWrite();
     void sendInterrupt(int bit);
     void startWrite();
     uint32_t popFifo();
@@ -105,6 +122,8 @@ private:
     void pushResponse(uint32_t value);
     void runCommand();
     void runAppCommand();
+    void runSdioCommand();
+    void ioExtended();
 
     void setIfCond();
     void getCid();
