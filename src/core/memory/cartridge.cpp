@@ -815,11 +815,10 @@ void CartridgeNds::directBoot() {
         for (uint32_t i = 0; i < 0x1000; i += 4)
             core->memory.write<uint32_t>(0, 0x2FFE000 + i, U8TO32(rom, i));
     }
-    else {
-        // Copy the NDS ROM header into memory
-        for (uint32_t i = 0; i < 0x170; i += 4)
-            core->memory.write<uint32_t>(0, 0x2FFFE00 + i, U8TO32(rom, i));
-    }
+
+    // Copy the NDS ROM header into memory, which DSi games read too, like for where their files are
+    for (uint32_t i = 0; i < 0x170; i += 4)
+        core->memory.write<uint32_t>(0, 0x2FFFE00 + i, U8TO32(rom, i));
 
     // Load initial NDS/DSi code segments
     loadNdsCode(false);
