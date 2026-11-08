@@ -2659,25 +2659,36 @@ void Memory::writeGbaHaltCnt(uint8_t value) {
         LOG_CRIT("Unhandled request for stop mode\n");
 }
 
+void Memory::updateNwramMaps(const uint32_t *window, uint32_t startMask, uint32_t endMask) {
+    // Update the maps only where each CPU has a block of NWRAM, given by its address registers; the DSi's launcher moves
+    // slots between the CPUs thousands of times while starting a title, so updating everything each time is too slow
+    uint32_t start9 = 0x3000000 + ((window[0] << 12) & startMask);
+    uint32_t end9 = 0x3000000 + std::min((window[0] >> 4) & endMask, 0x1000000U);
+    if (start9 < end9) updateMap9(start9, end9);
+    uint32_t start7 = 0x3000000 + ((window[1] << 12) & startMask);
+    uint32_t end7 = 0x3000000 + std::min((window[1] >> 4) & endMask, 0x800000U);
+    if (start7 < end7) updateMap7(start7, end7);
+}
+
 void Memory::writeMbk1(int i, uint8_t value) {
     // Write to one of the NWRAM-A slot registers and update mappings
+    if (mbk1[i] == (value & 0x8D)) return;
     mbk1[i] = (value & 0x8D);
-    updateMap9(0x3000000, 0x4000000);
-    updateMap7(0x3000000, 0x3800000);
+    updateNwramMaps(mbk6, 0xFF0000, 0x1FF0000);
 }
 
 void Memory::writeMbk23(int i, uint8_t value) {
     // Write to one of the NWRAM-B slot registers and update mappings
+    if (mbk23[i] == (value & 0x9F)) return;
     mbk23[i] = (value & 0x9F);
-    updateMap9(0x3000000, 0x4000000);
-    updateMap7(0x3000000, 0x3800000);
+    updateNwramMaps(mbk7, 0xFF8000, 0x1FF8000);
 }
 
 void Memory::writeMbk45(int i, uint8_t value) {
     // Write to one of the NWRAM-C slot registers and update mappings
+    if (mbk45[i] == (value & 0x9F)) return;
     mbk45[i] = (value & 0x9F);
-    updateMap9(0x3000000, 0x4000000);
-    updateMap7(0x3000000, 0x3800000);
+    updateNwramMaps(mbk8, 0xFF8000, 0x1FF8000);
 }
 
 void Memory::writeMbk6(bool arm7, uint32_t mask, uint32_t value) {

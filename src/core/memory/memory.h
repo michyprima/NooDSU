@@ -77,6 +77,7 @@ public:
 
     void updateMap9(uint32_t start, uint32_t end, bool tcm = false);
     void updateMap7(uint32_t start, uint32_t end);
+    void updateNwramMaps(const uint32_t *window, uint32_t startMask, uint32_t endMask);
     void forgetCleanLines();
     void updateVram(bool all = false);
 
