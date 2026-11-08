@@ -101,7 +101,7 @@ int Dldi::readSectors(bool arm7, uint32_t sector, uint32_t numSectors, uint32_t 
     uint8_t *data = new uint8_t[size];
     {
         std::lock_guard<FileLock> guard(fileLock());
-        fseek(sdImage, offset, SEEK_SET);
+        fseeko(sdImage, offset, SEEK_SET);
         fread(data, sizeof(uint8_t), size, sdImage);
     }
 
@@ -126,7 +126,7 @@ int Dldi::writeSectors(bool arm7, uint32_t sector, uint32_t numSectors, uint32_t
     // Write the data to the SD image
     {
         std::lock_guard<FileLock> guard(fileLock());
-        fseek(sdImage, offset, SEEK_SET);
+        fseeko(sdImage, offset, SEEK_SET);
         fwrite(data, sizeof(uint8_t), size, sdImage);
     }
     delete[] data;

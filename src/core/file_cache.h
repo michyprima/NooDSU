@@ -60,7 +60,7 @@ public:
         // Write to the file
         {
             std::lock_guard<FileLock> guard(fileLock());
-            fseek(file, offset, SEEK_SET);
+            fseeko(file, offset, SEEK_SET);
             fwrite(data, sizeof(uint8_t), size, file);
         }
 
@@ -124,7 +124,7 @@ private:
 
     static void readFile(FILE *file, uint64_t offset, uint8_t *data, uint32_t size) {
         // Read data from the file, with zeros past the end
-        fseek(file, offset, SEEK_SET);
+        fseeko(file, offset, SEEK_SET);
         size_t count = fread(data, sizeof(uint8_t), size, file);
         memset(&data[count], 0, size - count);
     }

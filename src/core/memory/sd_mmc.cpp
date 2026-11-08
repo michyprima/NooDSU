@@ -95,7 +95,7 @@ uint32_t *SdMmc::init() {
     if (sd = fopen(Settings::sdImagePath.c_str(), "rb+")) {
         setvbuf(sd, nullptr, _IONBF, 0);
         fseek(sd, 0, SEEK_END);
-        sdhc = (ftell(sd) > 0x40000000);
+        sdhc = (ftello(sd) > 0x40000000);
         LOG_INFO("SD card is being treated as %s-capacity\n", sdhc ? "high" : "standard");
     }
 
