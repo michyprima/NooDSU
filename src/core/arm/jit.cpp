@@ -140,6 +140,7 @@ void Jit::reset() {
         pages[i] = JitPage();
     pendingLinks.clear();
     unlinks.clear();
+    linkedBlocks.clear();
     clearCache();
     codeChanged = 1;
     codePtr = codeStart;
@@ -200,8 +201,12 @@ void Jit::mapChanged(uint32_t start) {
     codeChanged = 1;
 
     // Linked jumps might go to code for the old mapping, so send them all through the dispatcher again
-    for (size_t i = 0; i < table.size(); i++)
-        if (table[i]) unlinkIncoming(table[i]);
+    // The DSi's launcher changes the map thousands of times while starting a title, so only blocks with links are visited
+    for (size_t i = 0; i < linkedBlocks.size(); i++) {
+        unlinkIncoming(linkedBlocks[i]);
+        linkedBlocks[i]->linkedPos = -1;
+    }
+    linkedBlocks.clear();
 }
 
 bool Jit::isCodePage(uint8_t *host) {
@@ -370,10 +375,24 @@ void Jit::retire(JitBlock *block) {
     JitCacheEntry &entry = cache[(block->address >> 1) & (CACHE_SIZE - 1)];
     if (entry.block == block) entry = JitCacheEntry();
     unlinkIncoming(block);
+    if (block->linkedPos >= 0) {
+        // Fill its place in the list with the last block, since blocks are often retired
+        linkedBlocks.back()->linkedPos = block->linkedPos;
+        linkedBlocks[block->linkedPos] = linkedBlocks.back();
+        linkedBlocks.pop_back();
+        block->linkedPos = -1;
+    }
     removeLinks(block);
     codeChanged = 1;
     graveyard.push_back(block);
     EP_INC(EC_JIT_RETIRED);
+}
+
+void Jit::addLinked(JitBlock *block) {
+    // Remember that a block has jumps linked to it
+    if (block->linkedPos >= 0) return;
+    block->linkedPos = linkedBlocks.size();
+    linkedBlocks.push_back(block);
 }
 
 void Jit::unlinkIncoming(JitBlock *block) {
@@ -435,6 +454,7 @@ void Jit::linkBlock(JitBlock *block, std::vector<uint32_t*> &patched) {
             patchJump(link.site, target->code);
             link.target = target;
             target->incoming.push_back(std::make_pair(block, link.site));
+            addLinked(target);
             patched.push_back(link.site);
         }
         else {
@@ -449,6 +469,7 @@ void Jit::linkBlock(JitBlock *block, std::vector<uint32_t*> &patched) {
         for (size_t j = 0; j < owner->links.size(); j++)
             if (owner->links[j].site == site) owner->links[j].target = block;
         block->incoming.push_back(it->second);
+        addLinked(block);
         patched.push_back(site);
         it = pendingLinks.erase(it);
     }

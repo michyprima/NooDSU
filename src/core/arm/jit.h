@@ -96,6 +96,7 @@ struct JitBlock {
     std::vector<uint8_t> entriesBehind; // How far the program counter register is behind at each of those
     std::vector<JitLink> links; // Jumps from this block's code to other blocks
     std::vector<std::pair<JitBlock*, uint32_t*>> incoming; // Linked jumps to this block, and their blocks
+    int linkedPos = -1; // Position in the list of blocks with linked jumps, or -1 if it's not there
 
     static void *operator new(size_t size);
     static void operator delete(void *block);
@@ -176,6 +177,9 @@ private:
     std::unordered_multimap<uint32_t, std::pair<JitBlock*, uint32_t*>> pendingLinks;
     std::vector<uint32_t*> unlinks;
 
+    // Blocks that may have jumps linked to them, so a change to the memory map doesn't have to search the whole table
+    std::vector<JitBlock*> linkedBlocks;
+
     // Blocks can be invalidated while running, so they're deleted later
     std::vector<JitBlock*> graveyard;
     std::vector<JitBlock*> hitBlocks; // Blocks a write overlaps, kept to avoid allocating for every write
@@ -207,6 +211,7 @@ private:
     JitBlock *compile(uint32_t address, bool thumb, uint8_t *host, int index);
     void retire(JitBlock *block);
     JitBlock *lookup(uint32_t address, bool thumb);
+    void addLinked(JitBlock *block);
     void unlinkIncoming(JitBlock *block);
     void removeLinks(JitBlock *block);
     void linkBlock(JitBlock *block, std::vector<uint32_t*> &patched);
