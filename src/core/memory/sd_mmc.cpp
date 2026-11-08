@@ -91,7 +91,9 @@ void SdMmc::loadState(FILE *file) {
 uint32_t *SdMmc::init() {
     // Check the SD's capacity so cards over 2GB can be handled differently
     std::lock_guard<FileLock> guard(fileLock());
+    // The files are read through caches in large chunks, which the standard library's buffering would only split up
     if (sd = fopen(Settings::sdImagePath.c_str(), "rb+")) {
+        setvbuf(sd, nullptr, _IONBF, 0);
         fseek(sd, 0, SEEK_END);
         sdhc = (ftell(sd) > 0x40000000);
         LOG_INFO("SD card is being treated as %s-capacity\n", sdhc ? "high" : "standard");
@@ -99,6 +101,7 @@ uint32_t *SdMmc::init() {
 
     // Try to open a NAND dump and load IDs from its nocash footer
     if (!(nand = fopen(Settings::dsiNandPath.c_str(), "rb+"))) return nullptr;
+    setvbuf(nand, nullptr, _IONBF, 0);
     uint8_t footer[0x18];
     fseek(nand, -0x30, SEEK_END);
     fread(footer, sizeof(uint8_t), sizeof(footer), nand);
@@ -235,9 +238,8 @@ void SdMmc::readBlock() {
         len = (size + 3) >> 2;
     }
     else if (FILE *src = (sdPortSelect & BIT(0)) ? nand : sd) {
-        std::lock_guard<FileLock> guard(fileLock());
-        fseek(src, hc ? (int64_t(curAddress) << 9) : curAddress, SEEK_SET);
-        fread(data, sizeof(uint32_t), len, src);
+        FileCache &cache = (sdPortSelect & BIT(0)) ? nandCache : sdCache;
+        cache.read(src, hc ? (int64_t(curAddress) << 9) : curAddress, data, len << 2);
     }
     else {
         memset(data, 0, sizeof(data));
@@ -275,9 +277,8 @@ void SdMmc::writeBlock() {
         core->dsiWifi.writeData(data, sdData16Blklen ? sdData16Blklen : 0x200);
     }
     else if (FILE *dst = (sdPortSelect & BIT(0)) ? nand : sd) {
-        std::lock_guard<FileLock> guard(fileLock());
-        fseek(dst, hc ? (int64_t(curAddress) << 9) : curAddress, SEEK_SET);
-        fwrite(data, sizeof(uint32_t), len, dst);
+        FileCache &cache = (sdPortSelect & BIT(0)) ? nandCache : sdCache;
+        cache.write(dst, hc ? (int64_t(curAddress) << 9) : curAddress, data, len << 2);
     }
 
     // Change state and trigger a DRQ or end interrupt based on blocks left

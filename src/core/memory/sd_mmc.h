@@ -22,6 +22,8 @@
 #include <cstdint>
 #include <deque>
 
+#include "../file_cache.h"
+
 class Core;
 
 // The DSi's SD/MMC controllers: the first reaches the SD card and the NAND, and the second the Wi-Fi chip over SDIO
@@ -80,6 +82,8 @@ private:
 
     FILE *nand = nullptr;
     FILE *sd = nullptr;
+    FileCache nandCache;
+    FileCache sdCache;
     bool sdhc = false;
 
     uint32_t cardStatus = 0;
