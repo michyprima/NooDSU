@@ -42,6 +42,7 @@ public:
     void readData(uint8_t *data, uint32_t size);
     void writeData(const uint8_t *data, uint32_t size);
     void countMs();
+    void setFirmwareLoaded() { firmwareLoaded = true; }
 
 private:
     Core *core;

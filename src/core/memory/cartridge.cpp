@@ -838,6 +838,21 @@ void CartridgeNds::directBoot() {
 
         // Set the system settings flags as the firmware would, with the EULA agreed to and Wi-Fi following its setting
         core->memory.write<uint32_t>(0, 0x2000400, Settings::wifi ? 0x0100000F : 0x01000007);
+        core->memory.write<uint8_t>(0, 0x2000410, 1); // EULA version
+
+        // Describe the Wi-Fi firmware for the DSi's Wi-Fi board, as the firmware would
+        size_t size;
+        const uint8_t *firm = core->spi.getFirmware(size);
+        uint8_t board = (firm && size > 0x1FD) ? firm[0x1FD] : 1;
+        bool newBoard = (board == 2 || board == 3);
+        core->memory.write<uint8_t>(0, 0x20005E0, board);
+        core->memory.write<uint16_t>(0, 0x20005E2, newBoard ? 0x5BCA : 0xB57E); // CRC of the next 3 words
+        core->memory.write<uint32_t>(0, 0x20005E4, newBoard ? 0x00520000 : 0x00500400);
+        core->memory.write<uint32_t>(0, 0x20005E8, newBoard ? 0x00520000 : 0x00500000);
+        core->memory.write<uint32_t>(0, 0x20005EC, newBoard ? 0x00020000 : 0x0002E000);
+
+        // The system has uploaded that firmware to the chip by now, which titles count on and can't do themselves
+        core->dsiWifi.setFirmwareLoaded();
     }
     else if (core->dsiMode) {
         // Leave only the DS features, as the system does for a DS title
