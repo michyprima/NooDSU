@@ -65,6 +65,11 @@ program counters, then hashes of RAM and WRAM, and every way is compared with th
 - `keys=frame:key,...` to press keys at given frames, numbered like KEYINPUT's bits, then 10 and 11 for X and Y
 - `taps=frame:x:y,...` to touch the bottom screen at given frames and positions, for 8 frames each
 - `realtime` to run at most 60 frames a second, to watch a run in its window or give a network real time to answer
+- `threads` to run with the 2D threads drawing behind the emulator, as fast 2D does on the console; their timing varies, so
+  runs with it aren't expected to match each other
+- `vramstress` to run only a test of VRAM reads from another thread during VRAM bank changes, which ignores the frame count
+  and exits as soon as it's done, or crashes if a read can follow a mapping that's only partly there. Planted bug 42 removes
+  what stops that, so `--mutate 42` with this option should crash; `mutate.sh` doesn't run it, since it runs the cases above
 - `trace=N` to also print both CPUs' registers at the start of every scanline from frame N
 - `ppm=file` to save the last frame, `ram=file` to save main RAM at the end, and `results=file` to save what
   `tests/hardware`'s ROM recorded, for its build

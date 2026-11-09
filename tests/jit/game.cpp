@@ -2,6 +2,7 @@
 // See README.md; game.sh builds this against a copy of the core changed by patch.py in game mode
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
@@ -394,6 +395,35 @@ void (*windowShow)(const uint32_t *frame) = nullptr;
 bool (*windowInput)(int &x, int &y, uint32_t &keys) = nullptr;
 int (*windowState)() = nullptr;
 
+static void vramStress() {
+    // Read VRAM from another thread like a 2D thread does while the VRAM banks change, which crashes if a read can
+    // follow a mapping that's only partly there; first with a slot that's mapped and unmapped, then with two banks
+    // overlapping in a slot, which keeps it on the slow path while another bank changes
+    Memory &mem = core->memory;
+    const int changes = 300000;
+    for (int overlap = 0; overlap < 2; overlap++) {
+        for (int i = 0; i < 9; i++) mem.writeVramCnt(i, 0);
+        if (overlap) {
+            mem.writeVramCnt(0, 0x81);
+            mem.writeVramCnt(1, 0x81);
+        }
+        std::atomic<bool> stop(false);
+        uint64_t reads = 0;
+        std::thread reader([&]() {
+            for (uint32_t i = 0; !stop.load(std::memory_order_relaxed); i += 2, reads++)
+                mem.read<uint16_t>(0, 0x6000000 + (i & 0x3FFE));
+        });
+        for (int i = 0; i < changes; i++) {
+            mem.writeVramCnt(overlap ? 2 : 0, 0x81);
+            mem.writeVramCnt(overlap ? 2 : 0, 0);
+        }
+        stop.store(true);
+        reader.join();
+        fprintf(stderr, "vramstress: %d changes with%s overlapping banks, during %llu reads\n", changes, overlap ? "" : "out",
+            (unsigned long long)reads);
+    }
+}
+
 static uint64_t hash(const void *data, size_t size, uint64_t h = 0xCBF29CE484222325ULL) {
     const uint8_t *p = (const uint8_t*)data;
     for (size_t i = 0; i < size; i++) h = (h ^ p[i]) * 0x100000001B3ULL;
@@ -409,6 +439,7 @@ int main(int argc, char **argv) {
     std::string files = argv[1], mode = argv[3];
     int frames = atoi(argv[4]), press = 0, startKey = 0, touch = 0, traceFrom = -1;
     bool fast = false, dsi = false, firmware = false, window = false, wifi = false, realtime = false, input = false;
+    bool threads = false, stress = false;
     std::string ppm, results, ramFile;
     std::vector<std::pair<int, int>> inputs; // Frame and key to press then, for 2 frames
     std::vector<std::array<int, 3>> taps; // Frame and bottom screen position to touch then, for 8 frames
@@ -422,6 +453,8 @@ int main(int argc, char **argv) {
         else if (arg == "input") input = realtime = true; // Mouse and keyboard from the window, at a playable speed
         else if (arg == "realtime") realtime = true; // 60 frames a second, to watch a run or give a network time
         else if (arg == "wifi") wifi = true; // Needs game.sh's --wifi for the real libslirp
+        else if (arg == "threads") threads = true; // 2D threads drawing behind the emulator, as the console does
+        else if (arg == "vramstress") stress = true; // Only run the VRAM test, see vramStress
         else if (arg.rfind("press=", 0) == 0) press = atoi(arg.c_str() + 6);
         else if (arg.rfind("start=", 0) == 0) startKey = atoi(arg.c_str() + 6);
         else if (arg.rfind("touch=", 0) == 0) touch = atoi(arg.c_str() + 6);
@@ -472,12 +505,12 @@ int main(int argc, char **argv) {
     Settings::dsiMode = dsi;
     Settings::directBoot = !firmware;
     Settings::savesFolder = 1;
-    Settings::threaded2D = 0;
+    Settings::threaded2D = threads;
     Settings::threaded3D = 0;
     Settings::arm7Hle = 0;
     Settings::emulateAudio = 0;
     Settings::fpsLimiter = 0;
-    Settings::fast2D = 0;
+    Settings::fast2D = threads;
     Settings::highRes3D = 0;
     Settings::hardware3D = 0;
     Settings::screenFilter = 0;
@@ -501,6 +534,10 @@ int main(int argc, char **argv) {
     startEngine(engines[0], false);
     startEngine(engines[1], true);
     if (mode == "portable") core->jit.codeFailed = core->jit7.codeFailed = true;
+    if (stress) {
+        vramStress();
+        _exit(0);
+    }
 
     // From the frame to trace, also print the CPUs' registers at the start of each scanline, to narrow down a difference
     static int frameNow = 0;

@@ -53,6 +53,10 @@ if game:
         '            codeEnter)(&arm, &core->events, limit, block->code, &core->globalCycles, cache);',
         '        rigEnter(*this, limit, block->code);'),
         ('#include <algorithm>\n', '#include <algorithm>\nclass Jit;\nvoid rigEnter(Jit &jit, const uint32_t *limit, void *code);\n'))
+
+    # The console's build sets a VRAM mapping's count before its pointer, which matters to a 2D thread reading it
+    edit('memory/memory.cpp', ('    mappings[count++] = mapping;', '    uint8_t next = count;\n    *(volatile uint8_t*)&count = next + 1;\n'
+        '    *(uint8_t *volatile*)&mappings[next] = mapping;'))
 else:
     text = text.replace('return (parts.ptr & 1 || parts.adj) ? nullptr : (void*)parts.ptr;', 'return (void*)(uintptr_t)0x3F1000;')
 
@@ -103,7 +107,14 @@ INTERPRETER_MUTATIONS = [
     ('arm/interpreter_transfer.cpp', 'if ((opcode & BIT(16)) && (cpsr & 0x1F) != 0x10)\n        setCpsr', 'if (opcode & BIT(16))\n        setCpsr'), # 40: User mode MSR changes control bits
     ('arm/interpreter_transfer.cpp', '    if (spsr) setCpsr(*spsr);\n    flushPipeline();', '    if (spsr) setCpsr(*spsr);\n    cpsr |= (*registers[15] & !arm7) << 5;\n    flushPipeline();'), # 41: LDM with S takes THUMB from the PC
 ]
-if mutation > len(MUTATIONS):
+# Bugs only a game.sh option can see, numbered after those and left out of mutate.sh, which runs the cases above
+GAME_MUTATIONS = [
+    ('memory/memory.cpp', '        if (uint8_t *mapping = *(uint8_t *volatile*)&mappings[m])\n            value |= readLsb<T>(&mapping[address]);', '        value |= readLsb<T>(&mappings[m][address]);'), # game 42: a VRAM read follows a missing pointer, for vramstress
+]
+if mutation > len(MUTATIONS) + len(INTERPRETER_MUTATIONS):
+    file, old, new = GAME_MUTATIONS[mutation - len(MUTATIONS) - len(INTERPRETER_MUTATIONS) - 1]
+    edit(file, (old, new))
+elif mutation > len(MUTATIONS):
     file, old, new = INTERPRETER_MUTATIONS[mutation - len(MUTATIONS) - 1]
     edit(file, (old, new))
 elif mutation:
