@@ -25,6 +25,8 @@ time and checks that each is noticed; add one there when adding a kind of test.
 | `flags` | Flag-setting ARM and THUMB instructions over every pair of edge values and starting carry |
 | `conditions` | Every condition with every flag value, on each way through a condition |
 | `lists` | `PUSH`, `POP`, `LDM` and `STM` with lists crossing into pages that take the slow path |
+| `returns` | ALU instructions with flags that write the program counter, returning to every kind of saved mode on both CPUs, which of them generated code leaves to the interpreter, and code after a return using the new mode's banked registers, with the JIT's real table of them |
+| `math` | Every access to the math registers at `0x4000280` to `0x40002BF` against the real ones, for what generated code reaches directly and what it leaves to C++, then random runs of accesses against the same run done only in C++ |
 | `blocks` | Random ARM and THUMB blocks with batching on: entered at the start or the middle, ending at a page end, stopping at every check, partway, at a deadline from an event or the other CPU, or from an event a C++ call made due, and with code changing during a store. Every stop must show exactly the state after an instruction, flags included |
 | `links` | Blocks jumping to each other directly and through the dispatcher, changing CPU mode, as they're compiled, dropped and compiled again |
 | `reference` | The interpreter's handlers against Unicorn's ARM946, an independent model of the same CPU: all THUMB encodings and sampled ARM ones, with banked registers, SPSRs and memory compared. The ARM7 is only compared on what it has in common with the ARM946 |
@@ -68,8 +70,8 @@ program counters, then hashes of RAM and WRAM, and every way is compared with th
 - `threads` to run with the 2D threads drawing behind the emulator, as fast 2D does on the console; their timing varies, so
   runs with it aren't expected to match each other
 - `vramstress` to run only a test of VRAM reads from another thread during VRAM bank changes, which ignores the frame count
-  and exits as soon as it's done, or crashes if a read can follow a mapping that's only partly there. Planted bug 42 removes
-  what stops that, so `--mutate 42` with this option should crash; `mutate.sh` doesn't run it, since it runs the cases above
+  and exits as soon as it's done, or crashes if a read can follow a mapping that's only partly there. Planted bug 53 removes
+  what stops that, so `--mutate 53` with this option should crash; `mutate.sh` doesn't run it, since it runs the cases above
 - `trace=N` to also print both CPUs' registers at the start of every scanline from frame N
 - `ppm=file` to save the last frame, `ram=file` to save main RAM at the end, and `results=file` to save what
   `tests/hardware`'s ROM recorded, for its build

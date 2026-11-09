@@ -29,15 +29,18 @@ static const uint32_t
     VIRT_REGS = 0x7000, VIRT_SPSR = 0x7040, // Offsets of the pointers, which are 64-bit on the Mac; displacements are 16-bit
     STATE_SIZE = 0x8000,
     EVENTS = 0x20000, EVENT_SLOT = 0x100, // Copied: the event queue, pointing to a slot for the first event
-    LIMIT = 0x21000, GLOBAL = 0x22000, DTCM_REG = 0x23000, WORDS_SIZE = 0x4000, // Copied
+    LIMIT = 0x21000, GLOBAL = 0x22000, DTCM_REG = 0x23000, MATH = 0x23800, WORDS_SIZE = 0x4000, // Copied
     CACHE_AREA = 0x30000, CACHE = CACHE_AREA + 0x1000, // Live: the code changed flag, then the block cache
     STACK = 0x60000, STACK_TOP = 0x7FF00, END = 0x80000,
-    COND_TABLE = 0x200000,
-    FAKE_HANDLERS = 0x3E0000, FAKE = 0x3F0000, FAKE_MEMORY = 0x3F0800, FAKE_MSR = 0x3F1800, FAKE_INTERLEAVE = 0x3F2000,
+    COND_TABLE = 0x200000, MODE_BANKS = COND_TABLE + 0x400, // Fixed
+    FAKE_HANDLERS = 0x3E0000, FAKE = 0x3F0000, FAKE_MEMORY = 0x3F0800, FAKE_MSR = 0x3F1800, FAKE_RESTORE = 0x3F1840, FAKE_INTERLEAVE = 0x3F2000,
     READ_MAP = 0x400000, WRITE_MAP = 0x800000, // Live: memory maps, with host pointers turned into emulator addresses
     CODE = 0x10000000, CODE_SIZE = 0x2000000,
     RAM = 0x20000000, // Main RAM, shared with the core
     CORE = 0x40000000; // The whole core object, shared, for every other memory the maps point to
+
+// The math registers as a big-endian host lays them out: three 64-bit values, the two control registers and the dirty flags
+static const uint32_t MATH_NUMER = 0, MATH_DENOM = 8, MATH_PARAM = 16, MATH_DIV_CNT = 24, MATH_SQRT_CNT = 26, MATH_DIV_DIRTY = 28, MATH_SQRT_DIRTY = 29;
 
 // Memory generated code doesn't run from, which Unicorn then doesn't watch for code being written over
 static const int DATA = UC_PROT_READ | UC_PROT_WRITE;
@@ -131,6 +134,18 @@ static void copyIn(Engine &en) {
     en.words[WORD_LIMIT] = swap32(*en.limit);
     en.words[WORD_GLOBAL] = swap32(core->globalCycles);
     en.words[WORD_DTCM] = swap32(core->cp15.dtcmReg);
+    uint8_t *math = (uint8_t*)en.words + (MATH - EVENTS);
+    DivSqrt &div = core->divSqrt;
+    auto put8 = [&](uint32_t at, uint64_t v) { uint64_t be = __builtin_bswap64(v); memcpy(math + at, &be, 8); };
+    put8(MATH_NUMER, div.divNumer);
+    put8(MATH_DENOM, div.divDenom);
+    put8(MATH_PARAM, div.sqrtParam);
+    math[MATH_DIV_CNT] = div.divCnt >> 8;
+    math[MATH_DIV_CNT + 1] = div.divCnt;
+    math[MATH_SQRT_CNT] = div.sqrtCnt >> 8;
+    math[MATH_SQRT_CNT + 1] = div.sqrtCnt;
+    math[MATH_DIV_DIRTY] = div.divDirty;
+    math[MATH_SQRT_DIRTY] = div.sqrtDirty;
 }
 
 static void copyOut(Engine &en) {
@@ -152,12 +167,37 @@ static void copyOut(Engine &en) {
             fatal("write to the interpreter at offset %X", offset);
         arm[i] = swap32(en.state[i]);
     }
-    if (memcmp(&en.state[VIRT_WORD], &en.given[sizeof(Interpreter) / 4], 17 * 4))
-        fatal("write to the interpreter's pointers");
+
+    // Only returning from an exception changes the pointers, and only to what the interpreter would have set them to
+    bool swapped = false;
+    for (int r = 0; r < 17; r++) {
+        uint32_t now = en.state[VIRT_WORD + r];
+        if (now == en.given[sizeof(Interpreter) / 4 + r]) continue;
+        if (r != 13 && r != 14 && r != 16) fatal("write to the interpreter's pointer for register %d", r);
+        uint32_t *host = now ? (uint32_t*)((uint8_t*)en.arm + (swap32(now) - ARM_STATE)) : nullptr;
+        (r == 16 ? en.arm->spsr : en.arm->registers[r]) = host;
+        swapped = true;
+    }
+    if (swapped) {
+        uint32_t *r13 = en.arm->registers[13], *r14 = en.arm->registers[14], *spsr = en.arm->spsr;
+        en.arm->swapRegisters(en.arm->cpsr);
+        if (r13 != en.arm->registers[13] || r14 != en.arm->registers[14] || spsr != en.arm->spsr)
+            fatal("return to mode %02X left the wrong banked registers", en.arm->cpsr & 0x1F);
+    }
     if (en.words[WORD_EVENT] != swap32(EVENTS + EVENT_SLOT) || en.words[WORD_SLOT] != swap32(core->events[0].cycles) ||
         en.words[WORD_LIMIT] != swap32(*en.limit) || en.words[WORD_DTCM] != swap32(core->cp15.dtcmReg))
         fatal("write to the event queue, the limit or the DTCM register");
     core->globalCycles = swap32(en.words[WORD_GLOBAL]);
+    const uint8_t *math = (const uint8_t*)en.words + (MATH - EVENTS);
+    DivSqrt &div = core->divSqrt;
+    auto get8 = [&](uint32_t at) { uint64_t be; memcpy(&be, math + at, 8); return __builtin_bswap64(be); };
+    div.divNumer = get8(MATH_NUMER);
+    div.divDenom = get8(MATH_DENOM);
+    div.sqrtParam = get8(MATH_PARAM);
+    div.divCnt = (math[MATH_DIV_CNT] << 8) | math[MATH_DIV_CNT + 1];
+    div.sqrtCnt = (math[MATH_SQRT_CNT] << 8) | math[MATH_SQRT_CNT + 1];
+    div.divDirty = math[MATH_DIV_DIRTY];
+    div.sqrtDirty = math[MATH_SQRT_DIRTY];
 }
 
 static uint64_t readCache(uc_engine*, uint64_t offset, unsigned size, void *user) {
@@ -240,6 +280,11 @@ static void hookCall(uc_engine *uc, uint64_t address, uint32_t, void *user) {
     else if (address == FAKE_MSR) {
         if (r3 != ARM_STATE) fatal("MSR called without the CPU: %08X", r3);
         Jit::writeCpsrCall(en.arm, r4, r5);
+        keepR3 = false;
+    }
+    else if (address == FAKE_RESTORE) {
+        if (r3 != ARM_STATE) fatal("restore called without the CPU: %08X", r3);
+        Jit::restoreCpsrCall(en.arm, r4);
         keepR3 = false;
     }
     else if (address == FAKE_INTERLEAVE) {
@@ -342,6 +387,26 @@ static void setup(Jit &jit) {
     jit.addrWriteMap = WRITE_MAP;
     jit.addrDtcmReg = DTCM_REG;
     jit.addrWriteCpsr = FAKE_MSR;
+    jit.addrRestoreCpsr = FAKE_RESTORE;
+    jit.addrModeBanks = MODE_BANKS;
+
+    // The JIT's real table of banked registers, with its host pointers turned into where the emulator has them
+    Engine &en = engines[jit.arm7];
+    for (uint32_t mode = 0; mode < 32; mode++) {
+        uint32_t entry[3];
+        for (int field = 0; field < 3; field++) {
+            uint32_t host = jit.modeBanks[mode][field], offset = host - uint32_t(uintptr_t(en.arm));
+            if (host && offset >= sizeof(Interpreter)) fatal("the JIT's table of banked registers points outside the interpreter");
+            entry[field] = host ? swap32(ARM_STATE + offset) : 0;
+        }
+        uc_mem_write(en.uc, MODE_BANKS + mode * 16, entry, sizeof(entry));
+    }
+    jit.addrDivNumer = MATH + MATH_NUMER;
+    jit.addrSqrtParam = MATH + MATH_PARAM;
+    jit.addrDivCnt = MATH + MATH_DIV_CNT;
+    jit.addrSqrtCnt = MATH + MATH_SQRT_CNT;
+    jit.addrDivDirty = MATH + MATH_DIV_DIRTY;
+    jit.addrSqrtDirty = MATH + MATH_SQRT_DIRTY;
     jit.addrLoad32 = FAKE;
     jit.addrLoad8 = FAKE + 8;
     jit.addrStore32 = FAKE + 16;

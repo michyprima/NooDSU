@@ -41,8 +41,10 @@ enum { NK_NONE, NK_ALU, NK_BRANCH, NK_TRANSFER, NK_BRANCH_REG, NK_HALF, NK_BLOCK
 // Addresses in the emulator
 static const uint32_t ARM_STATE = 0x10000, CACHE_FLAG = 0x50000, CACHE = 0x50010, EVENTS = 0x70000, LIMIT = 0x71000,
     GLOBAL = 0x72000, STACK = 0x7F000, END = 0x80000, COND_TABLE = 0x200000, READ_MAP = 0x400000, WRITE_MAP = 0x800000,
-    FAKE = 0x3F0000, FAKE_MEMORY = 0x3F0800, FAKE_HANDLER = 0x3F1000, FAKE_INTERLEAVE = 0x3F2000, FAKE_MSR = 0x3F1800, DTCM_REG = 0x3F4000, CODE = 0x10000000;
-static const uint32_t OFF_REGS = 0x40, OFF_CPSR = 0x80, OFF_CYCLES = 0x84, OFF_SPSR = 0x88, OFF_BANK = 0xA0, OFF_SPSR_VALUE = 0xC0, OFF_IE = 0xD0, OFF_IRF = 0xD8;
+    FAKE = 0x3F0000, FAKE_MEMORY = 0x3F0800, FAKE_HANDLER = 0x3F1000, FAKE_INTERLEAVE = 0x3F2000, FAKE_MSR = 0x3F1800, FAKE_RESTORE = 0x3F1840, MODE_BANKS = 0x3F3000, MATH = 0x3F3800, DTCM_REG = 0x3F4000, CODE = 0x10000000;
+// The math registers as a big-endian host lays them out: three 64-bit values, the two control registers and the dirty flags
+static const uint32_t MATH_NUMER = 0, MATH_DENOM = 8, MATH_PARAM = 16, MATH_DIV_CNT = 24, MATH_SQRT_CNT = 26, MATH_DIV_DIRTY = 28, MATH_SQRT_DIRTY = 29;
+static const uint32_t OFF_REGS = 0x40, OFF_CPSR = 0x80, OFF_CYCLES = 0x84, OFF_SPSR = 0x88, OFF_BANK = 0xA0, OFF_SPSR_VALUE = 0xC0, OFF_IE = 0xD0, OFF_IRF = 0xD8, OFF_EXTRA = 0x100;
 
 // Guest memory: data, then code, which is real main RAM for the interpreter and a copy in the emulator
 static const uint32_t WINDOW = 0x02100000, WINDOW_SIZE = 0x40000, DATA_START = WINDOW + 0x2000, DATA_END = WINDOW + 0x1E000,
@@ -63,7 +65,9 @@ static std::set<uint32_t> ranThumb[2], ranArm[2], ranNativeThumb[2], ranNativeAr
 
 struct State {
     uint32_t usr[16], bank[7], spsr, cpsr;
-    int mode; // 0 is system, 1 is IRQ, with its own R13 and R14, 2 is FIQ, with its own R8-R14
+    uint32_t extra[9]; // R13, R14 and the SPSR of Supervisor, Abort and Undefined modes, which returns can switch to
+    uint32_t views[3]; // Where R13, R14 and the SPSR are in the emulator, which returns change
+    int mode; // What the case starts in: 0 is system, 1 is IRQ, with its own R13 and R14, 2 is FIQ, with its own R8-R14
 };
 
 static bool banked(int mode, int reg) { return (mode == 1 && reg >= 13 && reg <= 14) || (mode == 2 && reg >= 8 && reg <= 14); }
@@ -87,7 +91,8 @@ static struct {
     std::string name, description;
     uint32_t inCpsr;
     uint64_t ie, irf;
-    int msrCalls, msrWanted;
+    int msrCalls, msrWanted, restoreCalls, restoreWanted, mathCalls;
+    bool mathLive; // Whether memory calls to the math registers go to the real ones, with the emulator's copy kept in step
 } now;
 
 static uint32_t swap32(uint32_t v) { return __builtin_bswap32(v); }
@@ -121,8 +126,12 @@ static void clobberVolatile(bool keepR3) {
 }
 
 static void readState(State &s) {
-    uint32_t words[64];
+    uint32_t words[(OFF_EXTRA + 9 * 4) / 4];
     uc_mem_read(uc, ARM_STATE, words, sizeof(words));
+    for (int i = 0; i < 9; i++) s.extra[i] = swap32(words[OFF_EXTRA / 4 + i]);
+    s.views[0] = swap32(words[OFF_REGS / 4 + 13]);
+    s.views[1] = swap32(words[OFF_REGS / 4 + 14]);
+    s.views[2] = swap32(words[OFF_SPSR / 4]);
     for (int i = 0; i < 16; i++) s.usr[i] = swap32(words[i]);
     for (int i = 0; i < 7; i++) s.bank[i] = swap32(words[OFF_BANK / 4 + i]);
     s.spsr = swap32(words[OFF_SPSR_VALUE / 4]);
@@ -138,6 +147,10 @@ static std::string diffState(const State &got, const State &want) {
         if (got.bank[i] != want.bank[i]) n += snprintf(text + n, sizeof(text) - n, "bank r%d %08X want %08X; ", i + 8, got.bank[i], want.bank[i]);
     if (got.spsr != want.spsr) n += snprintf(text + n, sizeof(text) - n, "spsr %08X want %08X; ", got.spsr, want.spsr);
     if (got.cpsr != want.cpsr) n += snprintf(text + n, sizeof(text) - n, "cpsr %08X want %08X; ", got.cpsr, want.cpsr);
+    for (int i = 0; i < 9; i++)
+        if (got.extra[i] != want.extra[i]) n += snprintf(text + n, sizeof(text) - n, "mode bank %d %08X want %08X; ", i, got.extra[i], want.extra[i]);
+    for (int i = 0; i < 3; i++)
+        if (got.views[i] != want.views[i]) n += snprintf(text + n, sizeof(text) - n, "%s at %08X want %08X; ", i == 2 ? "SPSR" : i ? "R14" : "R13", got.views[i], want.views[i]);
     text[n] = 0;
     return text;
 }
@@ -149,6 +162,30 @@ static void scheduleEvent() {
     now.scheduled = true;
 }
 
+// The math registers in the emulator, as a big-endian host lays them out
+static void putMath(const DivSqrt &div) {
+    auto put8 = [&](uint32_t at, uint64_t v) { writeBe(MATH + at, v >> 32); writeBe(MATH + at + 4, uint32_t(v)); };
+    put8(MATH_NUMER, div.divNumer);
+    put8(MATH_DENOM, div.divDenom);
+    put8(MATH_PARAM, div.sqrtParam);
+    uint8_t bytes[] = { uint8_t(div.divCnt >> 8), uint8_t(div.divCnt), uint8_t(div.sqrtCnt >> 8), uint8_t(div.sqrtCnt),
+        uint8_t(div.divDirty), uint8_t(div.sqrtDirty) };
+    uc_mem_write(uc, MATH + MATH_DIV_CNT, bytes, sizeof(bytes));
+}
+
+static void getMath(DivSqrt &div) {
+    auto get8 = [&](uint32_t at) { return (uint64_t(readBe(MATH + at)) << 32) | readBe(MATH + at + 4); };
+    div.divNumer = get8(MATH_NUMER);
+    div.divDenom = get8(MATH_DENOM);
+    div.sqrtParam = get8(MATH_PARAM);
+    uint8_t bytes[6];
+    uc_mem_read(uc, MATH + MATH_DIV_CNT, bytes, sizeof(bytes));
+    div.divCnt = (bytes[0] << 8) | bytes[1];
+    div.sqrtCnt = (bytes[2] << 8) | bytes[3];
+    div.divDirty = bytes[4];
+    div.sqrtDirty = bytes[5];
+}
+
 static void hookFake(uc_engine *, uint64_t address, uint32_t, void *) {
     if (address >= FAKE && address < FAKE_MEMORY) {
         // Memory access from the slow path: load32, load8, store32, store8, load16, store16
@@ -156,6 +193,32 @@ static void hookFake(uc_engine *, uint64_t address, uint32_t, void *) {
         count("slow memory access");
         uint32_t target = reg(UC_PPC_REG_4), value = reg(UC_PPC_REG_5);
         if (reg(UC_PPC_REG_3) != FAKE_MEMORY) fail("memory call without the memory object: %08X", reg(UC_PPC_REG_3));
+        if ((target >> 12) == 0x4000) { // What the math suite leaves to C++
+            now.mathCalls++;
+            uint32_t loaded = 0xDEAD0003;
+            if (now.mathLive) {
+                DivSqrt &div = core->divSqrt;
+                Memory &mem = core->memory;
+                getMath(div);
+                switch (type) {
+                    case 0: {
+                        loaded = mem.read<uint32_t>(0, target);
+                        int shift = (target & 3) * 8;
+                        if (shift) loaded = (loaded << (32 - shift)) | (loaded >> shift);
+                        break;
+                    }
+                    case 1: loaded = mem.read<uint8_t>(0, target); break;
+                    case 2: mem.write<uint32_t>(0, target, value); break;
+                    case 3: mem.write<uint8_t>(0, target, value); break;
+                    case 4: loaded = mem.read<uint16_t>(0, target); break;
+                    case 5: mem.write<uint16_t>(0, target, value); break;
+                }
+                putMath(div);
+            }
+            clobberVolatile(true);
+            setReg(UC_PPC_REG_3, loaded);
+            return;
+        }
         if (target < WINDOW || target >= WINDOW + WINDOW_SIZE - 4) {
             fail("memory call at %08X, outside what the test set up", target);
             uc_emu_stop(uc);
@@ -215,6 +278,28 @@ static void hookFake(uc_engine *, uint64_t address, uint32_t, void *) {
         if ((bits & BIT(16)) && (cpsr & 0x1F) != 0x10) cpsr = (cpsr & ~0xFF) | (value & 0xFF) | 0x10;
         if (bits & BIT(19)) cpsr = (cpsr & 0x00FFFFFF) | (value & (now.cpu ? 0xF0000000 : 0xF8000000));
         writeBe(ARM_STATE + OFF_CPSR, cpsr);
+        scheduleEvent();
+        clobberVolatile(false);
+    }
+    else if (address == FAKE_RESTORE) {
+        // Restoring the CPSR in a way only the interpreter can, like with no SPSR or an interrupt to take
+        count("restore slow path");
+        now.restoreCalls++;
+        uint32_t before = reg(UC_PPC_REG_4), spsr = readBe(ARM_STATE + OFF_SPSR);
+        if (reg(UC_PPC_REG_3) != ARM_STATE) fail("restore called without the CPU: %08X", reg(UC_PPC_REG_3));
+        if (before != readBe(ARM_STATE + OFF_CPSR)) fail("restore called with CPSR %08X, want %08X", before, readBe(ARM_STATE + OFF_CPSR));
+        if (readBe(GLOBAL) != reg(UC_PPC_REG_28) || readBe(ARM_STATE + OFF_CYCLES) != reg(UC_PPC_REG_28))
+            fail("restore called without saved time");
+        uint32_t after = spsr ? readBe(spsr) : (now.cpu ? before : (before & 0xFF));
+        writeBe(ARM_STATE + OFF_CPSR, after);
+
+        // The interpreter swaps the registers too; FIQ and invalid modes are left out of this test
+        uint32_t entry = MODE_BANKS + (after & 0x1F) * 16;
+        if (spsr && ((after ^ before) & 0x1F) && (before & 0x1F) != 0x11 && readBe(entry)) {
+            writeBe(ARM_STATE + OFF_REGS + 13 * 4, readBe(entry));
+            writeBe(ARM_STATE + OFF_REGS + 14 * 4, readBe(entry + 4));
+            writeBe(ARM_STATE + OFF_SPSR, readBe(entry + 8));
+        }
         scheduleEvent();
         clobberVolatile(false);
     }
@@ -286,22 +371,64 @@ struct Case {
 
 static Jit &jitOf(int cpu) { return cpu ? core->jit7 : core->jit; }
 
+// The interpreter's banked registers during a case, laid out like the emulator's
+static uint32_t oracleBank[7], oracleSpsr, oracleExtra[9];
+
 static void loadOracle(Interpreter &arm, State &s) {
-    static uint32_t bank[7], spsr;
     for (int i = 0; i < 16; i++) arm.registersUsr[i] = s.usr[i];
-    for (int i = 0; i < 7; i++) bank[i] = s.bank[i];
-    spsr = s.spsr;
-    for (int i = 0; i < 16; i++) arm.registers[i] = banked(s.mode, i) ? &bank[i - 8] : &arm.registersUsr[i];
-    arm.spsr = s.mode ? &spsr : nullptr;
+    for (int i = 0; i < 7; i++) oracleBank[i] = s.bank[i];
+    for (int i = 0; i < 9; i++) oracleExtra[i] = s.extra[i];
+    oracleSpsr = s.spsr;
+    for (int i = 0; i < 16; i++) arm.registers[i] = banked(s.mode, i) ? &oracleBank[i - 8] : &arm.registersUsr[i];
+    arm.spsr = s.mode ? &oracleSpsr : nullptr;
     arm.cpsr = s.cpsr;
     arm.lazyPipeline = true;
 }
 
+static uint32_t emuSlot(Interpreter &arm, uint32_t *p) {
+    // Where the emulator keeps what a pointer in the interpreter points to during a case
+    if (!p) return 0;
+    if (p >= arm.registersUsr && p < arm.registersUsr + 16) return ARM_STATE + uint32_t(p - arm.registersUsr) * 4;
+    if (p >= oracleBank && p < oracleBank + 7) return ARM_STATE + OFF_BANK + uint32_t(p - oracleBank) * 4;
+    if (p >= oracleExtra && p < oracleExtra + 9) return ARM_STATE + OFF_EXTRA + uint32_t(p - oracleExtra) * 4;
+    return ARM_STATE + OFF_SPSR_VALUE;
+}
+
 static void saveOracle(Interpreter &arm, State &s) {
     for (int i = 0; i < 16; i++) s.usr[i] = arm.registersUsr[i];
-    for (int i = 0; i < 7; i++) s.bank[i] = (banked(s.mode, i + 8)) ? *arm.registers[i + 8] : s.bank[i];
-    if (arm.spsr) s.spsr = *arm.spsr;
+    for (int i = 0; i < 7; i++) s.bank[i] = oracleBank[i];
+    for (int i = 0; i < 9; i++) s.extra[i] = oracleExtra[i];
+    s.spsr = oracleSpsr;
     s.cpsr = arm.cpsr;
+    s.views[0] = emuSlot(arm, arm.registers[13]);
+    s.views[1] = emuSlot(arm, arm.registers[14]);
+    s.views[2] = emuSlot(arm, arm.spsr);
+}
+
+static uint32_t emuBank(Interpreter &arm, uint32_t value) {
+    // Where the emulator keeps what an entry in the JIT's real table of banked registers points to; the case's IRQ registers
+    // are the ones it starts with
+    auto is = [&](uint32_t &field) { return value == uint32_t(uintptr_t(&field)); };
+    if (!value) return 0;
+    if (is(arm.registersUsr[13])) return ARM_STATE + 13 * 4;
+    if (is(arm.registersUsr[14])) return ARM_STATE + 14 * 4;
+    if (is(arm.registersIrq[0])) return ARM_STATE + OFF_BANK + 5 * 4;
+    if (is(arm.registersIrq[1])) return ARM_STATE + OFF_BANK + 6 * 4;
+    if (is(arm.spsrIrq)) return ARM_STATE + OFF_SPSR_VALUE;
+    uint32_t *fields[9] = { &arm.registersSvc[0], &arm.registersSvc[1], &arm.spsrSvc, &arm.registersAbt[0], &arm.registersAbt[1], &arm.spsrAbt,
+        &arm.registersUnd[0], &arm.registersUnd[1], &arm.spsrUnd };
+    for (int i = 0; i < 9; i++)
+        if (is(*fields[i])) return ARM_STATE + OFF_EXTRA + i * 4;
+    fail("the JIT's table of banked registers has %08X", value);
+    return 0;
+}
+
+static void bankOracle(Interpreter &arm, uint32_t mode) {
+    // Point the interpreter at the registers of a mode, the same way as the JIT's table
+    int slot = (mode == 0x13) ? 0 : (mode == 0x17) ? 3 : (mode == 0x1B) ? 6 : -1;
+    arm.registers[13] = (mode == 0x12) ? &oracleBank[5] : (slot < 0) ? &arm.registersUsr[13] : &oracleExtra[slot];
+    arm.registers[14] = (mode == 0x12) ? &oracleBank[6] : (slot < 0) ? &arm.registersUsr[14] : &oracleExtra[slot + 1];
+    arm.spsr = (mode == 0x12) ? &oracleSpsr : (slot < 0) ? nullptr : &oracleExtra[slot + 2];
 }
 
 static JitBlock *findBlock(Case &c, uint32_t address, bool thumb) {
@@ -316,6 +443,7 @@ static bool runOracle(Case &c, State &out, uint32_t &cycles, std::vector<Snapsho
     Interpreter &arm = core->interpreter[c.cpu];
     State s = c.in;
     loadOracle(arm, s);
+    saveOracle(arm, s);
     JitBlock *block = c.blocks[0];
     size_t index = 0;
     cycles = 0;
@@ -342,9 +470,9 @@ static bool runOracle(Case &c, State &out, uint32_t &cycles, std::vector<Snapsho
                 }
             }
         }
-        else if (pass && kind == NK_MSR && !(op & BIT(22))) {
+        else if (pass && ((kind == NK_MSR && !(op & BIT(22))) || (!block->thumb && kind == NK_ALU_PC && (op & BIT(20))))) {
             // The interpreter's way changes which registers are visible and can schedule an interrupt, which the test leaves
-            // out; generated code has to call it whenever that could happen
+            // out; generated code has to call it whenever that could happen, or for a return swap the same registers itself
             uint32_t before = arm.cpsr, *registers[16], *spsr = arm.spsr;
             uint8_t ime = arm.ime;
             memcpy(registers, arm.registers, sizeof(registers));
@@ -353,8 +481,19 @@ static bool runOracle(Case &c, State &out, uint32_t &cycles, std::vector<Snapsho
             arm.ime = ime;
             memcpy(arm.registers, registers, sizeof(registers));
             arm.spsr = spsr;
-            bool control = (op & BIT(16)) && (before & 0x1F) != 0x10;
-            if (control && (((arm.cpsr ^ before) & 0x3F) || (!(arm.cpsr & BIT(7)) && (now.ie & now.irf)))) now.msrWanted++;
+            if (kind == NK_MSR) {
+                bool control = (op & BIT(16)) && (before & 0x1F) != 0x10;
+                if (control && (((arm.cpsr ^ before) & 0x3F) || (!(arm.cpsr & BIT(7)) && (now.ie & now.irf)))) now.msrWanted++;
+            }
+            else {
+                uint32_t mode = arm.cpsr & 0x1F;
+                bool known = mode == 0x10 || mode == 0x1F || mode == 0x12 || mode == 0x13 || mode == 0x17 || mode == 0x1B;
+                bool swapped = spsr && ((arm.cpsr ^ before) & 0x1F);
+                if (!spsr || (!(arm.cpsr & BIT(7)) && (now.ie & now.irf)) || (swapped && ((before & 0x1F) == 0x11 || !known)))
+                    now.restoreWanted++;
+                if (swapped && (before & 0x1F) != 0x11 && known) bankOracle(arm, mode);
+                jumped = true;
+            }
         }
         else if (pass) {
             cost = block->thumb ? (arm.*Interpreter::thumbInstrs[(op >> 6) & 0x3FF])(op) : (op >> 28) == 0xF ? arm.handleReserved(op) :
@@ -419,7 +558,7 @@ static void runCase(Case &c) {
     now.traceAt = 0;
     now.fakes.clear();
     now.fakeAt = 0;
-    now.msrCalls = now.msrWanted = 0;
+    now.msrCalls = now.msrWanted = now.restoreCalls = now.restoreWanted = 0;
     static std::mt19937 interrupts(4321);
     now.ie = uint64_t(1) << (interrupts() % 64);
     now.irf = (interrupts() % 4) ? 0 : now.ie;
@@ -442,7 +581,7 @@ static void runCase(Case &c) {
     // Set up the emulator; generated code expects the words big-endian, and guest memory stays little-endian
     writeCodeToEmulator(jit);
     setupMemoryMode(c.memoryMode);
-    uint32_t words[64] = {};
+    uint32_t words[(OFF_EXTRA + 9 * 4) / 4] = {};
     for (int i = 0; i < 16; i++) words[i] = swap32(c.in.usr[i]);
     for (int i = 0; i < 16; i++)
         words[OFF_REGS / 4 + i] = swap32(banked(c.in.mode, i) ? (ARM_STATE + OFF_BANK + (i - 8) * 4) : (ARM_STATE + i * 4));
@@ -451,6 +590,14 @@ static void runCase(Case &c) {
     words[OFF_SPSR / 4] = swap32(c.in.mode ? (ARM_STATE + OFF_SPSR_VALUE) : 0);
     for (int i = 0; i < 7; i++) words[OFF_BANK / 4 + i] = swap32(c.in.bank[i]);
     words[OFF_SPSR_VALUE / 4] = swap32(c.in.spsr);
+
+    for (int i = 0; i < 9; i++) words[OFF_EXTRA / 4 + i] = swap32(c.in.extra[i]);
+
+    // The JIT's real table of banked registers, with its host pointers turned into where the emulator has them
+    Interpreter &real = core->interpreter[c.cpu];
+    for (uint32_t mode = 0; mode < 32; mode++)
+        for (int field = 0; field < 3; field++)
+            writeBe(MODE_BANKS + mode * 16 + field * 4, emuBank(real, jit.modeBanks[mode][field]));
     words[OFF_IE / 4] = swap32(now.ie >> 32);
     words[OFF_IE / 4 + 1] = swap32(now.ie);
     words[OFF_IRF / 4] = swap32(now.irf >> 32);
@@ -504,6 +651,7 @@ static void runCase(Case &c) {
             if (readBe(GLOBAL) != gotCycles) fail("global cycles %u want %u", readBe(GLOBAL), gotCycles);
             if (now.fakeAt != now.fakes.size()) fail("%d handlers called, want %d", int(now.fakeAt), int(now.fakes.size()));
             if (now.msrCalls != now.msrWanted) fail("%d MSR calls, want %d", now.msrCalls, now.msrWanted);
+            if (now.restoreCalls != now.restoreWanted) fail("%d CPSR restore calls, want %d", now.restoreCalls, now.restoreWanted);
         }
     }
 
@@ -604,6 +752,7 @@ static State randomState(bool thumb, int mode) {
     State s;
     for (int i = 0; i < 15; i++) s.usr[i] = interesting();
     for (int i = 0; i < 7; i++) s.bank[i] = interesting();
+    for (int i = 0; i < 9; i++) s.extra[i] = interesting();
     s.spsr = interesting();
     s.usr[15] = 0;
     s.mode = mode;
@@ -965,6 +1114,9 @@ static void suiteBlockLists() {
         uint32_t list = (rng() & 0xFFFF) >> rnd(14);
         uint32_t bits = 0xE8000000 | (rnd(16) << 16) | (rnd(16) << 20) | (rnd(16) << 21 & 0x01800000);
         forms.push_back({ false, (bits & ~0x00400000u) | list });
+
+        // The same with user registers, as a thread switch saves and restores them
+        forms.push_back({ false, ((bits & ~0x00200000u) | 0x00400000u) | (list & 0x7FFF) });
     }
     // Every LDM/STM table position, with a base that isn't in the list so both CPUs have native code for it
     std::mt19937 lists(4321);
@@ -998,7 +1150,7 @@ static uint32_t randomArmOp(int cpu) {
     auto list = [&]() { return ((rng() & 0xFFFF) >> rnd(10)) & 0x5F7F; }; // No R7, SP or PC
     uint32_t cond = rnd(4) == 0 ? rnd(15) : 14;
     uint32_t op;
-    switch (rnd(22)) {
+    switch (rnd(24)) {
         case 0: case 1: case 2: case 3: case 4: { // ALU with an immediate
             uint32_t opc = rnd(16), s = (opc >= 8 && opc <= 11) ? 1 : rnd(2);
             op = 0x02000000 | (opc << 21) | (s << 20) | (any() << 16) | (rd() << 12) | (rnd(16) << 8) | rnd(256);
@@ -1060,6 +1212,14 @@ static uint32_t randomArmOp(int cpu) {
             op = 0x012FFF10 | (rnd(2) << 5) | rnd(15);
             cond = rnd(14);
             break;
+        case 21: { // LDM and STM of the user registers
+            uint32_t l = list();
+            op = 0x08400000 | (rnd(2) << 24) | (rnd(2) << 23) | (rnd(2) << 20) | (base() << 16) | (l ? l : 1);
+            break;
+        }
+        case 22: // A return to the next instruction, or the one after, restoring the CPSR
+            op = rnd(4) ? 0x025FF004 : rnd(2) ? 0x025FF000 : 0x01B0F00F;
+            break;
         default: // Things that call handlers without ending the block: LDRD, STRD, a multiply with the PC
             switch (rnd(3)) {
                 case 0: op = 0x01C000D0 | (base() << 16) | (rnd(6) << 12); break;
@@ -1107,6 +1267,18 @@ static uint32_t randomThumbOp() {
     }
 }
 
+static void usableBanks(State &s) {
+    // Make every mode's stack pointer usable and the saved state one a return can really go to, as blocks can switch modes
+    static const uint32_t modes[] = { 0x10, 0x1F, 0x12, 0x13, 0x17, 0x1B, 0x11 };
+    auto stack = []() { return (DATA_START + 0x1000 + rnd(0xE000)) & ~3u; };
+    s.usr[13] = stack();
+    s.bank[5] = stack();
+    for (int i = 0; i < 9; i += 3) s.extra[i] = stack();
+    auto saved = [&]() { return (rnd(16) << 28) | modes[rnd(7)] | (rnd(8) ? 0 : BIT(5)) | (rnd(2) ? BIT(7) : 0); };
+    s.spsr = saved();
+    for (int i = 2; i < 9; i += 3) s.extra[i] = saved();
+}
+
 static void suiteBlocks() {
     // Random blocks entered at the start or the middle, stopping at checks or not, in each kind of memory
     const uint64_t total = 400000;
@@ -1140,8 +1312,8 @@ static void suiteBlocks() {
 
         int mode = rnd(3);
         State s = randomState(thumb, mode);
+        usableBanks(s);
         s.usr[7] = (DATA_START + 0x1000 + rnd(0xE000)) & ~3u;
-        visible(s, 13) = (DATA_START + 0x1000 + rnd(0xE000)) & ~3u;
 
         Case c;
         c.name = std::string(thumb ? "thumb blocks" : "arm blocks") + (block != host ? ", entered mid-block" : "");
@@ -1193,7 +1365,7 @@ static void suiteLinks() {
         };
         for (int i = 0; i < size; i++) a.push_back(safe());
         uint32_t end = addressA + a.size() * step;
-        int ending = rnd(thumb ? 3 : 3);
+        int ending = rnd(thumb ? 3 : 4);
         uint32_t condition = rnd(14);
         if (ending == 0) { // Unconditional branch
             a.push_back(terminator(thumb, end, addressB - end));
@@ -1209,6 +1381,10 @@ static void suiteLinks() {
             }
             uint32_t next = addressA + a.size() * step;
             a.push_back(terminator(thumb, next, addressB - next));
+        }
+        else if (ending == 3) { // A return through the dispatcher
+            a.push_back(0xE256F000); // SUBS PC, R6, #0
+            count("links from returns");
         }
         else { // Back and forth through the dispatcher, changing mode
             a.push_back(thumb ? 0x4700 | (6 << 3) : 0xE12FFF16); // BX r6
@@ -1237,15 +1413,16 @@ static void suiteLinks() {
 
         int mode = rnd(3);
         State s = randomState(thumb, mode);
+        usableBanks(s);
+        s.spsr &= ~BIT(5);
         s.usr[7] = (DATA_START + 0x1000 + rnd(0xE000)) & ~3u;
-        visible(s, 13) = (DATA_START + 0x1000 + rnd(0xE000)) & ~3u;
         s.usr[6] = addressB | ((otherMode ? !thumb : thumb) ? 1 : 0);
         if (!thumb && !otherMode) s.usr[6] = addressB & ~3u;
 
         auto run = [&](const std::vector<JitBlock*> &blocks, const char *name) {
             // Without anything in the block cache, only a real link can reach a block directly branched to
             Case c;
-            c.useCache = ending == 2;
+            c.useCache = ending >= 2;
             c.name = name;
             c.cpu = cpu;
             c.in = s;
@@ -1503,7 +1680,7 @@ static std::string refFlags(uint32_t a, bool thumb, const RefState &s, int kind,
         if (rn == 15) text += ", PC base";
         if ((a & BIT(22)) && ((s.cpsr & 0x1F) == 0x10 || (s.cpsr & 0x1F) == 0x1F)) text += ", S without an SPSR";
     }
-    if (kind == NK_NONE && !thumb && (a & 0x0C000000) == 0 && (a & BIT(20)) && rd == 15 && !(((a >> 21) & 0xF) >= 8 && ((a >> 21) & 0xF) <= 11) &&
+    if ((kind == NK_NONE || kind == NK_ALU_PC) && !thumb && (a & 0x0C000000) == 0 && (a & BIT(20)) && rd == 15 && !(((a >> 21) & 0xF) >= 8 && ((a >> 21) & 0xF) <= 11) &&
         ((s.cpsr & 0x1F) == 0x10 || (s.cpsr & 0x1F) == 0x1F)) text += ", S to PC without an SPSR";
     if ((a & 0x0E000090) == 0x00000090 && !(a & 0x60) && (rn == 15 || rd == 15 || rm == 15 || rs == 15)) text += ", uses PC";
     if ((a & 0x0E000090) == 0x00000010 && (rn == 15 || rm == 15 || rs == 15 || rd == 15)) text += ", PC with a register shift";
@@ -1801,6 +1978,224 @@ static void suiteReference() {
     }
 }
 
+static void suiteReturns() {
+    // Returns from exceptions, with every kind of saved state, since random SPSRs are rarely valid
+    uint64_t index = 0;
+    static const uint32_t ops[] = { 0xE25EF004, 0xE1B0F00E, 0xE3A0F102, 0xE29EF000, 0xE1B0F00E | (1 << 5), 0xE05EF10E, 0x125EF004, 0xE1F0F00E,
+        0x125FF002, 0xB25FF002 }; // The last two return to where a THUMB program counter is the same as the next instruction's
+    static const uint32_t modes[] = { 0x10, 0x1F, 0x12, 0x13, 0x17, 0x1B, 0x11, 0x00, 0x15 };
+    for (uint32_t op: ops) {
+        for (uint32_t saved: modes) {
+            for (int variant = 0; variant < 24; variant++) {
+                if (!mine(index++)) continue;
+                rng.seed(index + 90000);
+                for (int cpu = 0; cpu < 2; cpu++) {
+                    for (int mode = 0; mode < 3; mode++) {
+                        State s = randomState(false, mode);
+                        s.spsr = (rnd(16) << 28) | saved | (rnd(2) ? BIT(5) : 0) | (rnd(2) ? BIT(7) : 0);
+                        testOneOp("returns", cpu, false, op, mode, MEMORY_MAPPED, &s);
+                    }
+                }
+            }
+        }
+    }
+}
+
+static void suiteReturnsThenCode() {
+    // A return followed by code using the banked registers of the mode it went to, for every pair of modes
+    static const uint32_t modes[] = { 0x10, 0x1F, 0x12, 0x13, 0x17, 0x1B, 0x11 };
+    uint64_t index = 0;
+    for (int startMode = 0; startMode < 3; startMode++) {
+        for (uint32_t saved: modes) {
+            for (int thumb = 0; thumb < 2; thumb++) {
+                for (int variant = 0; variant < 40; variant++) {
+                    if (!mine(index++)) continue;
+                    rng.seed(index + 100000);
+                    int cpu = rnd(4) == 0;
+                    uint32_t page = CODE_START + 0x1000 * rnd(12), addressA = page + 0x100, addressB = page + 0x180;
+                    clearCode(page, 0x1000);
+                    uint32_t a = 0xE25EF004; // SUBS PC, LR, #4
+                    putCode(addressA, &a, 1, false);
+                    if (thumb) {
+                        uint32_t b[] = { 0x4668, 0x4671, 0xB001, 0x46A6, 0, 0 }; // MOV R0, SP; MOV R1, LR; ADD SP, #4; MOV LR, R4
+                        b[4] = terminator(true, addressB + 8, 32);
+                        putCode(addressB, b, 5, true);
+                    }
+                    else {
+                        // MOV R0, SP; MOV R1, LR; MRS R2, SPSR; ADD SP, SP, #4; SUB LR, LR, #8; MSR SPSR_f, R5
+                        uint32_t b[] = { 0xE1A0000D, 0xE1A0100E, 0xE14F2000, 0xE28DD004, 0xE24EE008, 0xE168F005, 0 };
+                        b[6] = terminator(false, addressB + 24, 32);
+                        putCode(addressB, b, 7, false);
+                    }
+                    JitBlock *blockA = compileAt(cpu, addressA, false);
+                    JitBlock *blockB = compileAt(cpu, addressB, thumb);
+                    if (!blockA || !blockB) continue;
+                    State s = randomState(false, startMode);
+                    s.spsr = (rnd(16) << 28) | saved | (thumb ? BIT(5) : 0) | (rnd(2) ? BIT(7) : 0);
+                    visible(s, 14) = addressB + 4;
+                    Case c;
+                    c.name = "returns then code";
+                    c.cpu = cpu;
+                    c.in = s;
+                    c.blocks = { blockA, blockB };
+                    c.memoryMode = MEMORY_MAPPED;
+                    c.stopMode = rnd(5);
+                    c.deadline = 1 + rnd(12);
+                    c.limitDeadline = rnd(2);
+                    c.stopAfter = rnd(5);
+                    runCase(c);
+                    count("suite:returns then code");
+                    restoreRam();
+                    finishBlocks(cpu);
+                }
+            }
+        }
+    }
+}
+
+static void suiteMath() {
+    // The math registers generated code reaches directly, against the real ones, so byte order and offsets are checked
+    Jit &jit = core->jit;
+    DivSqrt &div = core->divSqrt;
+    uint64_t index = 0;
+    now.name = "math";
+    auto get8 = [&](uint32_t at) { return (uint64_t(readBe(MATH + at)) << 32) | readBe(MATH + at + 4); };
+    auto enter = [&](int type, uint32_t address, uint32_t value) {
+        setReg(UC_PPC_REG_1, STACK);
+        setReg(UC_PPC_REG_5, address);
+        setReg(UC_PPC_REG_8, value);
+        setReg(UC_PPC_REG_0 + 23, WRITE_MAP);
+        setReg(UC_PPC_REG_0 + 24, READ_MAP);
+        setReg(UC_PPC_REG_0 + 27, EVENTS);
+        setReg(UC_PPC_REG_0 + 28, START_CYCLES);
+        setReg(UC_PPC_REG_0 + 29, LIMIT);
+        setReg(UC_PPC_REG_0 + 30, GLOBAL);
+        setReg(UC_PPC_REG_0 + 31, ARM_STATE);
+        setReg(UC_PPC_REG_LR, END);
+        return uc_emu_start(uc, emuCode(jit.codeMemory[type]), END, 0, 2000);
+    };
+    now.mathLive = false;
+    for (uint32_t address = 0x4000278; address < 0x40002C8; address++) {
+        for (int type = 0; type < 6; type++) {
+            for (int variant = 0; variant < 16; variant++) {
+                if (!mine(index++)) continue;
+                rng.seed(index + 120000);
+                bool load = type < 3;
+                int size = (type % 3 == 0) ? 4 : (type % 3 == 1) ? 1 : 2;
+                uint32_t value = interesting();
+                div.divCnt = rng() & 0xC003;
+                div.sqrtCnt = rng() & 0x8001;
+                div.divNumer = (uint64_t(rng()) << 32) | rng();
+                div.divDenom = (uint64_t(rng()) << 32) | rng();
+                div.sqrtParam = (uint64_t(rng()) << 32) | rng();
+                div.divDirty = rnd(2);
+                div.sqrtDirty = rnd(2);
+                putMath(div);
+
+                // What should be done without leaving generated code
+                uint32_t o = address - 0x4000280;
+                bool inside = address >= 0x4000280 && address < 0x40002C0, direct = false;
+                if (inside && size == 2 && o == 0x30) direct = true;
+                if (inside && size == 2 && o == 0) direct = !load || !div.divDirty;
+                if (inside && size == 4 && !(o & 3) && ((o >= 0x10 && o < 0x20) || o >= 0x38)) direct = true;
+
+                char text[96];
+                snprintf(text, sizeof(text), "address %08X size %d %s", address, size, load ? "load" : "store");
+                now.description = text;
+                now.failed = false;
+                now.mathCalls = 0;
+                uc_err err = enter(type, address, value);
+                count("suite:math");
+                if (err != UC_ERR_OK || reg(UC_PPC_REG_PC) != END) { fail("didn't finish: %s", uc_strerror(err)); continue; }
+                if (now.mathCalls != (direct ? 0 : 1)) { fail("%d memory calls, want %d", now.mathCalls, direct ? 0 : 1); continue; }
+                if (!direct) { count("math left to C++"); continue; }
+                count("math done directly");
+
+                if (load) {
+                    uint32_t want = (size == 4) ? core->memory.read<uint32_t>(0, address) : core->memory.read<uint16_t>(0, address);
+                    if (reg(UC_PPC_REG_8) != want) fail("loaded %08X, want %08X", reg(UC_PPC_REG_8), want);
+                    continue;
+                }
+                if (size == 4) core->memory.write<uint32_t>(0, address, value);
+                else core->memory.write<uint16_t>(0, address, value);
+                uint8_t got[6];
+                uc_mem_read(uc, MATH + MATH_DIV_CNT, got, sizeof(got));
+                if (get8(MATH_NUMER) != uint64_t(div.divNumer)) fail("numerator %llX, want %llX", (unsigned long long)get8(MATH_NUMER), (unsigned long long)div.divNumer);
+                if (get8(MATH_DENOM) != uint64_t(div.divDenom)) fail("denominator %llX, want %llX", (unsigned long long)get8(MATH_DENOM), (unsigned long long)div.divDenom);
+                if (get8(MATH_PARAM) != div.sqrtParam) fail("square root parameter %llX, want %llX", (unsigned long long)get8(MATH_PARAM), (unsigned long long)div.sqrtParam);
+                if (((got[0] << 8) | got[1]) != div.divCnt) fail("DIVCNT %04X, want %04X", (got[0] << 8) | got[1], div.divCnt);
+                if (((got[2] << 8) | got[3]) != div.sqrtCnt) fail("SQRTCNT %04X, want %04X", (got[2] << 8) | got[3], div.sqrtCnt);
+                if (got[4] != div.divDirty || got[5] != div.sqrtDirty) fail("dirty flags %d %d, want %d %d", got[4], got[5], div.divDirty, div.sqrtDirty);
+            }
+        }
+    }
+
+    // Random runs of accesses against the same run done only in C++, where generated code and C++ share the dirty flags
+    // and results are worked out from what generated code wrote
+    now.mathLive = true;
+    static const uint32_t common[] = { 0x4000280, 0x40002B0, 0x4000290, 0x4000294, 0x4000298, 0x400029C, 0x40002A0, 0x40002A4, 0x40002A8,
+        0x40002AC, 0x40002B4, 0x40002B8, 0x40002BC };
+    for (uint64_t run = 0; run < 8000; run++) {
+        if (!mine(index++)) continue;
+        rng.seed(run + 130000);
+        DivSqrt reference = div;
+        reference.divCnt = reference.sqrtCnt = 0;
+        reference.divNumer = reference.divDenom = reference.divResult = reference.divRemResult = 0;
+        reference.sqrtParam = reference.sqrtResult = 0;
+        reference.divDirty = reference.sqrtDirty = false;
+        DivSqrt tested = reference;
+        now.failed = false;
+        for (int step = 0; step < 40 && !now.failed; step++) {
+            uint32_t address = common[rnd(13)] + (rnd(16) ? 0 : rnd(4));
+            int type = rnd(6);
+            if (rnd(4)) type = (type & 3) ? ((address & 2) || address == 0x4000280 || address == 0x40002B0 ? 2 + 3 * rnd(2) : 3 * rnd(2)) : type;
+            if ((address == 0x4000280 || address == 0x40002B0) && rnd(4)) type = rnd(2) ? 2 : 5;
+            bool load = type < 3;
+            int size = (type % 3 == 0) ? 4 : (type % 3 == 1) ? 1 : 2;
+            uint32_t value = rnd(4) ? (rng() >> rnd(32)) : interesting();
+
+            // The run done only in C++
+            div = reference;
+            uint32_t want = 0;
+            if (load) {
+                want = (size == 4) ? core->memory.read<uint32_t>(0, address) : (size == 2) ? core->memory.read<uint16_t>(0, address) :
+                    core->memory.read<uint8_t>(0, address);
+                int shift = (size == 4) ? (address & 3) * 8 : 0;
+                if (shift) want = (want << (32 - shift)) | (want >> shift);
+            }
+            else if (size == 4) core->memory.write<uint32_t>(0, address, value);
+            else if (size == 2) core->memory.write<uint16_t>(0, address, value);
+            else core->memory.write<uint8_t>(0, address, value);
+            reference = div;
+
+            // The same through generated code, with C++ taking what falls through
+            char text[96];
+            snprintf(text, sizeof(text), "step %d address %08X size %d %s", step, address, size, load ? "load" : "store");
+            now.description = text;
+            div = tested;
+            putMath(div);
+            now.mathCalls = 0;
+            uc_err err = enter(type, address, value);
+            count("math sequence steps");
+            if (err != UC_ERR_OK || reg(UC_PPC_REG_PC) != END) { fail("didn't finish: %s", uc_strerror(err)); break; }
+            getMath(div);
+            tested = div;
+            if (load && reg(UC_PPC_REG_8) != want) fail("loaded %08X, want %08X", reg(UC_PPC_REG_8), want);
+
+            // Results might not be worked out yet on one side, so compare what the DS can see
+            if (tested.divNumer != reference.divNumer || tested.divDenom != reference.divDenom || tested.sqrtParam != reference.sqrtParam ||
+                tested.divCnt != reference.divCnt || tested.sqrtCnt != reference.sqrtCnt || tested.divDirty != reference.divDirty ||
+                tested.sqrtDirty != reference.sqrtDirty)
+                fail("registers differ: numerator %llX want %llX, denominator %llX want %llX, parameter %llX want %llX, control %X %X want %X %X, dirty %d %d want %d %d",
+                    (unsigned long long)tested.divNumer, (unsigned long long)reference.divNumer, (unsigned long long)tested.divDenom,
+                    (unsigned long long)reference.divDenom, (unsigned long long)tested.sqrtParam, (unsigned long long)reference.sqrtParam,
+                    tested.divCnt, tested.sqrtCnt, reference.divCnt, reference.sqrtCnt, tested.divDirty, tested.sqrtDirty, reference.divDirty, reference.sqrtDirty);
+        }
+        count("suite:math");
+    }
+    now.mathLive = false;
+}
+
 static void setup(Jit &jit) {
     // Everything generated code reads from outside itself goes to a known place in the emulator
     jit.offUsr = 0;
@@ -1815,6 +2210,14 @@ static void setup(Jit &jit) {
     jit.addrWriteMap = WRITE_MAP;
     jit.addrDtcmReg = DTCM_REG;
     jit.addrWriteCpsr = FAKE_MSR;
+    jit.addrRestoreCpsr = FAKE_RESTORE;
+    jit.addrModeBanks = MODE_BANKS;
+    jit.addrDivNumer = MATH + MATH_NUMER;
+    jit.addrSqrtParam = MATH + MATH_PARAM;
+    jit.addrDivCnt = MATH + MATH_DIV_CNT;
+    jit.addrSqrtCnt = MATH + MATH_SQRT_CNT;
+    jit.addrDivDirty = MATH + MATH_DIV_DIRTY;
+    jit.addrSqrtDirty = MATH + MATH_SQRT_DIRTY;
     jit.offIe = OFF_IE;
     jit.offIrf = OFF_IRF;
     jit.addrLoad32 = FAKE;
@@ -1906,6 +2309,9 @@ int main(int argc, char **argv) {
     run("flags", suiteFlagGrid);
     run("conditions", suiteConditionGrid);
     run("lists", suiteBlockLists);
+    run("returns", suiteReturns);
+    run("returns", suiteReturnsThenCode);
+    run("math", suiteMath);
     run("blocks", suiteBlocks);
     run("links", suiteLinks);
     run("reference", suiteReference);

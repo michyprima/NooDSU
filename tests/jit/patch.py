@@ -17,6 +17,12 @@ def edit(path, *changes):
     open(path, 'w').write(text)
 
 edit('arm/interpreter.h', ('private:', 'public:'))
+
+# Older cores, which bench.sh compares with, don't have what this harness points elsewhere for returns and the math registers
+if 'addrRestoreCpsr' not in open(root + '/arm/jit.h').read():
+    edit('arm/jit.h', ('    uint32_t addrDtcmReg = 0, addrWriteCpsr = 0;\n', '    uint32_t addrDtcmReg = 0, addrWriteCpsr = 0, addrRestoreCpsr = 0, addrModeBanks = 0;\n'
+        '    uint32_t addrDivCnt = 0, addrDivNumer = 0, addrDivDirty = 0, addrSqrtCnt = 0, addrSqrtParam = 0, addrSqrtDirty = 0;\n'
+        '    static void restoreCpsrCall(Interpreter *arm, uint32_t before) {}\n    uint32_t modeBanks[32][4] = {};\n'))
 edit('arm/jit.cpp', ('#include <cstdlib>', '#include <algorithm>\n#include <vector>\n#include <cstdlib>'))
 edit('defines.h', ('__asm__ volatile("dcbz 0, %0" :: "r"(data) : "memory");', ''))
 edit('gpu/gpu.cpp',
@@ -73,7 +79,7 @@ MUTATIONS = [
     ('e.loadConst(R_PC, host->address + (index + 2) * (host->thumb ? 2 : 4) - host->entriesBehind[index]);', 'e.loadConst(R_PC, host->address + (index + 2) * (host->thumb ? 2 : 4));'), # 9: mid-block entry has the wrong PC
     ('block->links.push_back({ e.here(), target | thumbCond, nullptr });', 'block->links.push_back({ e.here(), target, nullptr });'), # 10: THUMB branch links to ARM
     ('    e.stw(3, offCycles, R_ARM);\n    e.stw(R_CYCLES, 0, R_GLOBAL);\n', '    e.stw(3, offCycles, R_ARM);\n'), # 11: a stop doesn't save the time
-    ('    stepPc(e);\n    e.call(codePost[!isPure(raw', '    e.call(codePost[!isPure(raw'), # 12: the PC is stale at a check
+    ('    stepPc(e);\n    e.call(codePost[postHalf()][!isPure(raw', '    e.call(codePost[postHalf()][!isPure(raw'), # 12: the PC is stale at a check
     ('e.add(3, 3, R_BATCH);\n        e.li(R_BATCH, 0);', 'e.li(R_BATCH, 0);'), # 13: a run's cycles are lost
     ('    e.lwz(R_CYCLES, 0, R_GLOBAL);\n    e.lwz(4, 0, R_LIMIT);', '    e.lwz(4, 0, R_LIMIT);'), # 14: refresh doesn't reload the time
     ('e.rlwinm(R_TMP2, R_TMP1, 0, 0, 29);', 'e.mr(R_TMP2, R_TMP1);'), # 15: LDM/STM bases aren't aligned in the slow path
@@ -98,18 +104,29 @@ MUTATIONS = [
     ('e.rlwinm(8, 8, 28, 4, 4);', 'e.li(8, 0);'), # 34: SMLA doesn't set Q
     ('e.addc(5, 5, 7);\n        e.adde(6, 6, 8);\n        writeReg(e, 5, rn);', 'e.add(5, 5, 7);\n        e.adde(6, 6, 8);\n        writeReg(e, 5, rn);'), # 35: SMLAL loses the carry
     ('e.srawi(5, 3, 31);\n        e.loadConst(6, 0x7FFFFFFF);', 'e.srawi(5, 4, 31);\n        e.loadConst(6, 0x7FFFFFFF);'), # 36: QSUB saturates the wrong way
+    ('e.andi_(7, 6, BIT(5));\n        uint32_t *arm', 'e.andi_(7, 7, BIT(5));\n        uint32_t *arm'), # 37: A return uses the old THUMB state
+    ('e.or_(8, 8, 9);\n        e.cmpwi(8, 0);\n        uint32_t *slow2 = e.here();\n        e.bne(nullptr);\n        e.patchBc(masked);\n\n        // Swap', 'e.cmpwi(8, 0);\n        uint32_t *slow2 = e.here();\n        e.bne(nullptr);\n        e.patchBc(masked);\n\n        // Swap'), # 38: A return doesn't see all interrupts
+    ('    if (restore) s = false;\n', ''), # 39: A return sets flags, which shows without an SPSR
+    ('e.cmpwi(8, 0x11);\n        uint32_t *slow3', 'e.cmpwi(8, 0x12);\n        uint32_t *slow3'), # 40: A return from FIQ stays out of the interpreter
+    ('            else if (user) e.stw(8, offUsr + i * 4, R_ARM);\n', ''), # 41: LDM with S loads the banked registers
+    ('            e.xori(6, 6, 4);\n', ''), # 42: Math registers have their words swapped
+    ('banks(0x17, &arm.registersAbt[0], &arm.registersAbt[1], &arm.spsrAbt);', 'banks(0x17, &arm.registersUnd[0], &arm.registersUnd[1], &arm.spsrUnd);'), # 43: Abort mode gets Undefined's registers
+    ('e.stw(9, offRegs + 14 * 4, R_ARM);\n', ''), # 44: A return doesn't swap R14
+    ('e.call(addrRestoreCpsr);\n        e.call(codeRefresh);\n', 'e.call(addrRestoreCpsr);\n'), # 45: A return's slow path doesn't refresh
+    ('                setDirty(sqrt ? addrSqrtDirty : addrDivDirty);\n            }\n            e.blr();\n            e.patchBc(next);\n        }\n    }\n    for', '            }\n            e.blr();\n            e.patchBc(next);\n        }\n    }\n    for'), # 46: Writing a math word leaves the old result
+    ('if (!block->thumb && native && nativeKind(op, arm7) == NK_ALU_PC && (op & BIT(20))) {\n            differ', 'if (false) {\n            differ'), # 47: A return to THUMB at the next address stays in ARM
 ]
 # Bugs in the interpreter, which only the reference suite can see if the JIT has no native code for them
 INTERPRETER_MUTATIONS = [
-    ('arm/interpreter_alu.cpp', 'cpsr = (cpsr & ~0xF0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&', 'cpsr = (cpsr & ~0xC0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&'), # 37: RSCS can't clear C or V
-    ('arm/interpreter_alu.cpp', ' | ((*op0 <= 0) << 29) |\n        ((op2 & *op0 & BIT(31)) >> 3);', ' | ((*op0 <= 0) << 29);'), # 38: NEG always clears V
-    ('arm/interpreter_transfer.cpp', 'int Interpreter::ldmiaU(uint32_t opcode) { // LDMIA Rn, <Rlist>^\n    // User block load, post-increment without writeback; normal registers if branching\n    uint8_t m = bitCount[opcode & 0xFF] + bitCount[(opcode >> 8) & 0xFF];\n    uint32_t op0 = *registers[(opcode >> 16) & 0xF];\n    uint32_t **regs = &registers[(~opcode & BIT(15)) >> 11];', 'int Interpreter::ldmiaU(uint32_t opcode) { // LDMIA Rn, <Rlist>^\n    // User block load, post-increment without writeback; normal registers if branching\n    uint8_t m = bitCount[opcode & 0xFF] + bitCount[(opcode >> 8) & 0xFF];\n    uint32_t op0 = *registers[(opcode >> 16) & 0xF];\n    uint32_t **regs = &registers[0];'), # 39: LDM with S doesn't use user registers
-    ('arm/interpreter_transfer.cpp', 'if ((opcode & BIT(16)) && (cpsr & 0x1F) != 0x10)\n        setCpsr', 'if (opcode & BIT(16))\n        setCpsr'), # 40: User mode MSR changes control bits
-    ('arm/interpreter_transfer.cpp', '    if (spsr) setCpsr(*spsr);\n    flushPipeline();', '    if (spsr) setCpsr(*spsr);\n    cpsr |= (*registers[15] & !arm7) << 5;\n    flushPipeline();'), # 41: LDM with S takes THUMB from the PC
+    ('arm/interpreter_alu.cpp', 'cpsr = (cpsr & ~0xF0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&', 'cpsr = (cpsr & ~0xC0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&'), # 48: RSCS can't clear C or V
+    ('arm/interpreter_alu.cpp', ' | ((*op0 <= 0) << 29) |\n        ((op2 & *op0 & BIT(31)) >> 3);', ' | ((*op0 <= 0) << 29);'), # 49: NEG always clears V
+    ('arm/interpreter_transfer.cpp', 'int Interpreter::ldmiaU(uint32_t opcode) { // LDMIA Rn, <Rlist>^\n    // User block load, post-increment without writeback; normal registers if branching\n    uint8_t m = bitCount[opcode & 0xFF] + bitCount[(opcode >> 8) & 0xFF];\n    uint32_t op0 = *registers[(opcode >> 16) & 0xF];\n    uint32_t **regs = &registers[(~opcode & BIT(15)) >> 11];', 'int Interpreter::ldmiaU(uint32_t opcode) { // LDMIA Rn, <Rlist>^\n    // User block load, post-increment without writeback; normal registers if branching\n    uint8_t m = bitCount[opcode & 0xFF] + bitCount[(opcode >> 8) & 0xFF];\n    uint32_t op0 = *registers[(opcode >> 16) & 0xF];\n    uint32_t **regs = &registers[0];'), # 50: LDM with S doesn't use user registers
+    ('arm/interpreter_transfer.cpp', 'if ((opcode & BIT(16)) && (cpsr & 0x1F) != 0x10)\n        setCpsr', 'if (opcode & BIT(16))\n        setCpsr'), # 51: User mode MSR changes control bits
+    ('arm/interpreter_transfer.cpp', '    if (spsr) setCpsr(*spsr);\n    flushPipeline();', '    if (spsr) setCpsr(*spsr);\n    cpsr |= (*registers[15] & !arm7) << 5;\n    flushPipeline();'), # 52: LDM with S takes THUMB from the PC
 ]
 # Bugs only a game.sh option can see, numbered after those and left out of mutate.sh, which runs the cases above
 GAME_MUTATIONS = [
-    ('memory/memory.cpp', '        if (uint8_t *mapping = *(uint8_t *volatile*)&mappings[m])\n            value |= readLsb<T>(&mapping[address]);', '        value |= readLsb<T>(&mappings[m][address]);'), # game 42: a VRAM read follows a missing pointer, for vramstress
+    ('memory/memory.cpp', '        if (uint8_t *mapping = *(uint8_t *volatile*)&mappings[m])\n            value |= readLsb<T>(&mapping[address]);', '        value |= readLsb<T>(&mappings[m][address]);'), # game 53: a VRAM read follows a missing pointer, for vramstress
 ]
 if mutation > len(MUTATIONS) + len(INTERPRETER_MUTATIONS):
     file, old, new = GAME_MUTATIONS[mutation - len(MUTATIONS) - len(INTERPRETER_MUTATIONS) - 1]
