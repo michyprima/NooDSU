@@ -262,11 +262,26 @@ void Jit::initCodegen() {
     offIrf = (uint8_t*)&arm.irf - (uint8_t*)&arm;
     offDsiCycle = (uint8_t*)&arm.dsiCycle - (uint8_t*)&arm;
     addrWriteCpsr = (uint32_t)(uintptr_t)&Jit::writeCpsrCall;
+    addrRestoreCpsr = (uint32_t)(uintptr_t)&Jit::restoreCpsrCall;
     addrCondition = (uint32_t)(uintptr_t)&Interpreter::condition[0];
     addrMemory = (uint32_t)(uintptr_t)&core->memory;
     addrReadMap = (uint32_t)(uintptr_t)(arm7 ? &core->memory.readMap7[0] : &core->memory.readMap9A[0]);
     addrWriteMap = (uint32_t)(uintptr_t)(arm7 ? &core->memory.writeMap7[0] : &core->memory.writeMap9A[0]);
     addrDtcmReg = (uint32_t)(uintptr_t)&core->cp15.dtcmReg;
+
+    // Banked registers for each mode that only banks R13 and R14; FIQ and invalid modes stay 0, which leaves them to C++
+    auto banks = [&](int mode, uint32_t *r13, uint32_t *r14, uint32_t *spsr) {
+        modeBanks[mode][0] = (uint32_t)(uintptr_t)r13;
+        modeBanks[mode][1] = (uint32_t)(uintptr_t)r14;
+        modeBanks[mode][2] = (uint32_t)(uintptr_t)spsr;
+    };
+    banks(0x10, &arm.registersUsr[13], &arm.registersUsr[14], nullptr);
+    banks(0x1F, &arm.registersUsr[13], &arm.registersUsr[14], nullptr);
+    banks(0x12, &arm.registersIrq[0], &arm.registersIrq[1], &arm.spsrIrq);
+    banks(0x13, &arm.registersSvc[0], &arm.registersSvc[1], &arm.spsrSvc);
+    banks(0x17, &arm.registersAbt[0], &arm.registersAbt[1], &arm.spsrAbt);
+    banks(0x1B, &arm.registersUnd[0], &arm.registersUnd[1], &arm.spsrUnd);
+    addrModeBanks = (uint32_t)(uintptr_t)&modeBanks[0][0];
     addrLoad32 = (uint32_t)(uintptr_t)(arm7 ? &jitLoad32<true> : &jitLoad32<false>);
     addrLoad8 = (uint32_t)(uintptr_t)(arm7 ? &jitLoad8<true> : &jitLoad8<false>);
     addrStore32 = (uint32_t)(uintptr_t)(arm7 ? &jitStore32<true> : &jitStore32<false>);
@@ -641,6 +656,94 @@ void Jit::emitStubs(PpcEmitter &e) {
         e.blr();
     }
 
+    // Return from an exception to the address in r5, restoring the CPSR from the SPSR like an ALU instruction with flags
+    // that writes the program counter; only modes without FIQ's banked R8-R12 and no interrupt to take are done here
+    {
+        codeReturn = e.here();
+        e.lwz(6, offSpsr, R_ARM);
+        e.cmpwi(6, 0);
+        uint32_t *slow1 = e.here();
+        e.beq(nullptr);
+        e.lwz(6, 0, 6);
+        e.andi_(8, 6, BIT(7));
+        uint32_t *masked = e.here();
+        e.bne(nullptr);
+        e.lwz(8, offIe, R_ARM);
+        e.lwz(9, offIrf, R_ARM);
+        e.and_(8, 8, 9);
+        e.lwz(9, offIe + 4, R_ARM);
+        e.lwz(10, offIrf + 4, R_ARM);
+        e.and_(9, 9, 10);
+        e.or_(8, 8, 9);
+        e.cmpwi(8, 0);
+        uint32_t *slow2 = e.here();
+        e.bne(nullptr);
+        e.patchBc(masked);
+
+        // Swap the banked registers if the mode changes
+        e.lwz(7, offCpsr, R_ARM);
+        e.xor_(8, 6, 7);
+        e.andi_(8, 8, 0x1F);
+        uint32_t *same = e.here();
+        e.beq(nullptr);
+        e.andi_(8, 7, 0x1F);
+        e.cmpwi(8, 0x11);
+        uint32_t *slow3 = e.here();
+        e.beq(nullptr);
+        e.loadConst(8, addrModeBanks);
+        e.rlwinm(9, 6, 4, 23, 27);
+        e.add(8, 8, 9);
+        e.lwz(9, 0, 8);
+        e.cmpwi(9, 0);
+        uint32_t *slow4 = e.here();
+        e.beq(nullptr);
+        e.stw(9, offRegs + 13 * 4, R_ARM);
+        e.lwz(9, 4, 8);
+        e.stw(9, offRegs + 14 * 4, R_ARM);
+        e.lwz(9, 8, 8);
+        e.stw(9, offSpsr, R_ARM);
+        e.patchBc(same);
+        e.stw(6, offCpsr, R_ARM);
+
+        // Set the program counter as if the pipeline was flushed in the restored state
+        uint32_t *jump = e.here();
+        e.andi_(7, 6, BIT(5));
+        uint32_t *arm = e.here();
+        e.beq(nullptr);
+        e.rlwinm(8, 5, 0, 0, 30);
+        e.addi(8, 8, 2);
+        uint32_t *done = e.here();
+        e.b(nullptr);
+        e.patchBc(arm);
+        e.rlwinm(8, 5, 0, 0, 29);
+        e.addi(8, 8, 4);
+        e.patchB(done);
+        e.stw(8, offPc, R_ARM);
+        e.blr();
+
+        // The interpreter does the rest, which can schedule an interrupt; the address is kept on the stack during the call
+        e.patchBc(slow1);
+        e.patchBc(slow2);
+        e.patchBc(slow3);
+        e.patchBc(slow4);
+        e.stwu(1, -16, 1);
+        e.mflr(0);
+        e.stw(0, 20, 1);
+        e.stw(5, 8, 1);
+        e.stw(R_CYCLES, 0, R_GLOBAL);
+        e.stw(R_CYCLES, offCycles, R_ARM);
+        e.mr(3, R_ARM);
+        e.lwz(4, offCpsr, R_ARM);
+        e.call(addrRestoreCpsr);
+        e.call(codeRefresh);
+        e.lwz(5, 8, 1);
+        e.lwz(0, 20, 1);
+        e.mtlr(0);
+        e.addi(1, 1, 16);
+        e.lwz(6, offCpsr, R_ARM);
+        e.b(jump);
+    }
+
     // Set the sticky Q flag if the sum in r5 of r6 and r7 overflowed
     codeOverflowQ = e.here();
     e.xor_(8, 5, 6);
@@ -798,7 +901,7 @@ enum NativeKind {
     NK_MSR, // MSR
     NK_BLX, // BLX label
     NK_TRANSFER_PC, // LDR into the program counter
-    NK_ALU_PC, // Data processing without flags into the program counter
+    NK_ALU_PC, // Data processing into the program counter, which with flags returns from an exception
     NK_DSP // The ARM9's halfword multiplies, QADD and QSUB
 };
 
@@ -806,6 +909,12 @@ static bool cacheControl(uint32_t op) {
     // Check if an MCR is for the cache or write buffer, which aren't emulated, and not one of the writes that halts
     uint32_t reg = (((op >> 16) & 0xF) << 16) | ((op & 0xF) << 8) | ((op >> 5) & 0x7);
     return (op & 0x0F100010) == 0x0E000010 && (reg >> 16) == 7 && reg != 0x070004 && reg != 0x070802;
+}
+
+static bool restoresFlags(uint32_t op, bool arm7) {
+    // Check for a return with a shifter that can change the carry, which the ARM7 keeps when it has no SPSR to restore
+    uint32_t opc = (op >> 21) & 0xF;
+    return arm7 && (op & BIT(20)) && (opc <= 1 || opc >= 12);
 }
 
 static int nativeKind(uint32_t op, bool arm7) {
@@ -838,7 +947,8 @@ static int nativeKind(uint32_t op, bool arm7) {
                 uint32_t opc = (op >> 21) & 0xF;
                 if (!(op & BIT(20)) && opc >= 8 && opc <= 11) return NK_NONE; // Compares and tests only set flags
                 if (rn == 15 || rm == 15 || rs == 15) return NK_NONE;
-                return (rd == 15) ? ((op & BIT(20)) ? NK_NONE : NK_ALU_PC) : NK_ALU;
+                if (rd == 15 && opc >= 8 && opc <= 11) return NK_NONE;
+                return (rd == 15) ? (restoresFlags(op, arm7) ? NK_NONE : NK_ALU_PC) : NK_ALU;
             }
             return NK_NONE; // Other misc
         }
@@ -852,7 +962,7 @@ static int nativeKind(uint32_t op, bool arm7) {
         if (((op & 0x0FB000F0) == 0x01200000 || (op & 0x0FB00000) == 0x03200000) && (op & 0x00090000)) // MSR
             return NK_MSR;
         if (opc >= 8 && opc <= 11) return s ? NK_ALU : NK_NONE; // Compares and tests, other encodings are misc
-        return (rd == 15) ? (s ? NK_NONE : NK_ALU_PC) : NK_ALU;
+        return (rd == 15) ? (restoresFlags(op, arm7) ? NK_NONE : NK_ALU_PC) : NK_ALU;
     }
     if ((op & 0x0E000000) == 0x0A000000) // B/BL
         return NK_BRANCH;
@@ -1039,9 +1149,23 @@ void Jit::emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc) {
     bool logical = (opc <= 1) || (opc >= 8 && opc <= 9) || opc >= 12;
 
     // Writing the program counter is a jump, without switching to or from THUMB, and takes 2 more cycles
+    // With flags, the CPSR is restored instead, so the flags aren't worked out
     uint32_t rd = (op >> 12) & 0xF;
+    bool restore = rd == 15 && s && (opc < 8 || opc > 11);
+    if (restore) s = false;
     bool jump = rd == 15 && !s;
-    auto store = [&](int rs) { jump ? emitJump(e, rs, false) : writeReg(e, rs, rd); };
+    auto store = [&](int rs) {
+        if (restore) {
+            if (rs != 5) e.mr(5, rs);
+            e.call(codeReturn);
+        }
+        else if (jump) {
+            emitJump(e, rs, false);
+        }
+        else {
+            writeReg(e, rs, rd);
+        }
+    };
 
     // Without flags, moves and additions or subtractions of small values don't need their operands in r3 and r4
     if (!s) {
@@ -1889,8 +2013,18 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
     else if (i + 1 < block->instrs.size() && mayJump(raw, block->thumb)) {
         e.lwz(4, offPc, R_ARM);
         e.cmplw(4, R_PC);
+
+        // A return can also go to THUMB at the address that's next here
+        uint32_t *differ = nullptr;
+        if (!block->thumb && native && nativeKind(op, arm7) == NK_ALU_PC && (op & BIT(20))) {
+            differ = e.here();
+            e.bne(nullptr);
+            e.lwz(4, offCpsr, R_ARM);
+            e.andi_(4, 4, BIT(5));
+        }
         uint32_t *same = e.here();
         e.beq(nullptr);
+        if (differ) e.patchBc(differ);
         e.b(codeDispatch);
         e.patchBc(same);
     }
