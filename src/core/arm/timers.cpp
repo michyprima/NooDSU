@@ -60,6 +60,9 @@ void Timers::overflow(int timer) {
     if (tmCntH[timer] & BIT(6))
         core->interpreter[arm7].sendInterrupt(3 + timer);
 
+    // Trigger NDMA transfers waiting for this timer
+    core->ndma[arm7].trigger(timer);
+
     // Trigger a GBA sound FIFO event
     if (core->gbaMode && timer < 2)
         core->spu.gbaFifoTimer(timer);

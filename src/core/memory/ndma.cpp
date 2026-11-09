@@ -24,12 +24,16 @@ void Ndma::saveState(FILE *file) {
     if (!core->dsiMode) return;
     fwrite(srcAddrs, 4, sizeof(srcAddrs) / 4, file);
     fwrite(dstAddrs, 4, sizeof(dstAddrs) / 4, file);
+    fwrite(totalLeft, 4, sizeof(totalLeft) / 4, file);
+    fwrite(blockLeft, 4, sizeof(blockLeft) / 4, file);
     fwrite(&drqMask, sizeof(drqMask), 1, file);
     fwrite(&runMask, sizeof(runMask), 1, file);
+    fwrite(&ndmaGcnt, sizeof(ndmaGcnt), 1, file);
     fwrite(ndmaSad, 4, sizeof(ndmaSad) / 4, file);
     fwrite(ndmaDad, 4, sizeof(ndmaDad) / 4, file);
     fwrite(ndmaTcnt, 4, sizeof(ndmaTcnt) / 4, file);
     fwrite(ndmaWcnt, 4, sizeof(ndmaWcnt) / 4, file);
+    fwrite(ndmaBcnt, 4, sizeof(ndmaBcnt) / 4, file);
     fwrite(ndmaFdata, 4, sizeof(ndmaFdata) / 4, file);
     fwrite(ndmaCnt, 4, sizeof(ndmaCnt) / 4, file);
 }
@@ -39,12 +43,16 @@ void Ndma::loadState(FILE *file) {
     if (!core->dsiMode) return;
     fread(srcAddrs, 4, sizeof(srcAddrs) / 4, file);
     fread(dstAddrs, 4, sizeof(dstAddrs) / 4, file);
+    fread(totalLeft, 4, sizeof(totalLeft) / 4, file);
+    fread(blockLeft, 4, sizeof(blockLeft) / 4, file);
     fread(&drqMask, sizeof(drqMask), 1, file);
     fread(&runMask, sizeof(runMask), 1, file);
+    fread(&ndmaGcnt, sizeof(ndmaGcnt), 1, file);
     fread(ndmaSad, 4, sizeof(ndmaSad) / 4, file);
     fread(ndmaDad, 4, sizeof(ndmaDad) / 4, file);
     fread(ndmaTcnt, 4, sizeof(ndmaTcnt) / 4, file);
     fread(ndmaWcnt, 4, sizeof(ndmaWcnt) / 4, file);
+    fread(ndmaBcnt, 4, sizeof(ndmaBcnt) / 4, file);
     fread(ndmaFdata, 4, sizeof(ndmaFdata) / 4, file);
     fread(ndmaCnt, 4, sizeof(ndmaCnt) / 4, file);
 }
@@ -55,16 +63,19 @@ bool Ndma::shouldTransfer(int i, uint8_t type) {
     return type == ((ndmaCnt[i] >> 24) & 0x1F);
 }
 
-void Ndma::setDrq(uint8_t type) {
-    // Set a DRQ type's active bit
-    drqMask |= BIT(type);
+void Ndma::trigger(uint8_t type) {
+    // Schedule transfers on channels waiting for an event
     bool scheduled = runMask;
-
-    // Schedule transfers on newly activated channels
     for (int i = 0; i < 4; i++)
         if (shouldTransfer(i, type)) runMask |= BIT(i);
     if (!scheduled && runMask)
         core->schedule(SchedTask(NDMA9_UPDATE + arm7), 1);
+}
+
+void Ndma::setDrq(uint8_t type) {
+    // Set a DRQ type's active bit and start channels using it
+    drqMask |= BIT(type);
+    trigger(type);
 }
 
 void Ndma::clearDrq(uint8_t type) {
@@ -73,25 +84,32 @@ void Ndma::clearDrq(uint8_t type) {
 }
 
 void Ndma::update() {
-    // Perform scheduled transfers and acknowledge them
+    // Perform scheduled transfers and acknowledge them, except for ones that should go again
+    uint8_t again = 0;
     for (int i = 0; runMask >> i; i++) {
         if (~runMask & BIT(i)) continue;
-        transferBlock(i);
+        if (transferBlock(i)) again |= BIT(i);
     }
-    runMask = 0;
+    runMask = again;
+    if (runMask) core->schedule(SchedTask(NDMA9_UPDATE + arm7), 1);
 }
 
-void Ndma::transferBlock(int i) {
-    // Set the destination address step or handle special cases
+bool Ndma::cartArmed() {
+    // Check if a channel is waiting for words from the DS cart
+    for (int i = 0; i < 4; i++) {
+        if ((ndmaCnt[i] & BIT(31)) && ((ndmaCnt[i] >> 24) & 0x1F) == 0x4)
+            return true;
+    }
+    return false;
+}
+
+bool Ndma::transferBlock(int i) {
+    // Set the destination address step; the reserved setting is treated as an increment
     int dstStep;
     switch ((ndmaCnt[i] >> 10) & 0x3) {
-        case 0: dstStep = 4; break; // Increment
         case 1: dstStep = -4; break; // Decrement
         case 2: dstStep = 0; break; // Fixed
-
-    default: // Reserved
-        LOG_CRIT("ARM%d NDMA channel %d triggered with unhandled destination step\n", arm7 ? 7 : 9, i);
-        return;
+        default: dstStep = 4; break; // Increment
     }
 
     // Set the source address step or handle special cases
@@ -107,44 +125,55 @@ void Ndma::transferBlock(int i) {
         break;
     }
 
-    // Perform an NDMA transfer based on the repeat mode
-    uint32_t count = ndmaWcnt[i] ? ndmaWcnt[i] : 0x1000000;
-    if (ndmaCnt[i] & (BIT(28) | BIT(29))) { // Immediate/infinite
-        // Transfer a block and adjust source and destination addresses
-        while (count--) {
-            uint32_t value = core->memory.read<uint32_t>(arm7, srcAddrs[i], false);
-            core->memory.write<uint32_t>(arm7, dstAddrs[i], value, false);
-            srcAddrs[i] += srcStep;
-            dstAddrs[i] += dstStep;
-        }
+    // Start a new block unless a GXFIFO transfer is partway through one
+    if (!blockLeft[i])
+        blockLeft[i] = ndmaWcnt[i] ? ndmaWcnt[i] : 0x1000000;
 
-        // Trigger an interrupt if enabled and end if immediate
-        if (ndmaCnt[i] & BIT(30))
-            core->interpreter[arm7].sendInterrupt(28 + i);
-        if (ndmaCnt[i] & BIT(28))
-            ndmaCnt[i] &= ~BIT(31);
+    // Limit the words to what's left of the total, and in GXFIFO mode only send 112 words at a time
+    bool gxFifo = !arm7 && ((ndmaCnt[i] >> 24) & 0x1F) == 0xA;
+    bool untilTotal = !(ndmaCnt[i] & (BIT(28) | BIT(29)));
+    uint32_t count = blockLeft[i];
+    if (gxFifo && count > 112) count = 112;
+    if (untilTotal && count > totalLeft[i]) count = totalLeft[i];
+    blockLeft[i] -= count;
+    if (untilTotal) totalLeft[i] -= count;
+
+    // Transfer the words and adjust source and destination addresses
+    while (count--) {
+        uint32_t value = core->memory.read<uint32_t>(arm7, srcAddrs[i], false);
+        core->memory.write<uint32_t>(arm7, dstAddrs[i], value, false);
+        srcAddrs[i] += srcStep;
+        dstAddrs[i] += dstStep;
     }
-    else { // Repeat until total
-        while (count--) {
-            // Transfer a word and adjust source and destination addresses
-            uint32_t value = core->memory.read<uint32_t>(arm7, srcAddrs[i], false);
-            core->memory.write<uint32_t>(arm7, dstAddrs[i], value, false);
-            srcAddrs[i] += srcStep;
-            dstAddrs[i] += dstStep;
 
-            // Trigger an interrupt and end if the word total is reached
-            if (--ndmaTcnt[i] &= 0xFFFFFFF) continue;
-            LOG_INFO("ARM%d NDMA channel %d finished transferring\n", arm7 ? 7 : 9, i);
-            if (ndmaCnt[i] & BIT(30))
-                core->interpreter[arm7].sendInterrupt(28 + i);
-            ndmaCnt[i] &= ~BIT(31);
-            break;
-        }
+    // Wait for the FIFO to have room for more if the block isn't done
+    bool finished = untilTotal && !totalLeft[i];
+    if (blockLeft[i] && !finished)
+        return core->gpu3D.fifoHalfEmpty();
+    blockLeft[i] = 0;
+
+    // Trigger an interrupt at the end of a block, or the end of the total if repeating until then
+    if ((ndmaCnt[i] & BIT(30)) && (!untilTotal || finished))
+        core->interpreter[arm7].sendInterrupt(28 + i);
+
+    // End the transfer if it doesn't repeat or has reached the total
+    if ((ndmaCnt[i] & BIT(28)) || finished) {
+        LOG_INFO("ARM%d NDMA channel %d finished transferring\n", arm7 ? 7 : 9, i);
+        ndmaCnt[i] &= ~BIT(31);
     }
 
     // Reload destination and source addresses if enabled
     if (ndmaCnt[i] & BIT(12)) dstAddrs[i] = ndmaDad[i];
     if (ndmaCnt[i] & BIT(15)) srcAddrs[i] = ndmaSad[i];
+
+    // In GXFIFO mode, go again right away if the FIFO is still half empty
+    return gxFifo && (ndmaCnt[i] & BIT(31)) && core->gpu3D.fifoHalfEmpty();
+}
+
+void Ndma::writeGcnt(uint32_t mask, uint32_t value) {
+    // Write to the NDMAGCNT register; arbitration has no effect since transfers finish at once
+    mask &= 0x800F0000;
+    ndmaGcnt = (ndmaGcnt & ~mask) | (value & mask);
 }
 
 void Ndma::writeSad(int i, uint32_t mask, uint32_t value) {
@@ -171,6 +200,12 @@ void Ndma::writeWcnt(int i, uint32_t mask, uint32_t value) {
     ndmaWcnt[i] = (ndmaWcnt[i] & ~mask) | (value & mask);
 }
 
+void Ndma::writeBcnt(int i, uint32_t mask, uint32_t value) {
+    // Write to one of the NDMAxBCNT registers; intervals have no effect since transfers finish at once
+    mask &= 0x3FFFF;
+    ndmaBcnt[i] = (ndmaBcnt[i] & ~mask) | (value & mask);
+}
+
 void Ndma::writeFdata(int i, uint32_t mask, uint32_t value) {
     // Write to one of the NDMAxFDATA registers
     ndmaFdata[i] = (ndmaFdata[i] & ~mask) | (value & mask);
@@ -181,16 +216,26 @@ void Ndma::writeCnt(int i, uint32_t mask, uint32_t value) {
     mask &= 0xFF0FFFFF;
     uint32_t old = ndmaCnt[i];
     ndmaCnt[i] = (ndmaCnt[i] & ~mask) | (value & mask);
+
+    // A channel waiting for words from the DS cart relies on them being scheduled
+    if (!arm7 && cartArmed()) core->cartridgeNds.flushWord();
     if (!(~old & ndmaCnt[i] & BIT(31))) return;
 
-    // Reload internal addresses and trigger immediate transfers right away
+    // Reload internal values and trigger immediate transfers right away
     srcAddrs[i] = ndmaSad[i];
     dstAddrs[i] = ndmaDad[i];
+    totalLeft[i] = ndmaTcnt[i] ? ndmaTcnt[i] : 0x10000000;
+    blockLeft[i] = 0;
     uint8_t mode = (ndmaCnt[i] >> 24) & 0x1F;
     if (mode >= 0x10) setDrq(mode);
 
-    // Log started channel information and catch unimplemented modes
-    if ((!arm7 || (mode != 0x8 && mode != 0xA && mode != 0xB)) && mode < 0x10)
+    // In GXFIFO mode, also start right away if the FIFO is already half empty, like DMA
+    if (!arm7 && mode == 0xA && core->gpu3D.fifoHalfEmpty()) trigger(mode);
+
+    // Log started channel information and catch modes that have nothing to trigger them
+    bool noSource = arm7 ? (mode == 0x5 || mode == 0x7 || (mode >= 0xC && mode < 0x10)) :
+        (mode == 0x5 || mode == 0x9 || (mode >= 0xB && mode < 0x10));
+    if (noSource)
         LOG_CRIT("ARM%d NDMA channel %d started in unimplemented mode: 0x%X\n", arm7 ? 7 : 9, i, mode);
     else
         LOG_INFO("ARM%d NDMA channel %d starting in mode 0x%X, transferring from 0x%X to 0x%X with size 0x%X in "

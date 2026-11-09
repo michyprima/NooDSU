@@ -1094,13 +1094,14 @@ void CartridgeNds::wordReady(bool cpu) {
 
     // Trigger DS cartridge DMA transfers
     core->dma[cpu].trigger((cpu == 0) ? 5 : 2);
+    core->ndma[cpu].trigger(0x4);
 }
 
 void CartridgeNds::scheduleWord(bool cpu) {
     // Games read a lot of words while loading, and a scheduled task for each makes the CPU stop running compiled code
     // So if nothing needs to happen when an ARM9 word is ready, just note when that is for reads to check
     // The ARM7 can run behind the global cycles, so its words are always scheduled
-    if (cpu == 0 && !core->dma[0].cartArmed()) {
+    if (cpu == 0 && !core->dma[0].cartArmed() && !core->ndma[0].cartArmed()) {
         wordWaiting = true;
         wordTime = core->globalCycles + wordCycles[0];
         return;

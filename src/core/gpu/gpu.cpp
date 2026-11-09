@@ -518,6 +518,7 @@ void Gpu::scanline256() {
 
         // Trigger H-blank DMA transfers for visible scanlines (ARM9 only)
         core->dma[0].trigger(2);
+        core->ndma[0].trigger(0x7);
 
         // Start a display capture at the beginning of the frame if one was requested
         if (vCount == 0 && (dispCapCnt & BIT(31)))
@@ -565,6 +566,10 @@ void Gpu::scanline256() {
 }
 
 void Gpu::scanline355() {
+    // Trigger NDMA transfers synced to the start of display lines, which run from line 2 to 193
+    if (vCount >= 1 && vCount < 193)
+        core->ndma[0].trigger(0x8);
+
     // Move to the next scanline
     switch (++vCount) {
     case 192: // End of visible scanlines
@@ -599,6 +604,7 @@ void Gpu::scanline355() {
 
             // Trigger V-blank DMA transfers
             core->dma[i].trigger(1);
+            core->ndma[i].trigger(0x6);
         }
 
         // Swap the buffers of the 3D engine if needed

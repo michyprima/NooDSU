@@ -680,6 +680,7 @@ void Gpu3D::runCommands() {
     if (fifo.size() - pipeSize < 128 && !(gxStat & BIT(25))) {
         gxStat |= BIT(25);
         core->dma[0].trigger(7);
+        core->ndma[0].trigger(0xA);
     }
 
     // Send a GXFIFO interrupt if enabled
