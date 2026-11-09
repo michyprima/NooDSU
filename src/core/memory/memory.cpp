@@ -80,9 +80,11 @@ void VramMapping::add(uint8_t *mapping) {
 
 template <typename T> T VramMapping::read(uint32_t address) {
     // Read a value from all the VRAM mappings ORed together
+    // A 2D thread can be drawing while the emulator remaps VRAM, so a mapping can be counted without having a pointer
     T value = 0;
     for (uint8_t m = 0; m < count; m++)
-        value |= readLsb<T>(&mappings[m][address]);
+        if (uint8_t *mapping = *(uint8_t *volatile*)&mappings[m])
+            value |= readLsb<T>(&mapping[address]);
     return value;
 }
 
