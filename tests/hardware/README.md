@@ -67,6 +67,26 @@ ARM7's, or if new WRAM is mapped over 0x3000000, and says how many words of shar
 If it hangs, the third line gives the ARM9's step and the last command the ARM7 finished. If the ARM7 stops answering for
 2 seconds, it says so and gives shared WRAM back to the ARM7.
 
+## The NDMA test
+
+`build/noodsu-ndma.nds` is a third ROM, for a DSi in DSi mode. It settles what GBATEK leaves open about the DSi's NDMA channels,
+and what nothing else here tests: what each register keeps, what the address steps do including the reserved one, totals that
+aren't a whole number of blocks, what's left in the registers afterwards, which scanlines V-blank, H-blank and display sync
+transfers happen on, and timers and GXFIFO as triggers.
+
+Each test runs on the ARM9 and then the ARM7, with interrupts off, on channel 2. Timers libnds already has running are skipped
+and shown as `busy`. The DS cart trigger isn't tested, since that needs a real card in the slot.
+
+It runs by itself and saves `noodsu-ndmatest.bin` like the other ROMs. To see what it found, and how that compares with NooDS U:
+
+```
+tests/hardware/ndma.py noodsu-ndmatest.bin [NooDS U's]
+```
+
+NooDS U's comes from a RAM dump, `tests/jit/game.sh tests/hardware/build/noodsu-ndma.nds <system files folder> 900 --modes interp
+dsi ram=ndma.bin`, which `ndma.py` reads too. If it hangs, the third line says which test on which CPU. What each result word
+means is in the comments in `ndma_tests.c`.
+
 ## Building it
 
 ```

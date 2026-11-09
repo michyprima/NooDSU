@@ -36,3 +36,12 @@ echo "Built $out/noodsu-test.nds"
 "$dkp/tools/bin/ndstool" -c "$out/noodsu-wram.nds" -7 "$out/wram7.elf" -9 "$out/wram9.elf" \
     -b "$dkp/calico/share/nds-icon.bmp" "NooDS U WRAM test;Shared WRAM on a real DSi;" > /dev/null
 echo "Built $out/noodsu-wram.nds"
+
+# The NDMA test, a ROM of its own for a DSi
+"$tools-gcc" $common -march=armv5te -mtune=arm946e-s -DARM9 -specs="$dkp/calico/share/ds9.specs" \
+    "$here/screen.c" "$here/ndma_tests.c" "$here/ndma9.c" -lfat -lnds9 -lcalico_ds9 -o "$out/ndma9.elf"
+"$tools-gcc" $common -march=armv4t -mtune=arm7tdmi -DARM7 -specs="$dkp/calico/share/ds7.specs" \
+    "$here/ndma_tests.c" "$here/ndma7.c" -lnds7 -lcalico_ds7 -o "$out/ndma7.elf"
+"$dkp/tools/bin/ndstool" -c "$out/noodsu-ndma.nds" -7 "$out/ndma7.elf" -9 "$out/ndma9.elf" \
+    -b "$dkp/calico/share/nds-icon.bmp" "NooDS U NDMA test;NDMA on a real DSi;" > /dev/null
+echo "Built $out/noodsu-ndma.nds"
