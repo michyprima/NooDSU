@@ -190,6 +190,7 @@ uint8_t *Jit::pageHost(int page) {
 void Jit::clearCache() {
     // Empty the cache of blocks by guest address
     memset(cache, 0, CACHE_SIZE * sizeof(JitCacheEntry));
+    wramCached = false;
 }
 
 void Jit::mapChanged(uint32_t start) {
@@ -197,7 +198,9 @@ void Jit::mapChanged(uint32_t start) {
     // The ARM9 only runs code from ITCM, main RAM and the BIOS, and the ARM7 from below I/O; main RAM and the BIOSes only
     // change when a DSi switches to a DS title's RAM size and BIOSes, so other changes don't matter
     if (arm7 ? (start >= 0x04000000) : (start >= 0x03000000 && start < 0xFFFF0000)) return;
-    clearCache();
+
+    // The DSi's launcher remaps WRAM thousands of times while starting a title, and only addresses there can be affected
+    if ((start >> 24) != 0x03 || wramCached) clearCache();
     codeChanged = 1;
 
     // Linked jumps might go to code for the old mapping, so send them all through the dispatcher again
@@ -607,6 +610,7 @@ bool Jit::run(const uint32_t *limit) {
     entry.key = address | thumb;
     entry.code = block->code;
     entry.block = block;
+    if ((address >> 24) == 0x03) wramCached = true;
     execute(block, limit);
     return true;
 }

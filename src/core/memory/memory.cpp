@@ -2659,36 +2659,46 @@ void Memory::writeGbaHaltCnt(uint8_t value) {
         LOG_CRIT("Unhandled request for stop mode\n");
 }
 
-void Memory::updateNwramMaps(const uint32_t *window, uint32_t startMask, uint32_t endMask) {
-    // Update the maps only where each CPU has a block of NWRAM, given by its address registers; the DSi's launcher moves
-    // slots between the CPUs thousands of times while starting a title, so updating everything each time is too slow
-    uint32_t start9 = 0x3000000 + ((window[0] << 12) & startMask);
-    uint32_t end9 = 0x3000000 + std::min((window[0] >> 4) & endMask, 0x1000000U);
-    if (start9 < end9) updateMap9(start9, end9);
-    uint32_t start7 = 0x3000000 + ((window[1] << 12) & startMask);
-    uint32_t end7 = 0x3000000 + std::min((window[1] >> 4) & endMask, 0x800000U);
-    if (start7 < end7) updateMap7(start7, end7);
+void Memory::updateNwramSlots(const uint32_t *window, int shift, uint8_t oldSlot, uint8_t newSlot) {
+    // Update the maps only where each CPU sees the slots that a register moved between, given by its address registers;
+    // the DSi's launcher moves slots between the CPUs thousands of times while starting a title, so more would be too slow
+    static const uint8_t masks[2][4] = { { 0x0, 0x0, 0x1, 0x3 }, { 0x0, 0x1, 0x3, 0x7 } };
+    uint32_t align = ~((1 << shift) - 1);
+    for (int cpu = 0; cpu < 2; cpu++) {
+        uint32_t start = (window[cpu] << 12) & 0xFFFFFF & align;
+        uint32_t end = std::min((window[cpu] >> 4) & 0x1FFFFFF & align, cpu ? 0x800000U : 0x1000000U);
+        uint8_t mask = masks[shift == 15][(window[cpu] >> 12) & 0x3];
+        for (uint32_t base = start; base < end; base += (1 << shift)) {
+            uint8_t slot = (base >> shift) & mask;
+            if (slot != oldSlot && slot != newSlot) continue;
+            uint32_t address = 0x3000000 + base;
+            cpu ? updateMap7(address, address + (1 << shift)) : updateMap9(address, address + (1 << shift));
+        }
+    }
 }
 
 void Memory::writeMbk1(int i, uint8_t value) {
     // Write to one of the NWRAM-A slot registers and update mappings
-    if (mbk1[i] == (value & 0x8D)) return;
+    uint8_t old = mbk1[i];
+    if (old == (value & 0x8D)) return;
     mbk1[i] = (value & 0x8D);
-    updateNwramMaps(mbk6, 0xFF0000, 0x1FF0000);
+    updateNwramSlots(mbk6, 16, (old >> 2) & 0x3, (value >> 2) & 0x3);
 }
 
 void Memory::writeMbk23(int i, uint8_t value) {
     // Write to one of the NWRAM-B slot registers and update mappings
-    if (mbk23[i] == (value & 0x9F)) return;
+    uint8_t old = mbk23[i];
+    if (old == (value & 0x9F)) return;
     mbk23[i] = (value & 0x9F);
-    updateNwramMaps(mbk7, 0xFF8000, 0x1FF8000);
+    updateNwramSlots(mbk7, 15, (old >> 2) & 0x7, (value >> 2) & 0x7);
 }
 
 void Memory::writeMbk45(int i, uint8_t value) {
     // Write to one of the NWRAM-C slot registers and update mappings
-    if (mbk45[i] == (value & 0x9F)) return;
+    uint8_t old = mbk45[i];
+    if (old == (value & 0x9F)) return;
     mbk45[i] = (value & 0x9F);
-    updateNwramMaps(mbk8, 0xFF8000, 0x1FF8000);
+    updateNwramSlots(mbk8, 15, (old >> 2) & 0x7, (value >> 2) & 0x7);
 }
 
 void Memory::writeMbk6(bool arm7, uint32_t mask, uint32_t value) {

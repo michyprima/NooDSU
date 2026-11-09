@@ -172,6 +172,7 @@ private:
     JitCacheEntry cacheData[CACHE_SIZE + 1] = {};
     JitCacheEntry *cache = &cacheData[1];
     uint32_t &codeChanged = cacheData[0].key;
+    bool wramCached = false; // Whether the cache might have any blocks from WRAM addresses
 
     // Links waiting for their target to be compiled, and jumps to put back to the dispatcher before running again
     std::unordered_multimap<uint32_t, std::pair<JitBlock*, uint32_t*>> pendingLinks;
