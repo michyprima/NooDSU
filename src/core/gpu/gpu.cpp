@@ -404,6 +404,8 @@ void Gpu::gbaScanline308() {
             thread = nullptr;
         }
 
+        core->input.update();
+
         // Set the V-blank flag
         dispStat[1] |= BIT(0);
 
@@ -566,6 +568,7 @@ void Gpu::scanline355() {
     // Move to the next scanline
     switch (++vCount) {
     case 192: // End of visible scanlines
+        core->input.update();
 #if defined(PROFILE_EMU) && defined(HEARTBEAT)
         EmuProfile::reachedEnd = EmuProfile::sinceFrameStart(OSGetSystemTick());
 #endif

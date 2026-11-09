@@ -1263,6 +1263,7 @@ template <typename T> T Memory::ioRead9(uint32_t address) {
             DEF_IO16(0x400010C, data = core->timers[0].readTmCntL(3)) // TM3CNT_L (ARM9)
             DEF_IO16(0x400010E, data = core->timers[0].readTmCntH(3)) // TM3CNT_H (ARM9)
             DEF_IO16(0x4000130, data = core->input.readKeyInput()) // KEYINPUT
+            DEF_IO16(0x4000132, data = core->input.readKeyCnt(0)) // KEYCNT
             DEF_IO16(0x4000180, data = core->ipc.readIpcSync(0)) // IPCSYNC (ARM9)
             DEF_IO16(0x4000184, data = core->ipc.readIpcFifoCnt(0)) // IPCFIFOCNT (ARM9)
             DEF_IO16(0x40001A0, data = core->cartridgeNds.readAuxSpiCnt(0)) // AUXSPICNT (ARM9)
@@ -1464,6 +1465,7 @@ template <typename T> T Memory::ioRead7(uint32_t address) {
             DEF_IO16(0x400010C, data = core->timers[1].readTmCntL(3)) // TM3CNT_L (ARM7)
             DEF_IO16(0x400010E, data = core->timers[1].readTmCntH(3)) // TM3CNT_H (ARM7)
             DEF_IO16(0x4000130, data = core->input.readKeyInput()) // KEYINPUT
+            DEF_IO16(0x4000132, data = core->input.readKeyCnt(1)) // KEYCNT
             DEF_IO16(0x4000136, data = core->input.readExtKeyIn()) // EXTKEYIN
             DEF_IO08(0x4000138, data = core->rtc.readRtc()) // RTC
             DEF_IO16(0x4000180, data = core->ipc.readIpcSync(1)) // IPCSYNC (ARM7)
@@ -1777,6 +1779,7 @@ template <typename T> T Memory::ioReadGba(uint32_t address) {
             DEF_IO16(0x400010C, data = core->timers[1].readTmCntL(3)) // TM3CNT_L
             DEF_IO16(0x400010E, data = core->timers[1].readTmCntH(3)) // TM3CNT_H
             DEF_IO16(0x4000130, data = core->input.readKeyInput()) // KEYINPUT
+            DEF_IO16(0x4000132, data = core->input.readKeyCnt(1)) // KEYCNT
             DEF_IO16(0x4000200, data = core->interpreter[1].readIe(0)) // IE
             DEF_IO16(0x4000202, data = core->interpreter[1].readIrf(0)) // IF
             DEF_IO08(0x4000208, data = core->interpreter[1].readIme()) // IME
@@ -1876,6 +1879,7 @@ template <typename T> void Memory::ioWrite9(uint32_t address, T value) {
             DEF_IO16(0x400010A, core->timers[0].writeTmCntH(2, IOWR_PARAMS)) // TM2CNT_H (ARM9)
             DEF_IO16(0x400010C, core->timers[0].writeTmCntL(3, IOWR_PARAMS)) // TM3CNT_L (ARM9)
             DEF_IO16(0x400010E, core->timers[0].writeTmCntH(3, IOWR_PARAMS)) // TM3CNT_H (ARM9)
+            DEF_IO16(0x4000132, core->input.writeKeyCnt(0, IOWR_PARAMS)) // KEYCNT
             DEF_IO16(0x4000180, core->ipc.writeIpcSync(0, IOWR_PARAMS)) // IPCSYNC (ARM9)
             DEF_IO16(0x4000184, core->ipc.writeIpcFifoCnt(0, IOWR_PARAMS)) // IPCFIFOCNT (ARM9)
             DEF_IO32(0x4000188, core->ipc.writeIpcFifoSend(0, IOWR_PARAMS)) // IPCFIFOSEND (ARM9)
@@ -2190,6 +2194,7 @@ template <typename T> void Memory::ioWrite7(uint32_t address, T value) {
             DEF_IO16(0x400010A, core->timers[1].writeTmCntH(2, IOWR_PARAMS)) // TM2CNT_H (ARM7)
             DEF_IO16(0x400010C, core->timers[1].writeTmCntL(3, IOWR_PARAMS)) // TM3CNT_L (ARM7)
             DEF_IO16(0x400010E, core->timers[1].writeTmCntH(3, IOWR_PARAMS)) // TM3CNT_H (ARM7)
+            DEF_IO16(0x4000132, core->input.writeKeyCnt(1, IOWR_PARAMS)) // KEYCNT
             DEF_IO08(0x4000138, core->rtc.writeRtc(IOWR_PARAMS8)) // RTC
             DEF_IO16(0x4000180, core->ipc.writeIpcSync(1, IOWR_PARAMS)) // IPCSYNC (ARM7)
             DEF_IO16(0x4000184, core->ipc.writeIpcFifoCnt(1, IOWR_PARAMS)) // IPCFIFOCNT (ARM7)
@@ -2625,6 +2630,7 @@ template <typename T> void Memory::ioWriteGba(uint32_t address, T value) {
             DEF_IO16(0x400010E, core->timers[1].writeTmCntH(3, IOWR_PARAMS)) // TM3CNT_H
             DEF_IO16(0x4000200, core->interpreter[1].writeIe(0, IOWR_PARAMS)) // IE
             DEF_IO16(0x4000202, core->interpreter[1].writeIrf(0, IOWR_PARAMS)) // IF
+            DEF_IO16(0x4000132, core->input.writeKeyCnt(1, IOWR_PARAMS)) // KEYCNT
             DEF_IO08(0x4000208, core->interpreter[1].writeIme(IOWR_PARAMS8)) // IME
             DEF_IO08(0x4000300, core->interpreter[1].writePostFlg(IOWR_PARAMS8)) // POSTFLG
             DEF_IO08(0x4000301, writeGbaHaltCnt(IOWR_PARAMS8)) // HALTCNT

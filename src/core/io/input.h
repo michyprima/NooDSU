@@ -20,24 +20,32 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdio>
 
 class Core;
 
 class Input {
 public:
     Input(Core *core): core(core) {}
+    void saveState(FILE *file);
+    void loadState(FILE *file);
 
     void pressKey(int key);
     void releaseKey(int key);
     void pressScreen();
     void releaseScreen();
+    void update();
 
     uint16_t readKeyInput() { return keyInput; }
     uint16_t readExtKeyIn() { return extKeyIn; }
+    uint16_t readKeyCnt(int cpu) { return keyCnt[cpu]; }
+    void writeKeyCnt(int cpu, uint16_t mask, uint16_t value);
 
 private:
     Core *core;
 
     uint16_t keyInput = 0x03FF;
     uint16_t extKeyIn = 0x007F;
+    uint16_t keyCnt[2] = {};
+    uint16_t lastKeys = 0x03FF;
 };

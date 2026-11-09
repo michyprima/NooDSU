@@ -105,6 +105,7 @@ bool SaveStates::saveState() {
     core->i2c.saveState(file);
     core->interpreter[0].saveState(file);
     core->interpreter[1].saveState(file);
+    core->input.saveState(file);
     core->ipc.saveState(file);
     core->memory.saveState(file);
     core->ndma[0].saveState(file);
@@ -154,6 +155,7 @@ bool SaveStates::loadState() {
     core->i2c.loadState(file);
     core->interpreter[0].loadState(file);
     core->interpreter[1].loadState(file);
+    core->input.loadState(file);
     core->ipc.loadState(file);
     core->memory.loadState(file);
     core->ndma[0].loadState(file);
