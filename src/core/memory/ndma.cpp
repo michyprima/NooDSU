@@ -104,12 +104,12 @@ bool Ndma::cartArmed() {
 }
 
 bool Ndma::transferBlock(int i) {
-    // Set the destination address step; the reserved setting is treated as an increment
+    // Set the destination address step; on a real DSi, the reserved setting acts as fixed
     int dstStep;
     switch ((ndmaCnt[i] >> 10) & 0x3) {
+        case 0: dstStep = 4; break; // Increment
         case 1: dstStep = -4; break; // Decrement
-        case 2: dstStep = 0; break; // Fixed
-        default: dstStep = 4; break; // Increment
+        default: dstStep = 0; break; // Fixed
     }
 
     // Set the source address step or handle special cases
@@ -177,44 +177,52 @@ void Ndma::writeGcnt(uint32_t mask, uint32_t value) {
 }
 
 void Ndma::writeSad(int i, uint32_t mask, uint32_t value) {
-    // Write to one of the NDMAxSAD registers
+    // Write to one of the NDMAxSAD registers, which are read-only while the channel is enabled
+    if (ndmaCnt[i] & BIT(31)) return;
     mask &= 0xFFFFFFFC;
     ndmaSad[i] = (ndmaSad[i] & ~mask) | (value & mask);
 }
 
 void Ndma::writeDad(int i, uint32_t mask, uint32_t value) {
-    // Write to one of the NDMAxDAD registers
+    // Write to one of the NDMAxDAD registers, which are read-only while the channel is enabled
+    if (ndmaCnt[i] & BIT(31)) return;
     mask &= 0xFFFFFFFC;
     ndmaDad[i] = (ndmaDad[i] & ~mask) | (value & mask);
 }
 
 void Ndma::writeTcnt(int i, uint32_t mask, uint32_t value) {
-    // Write to one of the NDMAxTCNT registers
+    // Write to one of the NDMAxTCNT registers, which are read-only while the channel is enabled
+    if (ndmaCnt[i] & BIT(31)) return;
     mask &= 0xFFFFFFF;
     ndmaTcnt[i] = (ndmaTcnt[i] & ~mask) | (value & mask);
 }
 
 void Ndma::writeWcnt(int i, uint32_t mask, uint32_t value) {
-    // Write to one of the NDMAxWCNT registers
+    // Write to one of the NDMAxWCNT registers, which are read-only while the channel is enabled
+    if (ndmaCnt[i] & BIT(31)) return;
     mask &= 0xFFFFFF;
     ndmaWcnt[i] = (ndmaWcnt[i] & ~mask) | (value & mask);
 }
 
 void Ndma::writeBcnt(int i, uint32_t mask, uint32_t value) {
-    // Write to one of the NDMAxBCNT registers; intervals have no effect since transfers finish at once
+    // Write to one of the NDMAxBCNT registers, which are read-only while the channel is enabled
+    // Intervals have no effect since transfers finish at once
+    if (ndmaCnt[i] & BIT(31)) return;
     mask &= 0x3FFFF;
     ndmaBcnt[i] = (ndmaBcnt[i] & ~mask) | (value & mask);
 }
 
 void Ndma::writeFdata(int i, uint32_t mask, uint32_t value) {
-    // Write to one of the NDMAxFDATA registers
+    // Write to one of the NDMAxFDATA registers, which are read-only while the channel is enabled
+    if (ndmaCnt[i] & BIT(31)) return;
     ndmaFdata[i] = (ndmaFdata[i] & ~mask) | (value & mask);
 }
 
 void Ndma::writeCnt(int i, uint32_t mask, uint32_t value) {
     // Write to one of the NDMAxCNT registers and check if a transfer started
-    mask &= 0xFF0FFFFF;
+    // While the channel is enabled, nothing else can be changed until it's disabled
     uint32_t old = ndmaCnt[i];
+    mask &= (old & BIT(31)) ? BIT(31) : 0xFF0FFC00;
     ndmaCnt[i] = (ndmaCnt[i] & ~mask) | (value & mask);
 
     // A channel waiting for words from the DS cart relies on them being scheduled
