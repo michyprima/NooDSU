@@ -981,7 +981,8 @@ static int nativeKind(uint32_t op, bool arm7) {
     }
     if ((op & 0x0E000000) == 0x08000000) { // LDM/STM
         uint32_t list = op & 0xFFFF;
-        if (!list || (op & BIT(22)) || rn == 15) return NK_NONE;
+        if (!list || rn == 15) return NK_NONE;
+        if ((op & BIT(22)) && ((op & BIT(21)) || (list & BIT(15)))) return NK_NONE; // Only user registers without writeback
         if ((op & BIT(20)) && (op & BIT(21)) && (list & BIT(rn))) return NK_NONE; // Loading the base with writeback
         if (arm7 && !(op & BIT(20)) && (op & BIT(21)) && (list & BIT(rn))) return NK_NONE; // Storing it on ARM7
         if (list & BIT(15)) return (op & BIT(20)) ? NK_BLOCK_PC : NK_NONE; // Only loads of the program counter
@@ -1439,8 +1440,9 @@ void Jit::emitHalf(PpcEmitter &e, uint32_t op, uint32_t pc) {
 void Jit::emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc) {
     // Block load or store of registers other than the program counter, with words at aligned addresses
     // The base is kept in R_TMP1, since memory calls can change volatile registers
+    // With the S bit, the listed registers are the user mode ones; only the base is read from the current mode
     uint32_t rn = (op >> 16) & 0xF, list = op & 0xFFFF;
-    bool pre = op & BIT(24), up = op & BIT(23), writeback = op & BIT(21), load = op & BIT(20);
+    bool pre = op & BIT(24), up = op & BIT(23), writeback = op & BIT(21), load = op & BIT(20), user = op & BIT(22);
     int count = 0;
     for (int i = 0; i < 16; i++)
         count += (list >> i) & 1;
@@ -1462,10 +1464,12 @@ void Jit::emitBlock(PpcEmitter &e, uint32_t op, uint32_t pc) {
         if (load) {
             e.call(codeMemory[0]);
             if (i == 15) emitJump(e, 8, !arm7);
+            else if (user) e.stw(8, offUsr + i * 4, R_ARM);
             else writeReg(e, 8, i);
         }
         else {
-            readReg(e, 8, i, pc);
+            if (user) e.lwz(8, offUsr + i * 4, R_ARM);
+            else readReg(e, 8, i, pc);
             e.call(codeMemory[3]);
         }
     }
