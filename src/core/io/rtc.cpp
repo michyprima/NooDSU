@@ -95,6 +95,7 @@ void Rtc::updateDateTime() {
     // Get the local time
     std::time_t t = fixedTime ? fixedTime : std::time(nullptr);
     std::tm *time = std::localtime(&t);
+    bool pm = time->tm_hour >= 12;
     time->tm_year %= 100; // The DS only counts years 2000-2099
     time->tm_mon++; // The DS starts month values at 1, not 0
 
@@ -103,16 +104,16 @@ void Rtc::updateDateTime() {
         time->tm_hour %= 12;
 
     // Save to the date and time registers in BCD format
-    // Index 3 contains the day of the week, but most things don't care
     dateTime[0] = ((time->tm_year / 10) << 4) | (time->tm_year % 10);
     dateTime[1] = ((time->tm_mon / 10) << 4) | (time->tm_mon % 10);
     dateTime[2] = ((time->tm_mday / 10) << 4) | (time->tm_mday % 10);
+    dateTime[3] = time->tm_wday;
     dateTime[4] = ((time->tm_hour / 10) << 4) | (time->tm_hour % 10);
     dateTime[5] = ((time->tm_min / 10) << 4) | (time->tm_min % 10);
     dateTime[6] = ((time->tm_sec / 10) << 4) | (time->tm_sec % 10);
 
     // Set the AM/PM bit
-    if (time->tm_hour >= 12)
+    if (pm)
         dateTime[4] |= BIT(6 << core->gbaMode);
 }
 
