@@ -91,8 +91,15 @@ void SdMmc::loadState(FILE *file) {
 uint32_t *SdMmc::init() {
     // Check the SD's capacity so cards over 2GB can be handled differently
     std::lock_guard<FileLock> guard(fileLock());
+#ifdef JIT_SELFTEST
+    // The self-test runs two cores at once, and the Wii U can't open a file twice if one of them can write to it
+    const char *mode = "rb";
+#else
+    const char *mode = "rb+";
+#endif
+
     // The files are read through caches in large chunks, which the standard library's buffering would only split up
-    if (sd = fopen(Settings::sdImagePath.c_str(), "rb+")) {
+    if (sd = fopen(Settings::sdImagePath.c_str(), mode)) {
         setvbuf(sd, nullptr, _IONBF, 0);
         fseek(sd, 0, SEEK_END);
         sdhc = (ftello(sd) > 0x40000000);
@@ -100,7 +107,7 @@ uint32_t *SdMmc::init() {
     }
 
     // Try to open a NAND dump and load IDs from its nocash footer
-    if (!(nand = fopen(Settings::dsiNandPath.c_str(), "rb+"))) return nullptr;
+    if (!(nand = fopen(Settings::dsiNandPath.c_str(), mode))) return nullptr;
     setvbuf(nand, nullptr, _IONBF, 0);
     uint8_t footer[0x18];
     fseek(nand, -0x30, SEEK_END);
