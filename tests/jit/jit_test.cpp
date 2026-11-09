@@ -43,8 +43,8 @@ static const uint32_t ARM_STATE = 0x10000, CACHE_FLAG = 0x50000, CACHE = 0x50010
     GLOBAL = 0x72000, STACK = 0x7F000, END = 0x80000, COND_TABLE = 0x200000, READ_MAP = 0x400000, WRITE_MAP = 0x800000,
     FAKE = 0x3F0000, FAKE_MEMORY = 0x3F0800, FAKE_HANDLER = 0x3F1000, FAKE_INTERLEAVE = 0x3F2000, FAKE_MSR = 0x3F1800, FAKE_RESTORE = 0x3F1840, MODE_BANKS = 0x3F3000, MATH = 0x3F3800, DTCM_REG = 0x3F4000, CODE = 0x10000000;
 // The math registers as a big-endian host lays them out: three 64-bit values, the two control registers and the dirty flags
-static const uint32_t MATH_NUMER = 0, MATH_DENOM = 8, MATH_PARAM = 16, MATH_DIV_CNT = 24, MATH_SQRT_CNT = 26, MATH_DIV_DIRTY = 28, MATH_SQRT_DIRTY = 29;
-static const uint32_t OFF_REGS = 0x40, OFF_CPSR = 0x80, OFF_CYCLES = 0x84, OFF_SPSR = 0x88, OFF_BANK = 0xA0, OFF_SPSR_VALUE = 0xC0, OFF_IE = 0xD0, OFF_IRF = 0xD8, OFF_EXTRA = 0x100;
+static const uint32_t MATH_NUMER = 0, MATH_DENOM = 8, MATH_PARAM = 16, MATH_DIV_CNT = 24, MATH_SQRT_CNT = 26, MATH_DIV_DIRTY = 28, MATH_SQRT_DIRTY = 29, MATH_GX_STAT = 32;
+static const uint32_t OFF_REGS = 0x40, OFF_CPSR = 0x80, OFF_CYCLES = 0x84, OFF_SPSR = 0x88, OFF_BANK = 0xA0, OFF_SPSR_VALUE = 0xC0, OFF_IE = 0xD0, OFF_IRF = 0xD8, OFF_IME = 0xE0, OFF_EXTRA = 0x100;
 
 // Guest memory: data, then code, which is real main RAM for the interpreter and a copy in the emulator
 static const uint32_t WINDOW = 0x02100000, WINDOW_SIZE = 0x40000, DATA_START = WINDOW + 0x2000, DATA_END = WINDOW + 0x1E000,
@@ -2196,6 +2196,92 @@ static void suiteMath() {
     now.mathLive = false;
 }
 
+static void suiteInterruptRegisters() {
+    // IME, IE and IF as generated code reaches them directly, against the real ones
+    Jit &jit = core->jit;
+    Interpreter &arm = core->interpreter[0];
+    uint64_t index = 0;
+    now.name = "interrupt registers";
+    now.mathLive = false;
+    for (uint32_t address = 0x40001F8; address < 0x4000248; address++) {
+        for (int type = 0; type < 6; type++) {
+            for (int variant = 0; variant < 64; variant++) {
+                if (!mine(index++)) continue;
+                rng.seed(index + 160000);
+                bool load = type < 3;
+                int size = (type % 3 == 0) ? 4 : (type % 3 == 1) ? 1 : 2;
+                uint32_t value = rnd(4) ? rng() : (rng() & 1);
+                uint8_t ime = rnd(2);
+                uint64_t ie = (uint64_t(rnd(4) ? 0 : rng()) << 32) | (rng() & (rnd(2) ? 0xFFFFFFFFu : BIT(rnd(32))));
+                uint64_t irf = (uint64_t(rnd(4) ? 0 : rng()) << 32) | (rng() & (rnd(2) ? 0xFFFFFFFFu : BIT(rnd(32))));
+                uint32_t cpsr = 0x1F | (rnd(2) ? BIT(7) : 0), gxStat = rng();
+
+                arm.ime = ime;
+                arm.ie = ie;
+                arm.irf = irf;
+                arm.cpsr = cpsr;
+                core->gpu3D.gxStat = gxStat;
+                writeBe(ARM_STATE + OFF_CPSR, cpsr);
+                writeBe(ARM_STATE + OFF_IE, ie >> 32);
+                writeBe(ARM_STATE + OFF_IE + 4, uint32_t(ie));
+                writeBe(ARM_STATE + OFF_IRF, irf >> 32);
+                writeBe(ARM_STATE + OFF_IRF + 4, uint32_t(irf));
+                uc_mem_write(uc, ARM_STATE + OFF_IME, &ime, 1);
+                writeBe(MATH + MATH_GX_STAT, gxStat);
+
+                // What should be done without leaving generated code
+                uint32_t mode = gxStat >> 30;
+                bool fifoIrq = (mode == 1 && (gxStat & BIT(25))) || (mode == 2 && (gxStat & BIT(26)));
+                bool masked = cpsr & BIT(7), direct = false;
+                bool imeRegister = address == 0x4000208 && size >= 2;
+                uint64_t newIe = (ie & ~uint64_t(0xFFFFFF7Fu)) | (value & 0xFFFFFF7Fu);
+                if (load) direct = imeRegister || (size == 4 && (address == 0x4000210 || address == 0x4000214));
+                else if (imeRegister) direct = !(value & 1) || masked || !(ie & irf);
+                else if (size == 4 && address == 0x4000210) direct = !ime || masked || !(newIe & irf);
+                else if (size == 4 && address == 0x4000214) direct = !fifoIrq;
+
+                char text[128];
+                snprintf(text, sizeof(text), "address %08X size %d %s value %08X ime %d", address, size, load ? "load" : "store", value, ime);
+                now.description = text;
+                now.failed = false;
+                now.mathCalls = 0;
+                setReg(UC_PPC_REG_1, STACK);
+                setReg(UC_PPC_REG_5, address);
+                setReg(UC_PPC_REG_8, value);
+                setReg(UC_PPC_REG_0 + 23, WRITE_MAP);
+                setReg(UC_PPC_REG_0 + 24, READ_MAP);
+                setReg(UC_PPC_REG_0 + 27, EVENTS);
+                setReg(UC_PPC_REG_0 + 28, START_CYCLES);
+                setReg(UC_PPC_REG_0 + 29, LIMIT);
+                setReg(UC_PPC_REG_0 + 30, GLOBAL);
+                setReg(UC_PPC_REG_0 + 31, ARM_STATE);
+                setReg(UC_PPC_REG_LR, END);
+                uc_err err = uc_emu_start(uc, emuCode(jit.codeMemory[type]), END, 0, 2000);
+                count("suite:interrupt registers");
+                if (err != UC_ERR_OK || reg(UC_PPC_REG_PC) != END) { fail("didn't finish: %s", uc_strerror(err)); continue; }
+                if (now.mathCalls != (direct ? 0 : 1)) { fail("%d memory calls, want %d", now.mathCalls, direct ? 0 : 1); continue; }
+                if (!direct) { count("interrupt registers left to C++"); continue; }
+                count("interrupt registers done directly");
+
+                if (load) {
+                    uint32_t want = (size == 4) ? core->memory.read<uint32_t>(0, address) : core->memory.read<uint16_t>(0, address);
+                    if (reg(UC_PPC_REG_8) != want) fail("loaded %08X, want %08X", reg(UC_PPC_REG_8), want);
+                    continue;
+                }
+                if (size == 4) core->memory.write<uint32_t>(0, address, value);
+                else core->memory.write<uint16_t>(0, address, value);
+                uint8_t gotIme;
+                uc_mem_read(uc, ARM_STATE + OFF_IME, &gotIme, 1);
+                uint64_t gotIe = (uint64_t(readBe(ARM_STATE + OFF_IE)) << 32) | readBe(ARM_STATE + OFF_IE + 4);
+                uint64_t gotIrf = (uint64_t(readBe(ARM_STATE + OFF_IRF)) << 32) | readBe(ARM_STATE + OFF_IRF + 4);
+                if (gotIme != arm.ime) fail("IME %d, want %d", gotIme, arm.ime);
+                if (gotIe != arm.ie) fail("IE %llX, want %llX", (unsigned long long)gotIe, (unsigned long long)arm.ie);
+                if (gotIrf != arm.irf) fail("IF %llX, want %llX", (unsigned long long)gotIrf, (unsigned long long)arm.irf);
+            }
+        }
+    }
+}
+
 static void setup(Jit &jit) {
     // Everything generated code reads from outside itself goes to a known place in the emulator
     jit.offUsr = 0;
@@ -2212,6 +2298,8 @@ static void setup(Jit &jit) {
     jit.addrWriteCpsr = FAKE_MSR;
     jit.addrRestoreCpsr = FAKE_RESTORE;
     jit.addrModeBanks = MODE_BANKS;
+    jit.addrGxStat = MATH + MATH_GX_STAT;
+    jit.offIme = OFF_IME;
     jit.addrDivNumer = MATH + MATH_NUMER;
     jit.addrSqrtParam = MATH + MATH_PARAM;
     jit.addrDivCnt = MATH + MATH_DIV_CNT;
@@ -2312,6 +2400,7 @@ int main(int argc, char **argv) {
     run("returns", suiteReturns);
     run("returns", suiteReturnsThenCode);
     run("math", suiteMath);
+    run("math", suiteInterruptRegisters);
     run("blocks", suiteBlocks);
     run("links", suiteLinks);
     run("reference", suiteReference);

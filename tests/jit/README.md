@@ -26,7 +26,7 @@ time and checks that each is noticed; add one there when adding a kind of test.
 | `conditions` | Every condition with every flag value, on each way through a condition |
 | `lists` | `PUSH`, `POP`, `LDM` and `STM` with lists crossing into pages that take the slow path |
 | `returns` | ALU instructions with flags that write the program counter, returning to every kind of saved mode on both CPUs, which of them generated code leaves to the interpreter, and code after a return using the new mode's banked registers, with the JIT's real table of them |
-| `math` | Every access to the math registers at `0x4000280` to `0x40002BF` against the real ones, for what generated code reaches directly and what it leaves to C++, then random runs of accesses against the same run done only in C++ |
+| `math` | Every access to the math registers at `0x4000280` to `0x40002BF` against the real ones, for what generated code reaches directly and what it leaves to C++, then random runs of accesses against the same run done only in C++, and the same for `IME`, `IE` and `IF` |
 | `blocks` | Random ARM and THUMB blocks with batching on: entered at the start or the middle, ending at a page end, stopping at every check, partway, at a deadline from an event or the other CPU, or from an event a C++ call made due, and with code changing during a store. Every stop must show exactly the state after an instruction, flags included |
 | `links` | Blocks jumping to each other directly and through the dispatcher, changing CPU mode, as they're compiled, dropped and compiled again |
 | `reference` | The interpreter's handlers against Unicorn's ARM946, an independent model of the same CPU: all THUMB encodings and sampled ARM ones, with banked registers, SPSRs and memory compared. The ARM7 is only compared on what it has in common with the ARM946 |
@@ -66,12 +66,14 @@ program counters, then hashes of RAM and WRAM, and every way is compared with th
 - `press=N`, `start=N` and `touch=N` to press A, press START or touch the middle of the bottom screen every N frames
 - `keys=frame:key,...` to press keys at given frames, numbered like KEYINPUT's bits, then 10 and 11 for X and Y
 - `taps=frame:x:y,...` to touch the bottom screen at given frames and positions, for 8 frames each
+- `audio` to mix the sound as well, which is left out otherwise for speed, and add a running hash of it to every frame's line, so comparing runs shows the first frame it differs on
+- `wav=file` to also save the sound as a WAV file, at 32768 Hz in 16-bit stereo, which turns on `audio`
 - `realtime` to run at most 60 frames a second, to watch a run in its window or give a network real time to answer
 - `threads` to run with the 2D threads drawing behind the emulator, as fast 2D does on the console; their timing varies, so
   runs with it aren't expected to match each other
 - `vramstress` to run only a test of VRAM reads from another thread during VRAM bank changes, which ignores the frame count
-  and exits as soon as it's done, or crashes if a read can follow a mapping that's only partly there. Planted bug 53 removes
-  what stops that, so `--mutate 53` with this option should crash; `mutate.sh` doesn't run it, since it runs the cases above
+  and exits as soon as it's done, or crashes if a read can follow a mapping that's only partly there. Planted bug 56 removes
+  what stops that, so `--mutate 56` with this option should crash; `mutate.sh` doesn't run it, since it runs the cases above. Planted bug 57 breaks ADPCM sound for both the interpreter and generated code, so check it by comparing an `audio` run against one without it
 - `trace=N` to also print both CPUs' registers at the start of every scanline from frame N
 - `ppm=file` to save the last frame, `ram=file` to save main RAM at the end, and `results=file` to save what
   `tests/hardware`'s ROM recorded, for its build

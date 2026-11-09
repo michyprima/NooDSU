@@ -23,6 +23,8 @@ if 'addrRestoreCpsr' not in open(root + '/arm/jit.h').read():
     edit('arm/jit.h', ('    uint32_t addrDtcmReg = 0, addrWriteCpsr = 0;\n', '    uint32_t addrDtcmReg = 0, addrWriteCpsr = 0, addrRestoreCpsr = 0, addrModeBanks = 0;\n'
         '    uint32_t addrDivCnt = 0, addrDivNumer = 0, addrDivDirty = 0, addrSqrtCnt = 0, addrSqrtParam = 0, addrSqrtDirty = 0;\n'
         '    static void restoreCpsrCall(Interpreter *arm, uint32_t before) {}\n    uint32_t modeBanks[32][4] = {};\n'))
+if 'addrGxStat' not in open(root + '/arm/jit.h').read():
+    edit('arm/jit.h', ('    uint32_t addrDtcmReg = 0,', '    int offIme = 0;\n    uint32_t addrGxStat = 0;\n    uint32_t addrDtcmReg = 0,'))
 edit('arm/jit.cpp', ('#include <cstdlib>', '#include <algorithm>\n#include <vector>\n#include <cstdlib>'))
 edit('defines.h', ('__asm__ volatile("dcbz 0, %0" :: "r"(data) : "memory");', ''))
 edit('gpu/gpu.cpp',
@@ -59,6 +61,14 @@ if game:
         '            codeEnter)(&arm, &core->events, limit, block->code, &core->globalCycles, cache);',
         '        rigEnter(*this, limit, block->code);'),
         ('#include <algorithm>\n', '#include <algorithm>\nclass Jit;\nvoid rigEnter(Jit &jit, const uint32_t *limit, void *code);\n'))
+
+    # A hash of the sound made, since the screens can't show anything wrong with it, and somewhere to save it
+    edit('io/spu.cpp', ('void Spu::pushSample(int16_t sampleLeft, int16_t sampleRight) {\n', 'uint64_t rigAudioHash = 0;\nFILE *rigAudioFile = nullptr;\n'
+        'void Spu::pushSample(int16_t sampleLeft, int16_t sampleRight) {\n'
+        '    rigAudioHash = (rigAudioHash ^ uint16_t(sampleLeft) ^ (uint64_t(uint16_t(sampleRight)) << 16)) * 0x100000001B3ULL;\n'
+        '    if (rigAudioFile) { int16_t rigSample[2] = { sampleLeft, sampleRight }; fwrite(rigSample, 2, 2, rigAudioFile); }\n'))
+    spu = open(root + '/io/spu.cpp').read()
+    open(root + '/io/spu.cpp', 'w').write('#include <cstdio>\n' + spu)
 
     # The console's build sets a VRAM mapping's count before its pointer, which matters to a 2D thread reading it
     edit('memory/memory.cpp', ('    mappings[count++] = mapping;', '    uint8_t next = count;\n    *(volatile uint8_t*)&count = next + 1;\n'
@@ -115,18 +125,22 @@ MUTATIONS = [
     ('e.call(addrRestoreCpsr);\n        e.call(codeRefresh);\n', 'e.call(addrRestoreCpsr);\n'), # 45: A return's slow path doesn't refresh
     ('                setDirty(sqrt ? addrSqrtDirty : addrDivDirty);\n            }\n            e.blr();\n            e.patchBc(next);\n        }\n    }\n    for', '            }\n            e.blr();\n            e.patchBc(next);\n        }\n    }\n    for'), # 46: Writing a math word leaves the old result
     ('if (!block->thumb && native && nativeKind(op, arm7) == NK_ALU_PC && (op & BIT(20))) {\n            differ', 'if (false) {\n            differ'), # 47: A return to THUMB at the next address stays in ARM
+    ('e.rlwimi(7, 9, 0, 24, 24);\n', ''), # 48: Writing IE changes bit 7
+    ('e.rlwinm_(9, 9, 7, 31, 31);', 'e.rlwinm_(9, 9, 6, 31, 31);'), # 49: Clearing IF checks the wrong FIFO condition
+    ('e.lwz(8, offIrf + 4, R_ARM);', 'e.lwz(8, offIrf, R_ARM);'), # 50: Reading IF gets the high word
 ]
 # Bugs in the interpreter, which only the reference suite can see if the JIT has no native code for them
 INTERPRETER_MUTATIONS = [
-    ('arm/interpreter_alu.cpp', 'cpsr = (cpsr & ~0xF0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&', 'cpsr = (cpsr & ~0xC0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&'), # 48: RSCS can't clear C or V
-    ('arm/interpreter_alu.cpp', ' | ((*op0 <= 0) << 29) |\n        ((op2 & *op0 & BIT(31)) >> 3);', ' | ((*op0 <= 0) << 29);'), # 49: NEG always clears V
-    ('arm/interpreter_transfer.cpp', 'int Interpreter::ldmiaU(uint32_t opcode) { // LDMIA Rn, <Rlist>^\n    // User block load, post-increment without writeback; normal registers if branching\n    uint8_t m = bitCount[opcode & 0xFF] + bitCount[(opcode >> 8) & 0xFF];\n    uint32_t op0 = *registers[(opcode >> 16) & 0xF];\n    uint32_t **regs = &registers[(~opcode & BIT(15)) >> 11];', 'int Interpreter::ldmiaU(uint32_t opcode) { // LDMIA Rn, <Rlist>^\n    // User block load, post-increment without writeback; normal registers if branching\n    uint8_t m = bitCount[opcode & 0xFF] + bitCount[(opcode >> 8) & 0xFF];\n    uint32_t op0 = *registers[(opcode >> 16) & 0xF];\n    uint32_t **regs = &registers[0];'), # 50: LDM with S doesn't use user registers
-    ('arm/interpreter_transfer.cpp', 'if ((opcode & BIT(16)) && (cpsr & 0x1F) != 0x10)\n        setCpsr', 'if (opcode & BIT(16))\n        setCpsr'), # 51: User mode MSR changes control bits
-    ('arm/interpreter_transfer.cpp', '    if (spsr) setCpsr(*spsr);\n    flushPipeline();', '    if (spsr) setCpsr(*spsr);\n    cpsr |= (*registers[15] & !arm7) << 5;\n    flushPipeline();'), # 52: LDM with S takes THUMB from the PC
+    ('arm/interpreter_alu.cpp', 'cpsr = (cpsr & ~0xF0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&', 'cpsr = (cpsr & ~0xC0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&'), # 51: RSCS can't clear C or V
+    ('arm/interpreter_alu.cpp', ' | ((*op0 <= 0) << 29) |\n        ((op2 & *op0 & BIT(31)) >> 3);', ' | ((*op0 <= 0) << 29);'), # 52: NEG always clears V
+    ('arm/interpreter_transfer.cpp', 'int Interpreter::ldmiaU(uint32_t opcode) { // LDMIA Rn, <Rlist>^\n    // User block load, post-increment without writeback; normal registers if branching\n    uint8_t m = bitCount[opcode & 0xFF] + bitCount[(opcode >> 8) & 0xFF];\n    uint32_t op0 = *registers[(opcode >> 16) & 0xF];\n    uint32_t **regs = &registers[(~opcode & BIT(15)) >> 11];', 'int Interpreter::ldmiaU(uint32_t opcode) { // LDMIA Rn, <Rlist>^\n    // User block load, post-increment without writeback; normal registers if branching\n    uint8_t m = bitCount[opcode & 0xFF] + bitCount[(opcode >> 8) & 0xFF];\n    uint32_t op0 = *registers[(opcode >> 16) & 0xF];\n    uint32_t **regs = &registers[0];'), # 53: LDM with S doesn't use user registers
+    ('arm/interpreter_transfer.cpp', 'if ((opcode & BIT(16)) && (cpsr & 0x1F) != 0x10)\n        setCpsr', 'if (opcode & BIT(16))\n        setCpsr'), # 54: User mode MSR changes control bits
+    ('arm/interpreter_transfer.cpp', '    if (spsr) setCpsr(*spsr);\n    flushPipeline();', '    if (spsr) setCpsr(*spsr);\n    cpsr |= (*registers[15] & !arm7) << 5;\n    flushPipeline();'), # 55: LDM with S takes THUMB from the PC
 ]
 # Bugs only a game.sh option can see, numbered after those and left out of mutate.sh, which runs the cases above
 GAME_MUTATIONS = [
-    ('memory/memory.cpp', '        if (uint8_t *mapping = *(uint8_t *volatile*)&mappings[m])\n            value |= readLsb<T>(&mapping[address]);', '        value |= readLsb<T>(&mappings[m][address]);'), # game 53: a VRAM read follows a missing pointer, for vramstress
+    ('memory/memory.cpp', '        if (uint8_t *mapping = *(uint8_t *volatile*)&mappings[m])\n            value |= readLsb<T>(&mapping[address]);', '        value |= readLsb<T>(&mappings[m][address]);'), # game 56: a VRAM read follows a missing pointer, for vramstress
+    ('io/spu.cpp', 'int32_t negate = (adpcmData >> 3) - 1;', 'int32_t negate = -int32_t(adpcmData >> 3);'), # game 57: ADPCM has its sign backwards, for audio; generated code and the interpreter share it, so compare with a run without it
 ]
 if mutation > len(MUTATIONS) + len(INTERPRETER_MUTATIONS):
     file, old, new = GAME_MUTATIONS[mutation - len(MUTATIONS) - len(INTERPRETER_MUTATIONS) - 1]

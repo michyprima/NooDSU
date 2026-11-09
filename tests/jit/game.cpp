@@ -20,6 +20,8 @@
 #include <unicorn/unicorn.h>
 
 extern void (*rigSetup)(Jit &jit);
+extern uint64_t rigAudioHash;
+extern FILE *rigAudioFile;
 
 // Addresses in the emulator; areas marked live are read through callbacks to the core's own state, and areas marked
 // copied are the core's values in the emulator's byte order, copied in when generated code is entered or a call from it
@@ -40,7 +42,7 @@ static const uint32_t
     CORE = 0x40000000; // The whole core object, shared, for every other memory the maps point to
 
 // The math registers as a big-endian host lays them out: three 64-bit values, the two control registers and the dirty flags
-static const uint32_t MATH_NUMER = 0, MATH_DENOM = 8, MATH_PARAM = 16, MATH_DIV_CNT = 24, MATH_SQRT_CNT = 26, MATH_DIV_DIRTY = 28, MATH_SQRT_DIRTY = 29;
+static const uint32_t MATH_NUMER = 0, MATH_DENOM = 8, MATH_PARAM = 16, MATH_DIV_CNT = 24, MATH_SQRT_CNT = 26, MATH_DIV_DIRTY = 28, MATH_SQRT_DIRTY = 29, MATH_GX_STAT = 32;
 
 // Memory generated code doesn't run from, which Unicorn then doesn't watch for code being written over
 static const int DATA = UC_PROT_READ | UC_PROT_WRITE;
@@ -114,16 +116,24 @@ static uint64_t part(uint32_t word, uint64_t offset, unsigned size) {
 }
 
 // Where the interpreter's words are in the copy: the pointers after it, and its only field read by the byte
-static const uint32_t VIRT_WORD = VIRT_REGS / 4, DSI_CYCLE = offsetof(Interpreter, dsiCycle);
+static const uint32_t VIRT_WORD = VIRT_REGS / 4, DSI_CYCLE = offsetof(Interpreter, dsiCycle), IME = offsetof(Interpreter, ime);
+static const uint32_t IE = offsetof(Interpreter, ie), IRF = offsetof(Interpreter, irf);
 static const uint32_t WORD_EVENT = 0, WORD_SLOT = (EVENT_SLOT + offsetof(SchedEvent, cycles)) / 4, WORD_LIMIT = (LIMIT - EVENTS) / 4,
     WORD_GLOBAL = (GLOBAL - EVENTS) / 4, WORD_DTCM = (DTCM_REG - EVENTS) / 4;
+
+static void swapHalves(uint32_t *words) {
+    // Exchange the halves of the 64-bit interrupt registers, which a big-endian host has with the high word first
+    for (uint32_t field: { IE, IRF }) std::swap(words[field / 4], words[field / 4 + 1]);
+}
 
 static void copyIn(Engine &en) {
     // Copy the core's values for generated code, the interpreter's words as a big-endian host would read them
     const uint32_t *arm = (const uint32_t*)en.arm;
     for (size_t i = 0; i < sizeof(Interpreter) / 4; i++)
         en.state[i] = swap32(arm[i]);
+    swapHalves(en.state);
     ((uint8_t*)en.state)[DSI_CYCLE] = en.arm->dsiCycle;
+    ((uint8_t*)en.state)[IME] = en.arm->ime;
     for (int r = 0; r < 16; r++)
         en.state[VIRT_WORD + r] = swap32(emuState(en, en.arm->registers[r]));
     en.state[VIRT_WORD + 16] = swap32(en.arm->spsr ? emuState(en, en.arm->spsr) : 0);
@@ -146,6 +156,8 @@ static void copyIn(Engine &en) {
     math[MATH_SQRT_CNT + 1] = div.sqrtCnt;
     math[MATH_DIV_DIRTY] = div.divDirty;
     math[MATH_SQRT_DIRTY] = div.sqrtDirty;
+    uint32_t gxStat = swap32(core->gpu3D.gxStat);
+    memcpy(math + MATH_GX_STAT, &gxStat, 4);
 }
 
 static void copyOut(Engine &en) {
@@ -153,17 +165,23 @@ static void copyOut(Engine &en) {
     uint32_t *arm = (uint32_t*)en.arm;
     const uint32_t usr = offsetof(Interpreter, registersUsr), cpsr = offsetof(Interpreter, cpsr);
     const uint32_t spsrs = offsetof(Interpreter, spsrFiq), cycles = offsetof(Interpreter, cycles);
+    swapHalves(en.state);
+    swapHalves(en.given);
     for (uint32_t i = 0; i < sizeof(Interpreter) / 4; i++) {
         if (en.state[i] == en.given[i]) continue;
         uint32_t offset = i * 4;
-        if (offset == (DSI_CYCLE & ~3)) {
+        if (offset == (DSI_CYCLE & ~3) || offset == (IME & ~3)) {
             // Only the byte it's read by may change, since the word holds other fields too
-            if ((swap32(en.state[i]) & 0x00FFFFFF) != (swap32(en.given[i]) & 0x00FFFFFF))
-                fatal("write to the interpreter at offset %X", offset);
-            en.arm->dsiCycle = ((uint8_t*)en.state)[DSI_CYCLE];
+            const uint8_t *now = (const uint8_t*)&en.state[i], *before = (const uint8_t*)&en.given[i];
+            for (uint32_t b = 0; b < 4; b++) {
+                if (now[b] == before[b]) continue;
+                if (offset + b == DSI_CYCLE) en.arm->dsiCycle = now[b];
+                else if (offset + b == IME) en.arm->ime = now[b];
+                else fatal("write to the interpreter at offset %X", offset + b);
+            }
             continue;
         }
-        if ((offset < usr || offset > cpsr) && (offset < spsrs || offset > cycles))
+        if ((offset < usr || offset > cpsr) && (offset < spsrs || offset > cycles) && (offset < IE || offset >= IRF + 8))
             fatal("write to the interpreter at offset %X", offset);
         arm[i] = swap32(en.state[i]);
     }
@@ -401,6 +419,7 @@ static void setup(Jit &jit) {
         }
         uc_mem_write(en.uc, MODE_BANKS + mode * 16, entry, sizeof(entry));
     }
+    jit.addrGxStat = MATH + MATH_GX_STAT;
     jit.addrDivNumer = MATH + MATH_NUMER;
     jit.addrSqrtParam = MATH + MATH_PARAM;
     jit.addrDivCnt = MATH + MATH_DIV_CNT;
@@ -498,14 +517,14 @@ static uint64_t hash(const void *data, size_t size, uint64_t h = 0xCBF29CE484222
 int main(int argc, char **argv) {
     if (argc < 5) {
         printf("Usage: game <system files folder> <rom, or - for none> <interp|portable|native> <frames> [fast] [dsi] [firmware] [press=N] "
-            "[start=N] [touch=N] [trace=frame] [ppm=path] [results=path] [ram=path] [keys=frame:key,...] [taps=frame:x:y,...] [wifi] [realtime] [live] [window] [input]\n");
+            "[start=N] [touch=N] [trace=frame] [ppm=path] [results=path] [ram=path] [audio] [wav=path] [keys=frame:key,...] [taps=frame:x:y,...] [wifi] [realtime] [live] [window] [input]\n");
         return 2;
     }
     std::string files = argv[1], mode = argv[3];
     int frames = atoi(argv[4]), press = 0, startKey = 0, touch = 0, traceFrom = -1;
     bool fast = false, dsi = false, firmware = false, window = false, wifi = false, realtime = false, input = false;
-    bool threads = false, stress = false;
-    std::string ppm, results, ramFile;
+    bool threads = false, stress = false, audio = false;
+    std::string ppm, results, ramFile, wav;
     std::vector<std::pair<int, int>> inputs; // Frame and key to press then, for 2 frames
     std::vector<std::array<int, 3>> taps; // Frame and bottom screen position to touch then, for 8 frames
     for (int i = 5; i < argc; i++) {
@@ -519,6 +538,7 @@ int main(int argc, char **argv) {
         else if (arg == "realtime") realtime = true; // 60 frames a second, to watch a run or give a network time
         else if (arg == "wifi") wifi = true; // Needs game.sh's --wifi for the real libslirp
         else if (arg == "threads") threads = true; // 2D threads drawing behind the emulator, as the console does
+        else if (arg == "audio") audio = true; // Mix the sound, and print a hash of it after the memory
         else if (arg == "vramstress") stress = true; // Only run the VRAM test, see vramStress
         else if (arg.rfind("press=", 0) == 0) press = atoi(arg.c_str() + 6);
         else if (arg.rfind("start=", 0) == 0) startKey = atoi(arg.c_str() + 6);
@@ -527,6 +547,7 @@ int main(int argc, char **argv) {
         else if (arg.rfind("ppm=", 0) == 0) ppm = arg.substr(4);
         else if (arg.rfind("results=", 0) == 0) results = arg.substr(8);
         else if (arg.rfind("ram=", 0) == 0) ramFile = arg.substr(4);
+        else if (arg.rfind("wav=", 0) == 0) { wav = arg.substr(4); audio = true; }
         else if (arg.rfind("keys=", 0) == 0) {
             // Comma-separated frame:key pairs, keys numbered as KEYINPUT bits, then 10 and 11 for X and Y
             for (size_t at = 5; at < arg.size();) {
@@ -573,7 +594,12 @@ int main(int argc, char **argv) {
     Settings::threaded2D = threads;
     Settings::threaded3D = 0;
     Settings::arm7Hle = 0;
-    Settings::emulateAudio = 0;
+    Settings::emulateAudio = audio;
+    if (!wav.empty()) {
+        // Room for the WAV header, filled in at the end
+        if (!(rigAudioFile = fopen(wav.c_str(), "wb"))) fatal("couldn't write %s", wav.c_str());
+        fseek(rigAudioFile, 44, SEEK_SET);
+    }
     Settings::fpsLimiter = 0;
     Settings::fast2D = threads;
     Settings::highRes3D = 0;
@@ -668,8 +694,19 @@ int main(int argc, char **argv) {
             if (window) windowShow(frame);
         }
         Interpreter &arm9 = core->interpreter[0], &arm7 = core->interpreter[1];
-        printf("frame %d\tscreen %016llX\tcycles %u %u %u\tpc %08X %08X\n", i, (unsigned long long)last,
+        printf("frame %d\tscreen %016llX\tcycles %u %u %u\tpc %08X %08X", i, (unsigned long long)last,
             core->globalCycles, arm9.cycles, arm7.cycles, arm9.registersUsr[15], arm7.registersUsr[15]);
+        if (audio) printf("\taudio %016llX", (unsigned long long)rigAudioHash);
+        printf("\n");
+    }
+    if (rigAudioFile) {
+        // Fill in the header now that the length is known
+        uint32_t bytes = ftell(rigAudioFile) - 44, rate = 32768, wide = 4 | (uint32_t(16) << 16);
+        uint32_t words[11] = { 0x46464952, bytes + 36, 0x45564157, 0x20746D66, 16, 0x00020001, rate, rate * 4, wide, 0x61746164, bytes };
+        fseek(rigAudioFile, 0, SEEK_SET);
+        fwrite(words, 4, 11, rigAudioFile);
+        fclose(rigAudioFile);
+        rigAudioFile = nullptr;
     }
     core->cartridgeNds.writeSave();
     Memory &mem = core->memory;
