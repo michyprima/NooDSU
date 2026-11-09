@@ -66,7 +66,8 @@ public:
     uint32_t *getLine(int line);
     bool hasFrame() { return (hardwareFrame && hardwareBuffer) || framebuffer; }
 
-    uint16_t readDisp3DCnt() { return disp3DCnt; }
+    uint16_t readDisp3DCnt() { return disp3DCnt | (ramOverflow.load() << 13); }
+    void setRamOverflow() { ramOverflow.store(1); }
 
     // For hardware renderers, which get the frame's state and textures here and write scanlines back
     static Gpu3DHardware *hardware;
@@ -156,6 +157,7 @@ private:
     Atomic32<int> ready[192 * 2];
 
     uint16_t disp3DCnt = 0;
+    Atomic32<int> ramOverflow{0}; // Set by the geometry worker when it runs on another thread
     uint16_t edgeColor[8] = {};
     uint32_t clearColor = 0;
     uint16_t clearDepth = 0;

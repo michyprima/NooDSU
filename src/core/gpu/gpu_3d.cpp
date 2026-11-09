@@ -780,7 +780,7 @@ void Gpu3D::swapBuffers() {
 
 void Gpu3D::addVertex() {
     // Set the new vertex
-    if (vertexCountIn >= 6144) return;
+    if (vertexCountIn >= 6144) return core->gpu3DRenderer.setRamOverflow();
     verticesIn[vertexCountIn] = savedVertex;
     verticesIn[vertexCountIn].w = 1 << 12;
 
@@ -840,7 +840,6 @@ bool Gpu3D::isDistantDot(Vertex *vertices, int size) {
 
 void Gpu3D::addPolygon() {
     // Set the polygon vertex information
-    if (polygonCountIn >= 2048) return;
     int size = 3 + (polygonType & 1);
     savedPolygon.size = size;
     savedPolygon.vertices = vertexCountIn - size;
@@ -898,8 +897,12 @@ void Gpu3D::addPolygon() {
     if (!cull && savedPolygon.size && !renderDot && isDistantDot(clip ? clipped : unclipped, savedPolygon.size))
         savedPolygon.size = 0;
 
-    // Discard polygons that should be culled or are outside of the view area
-    if (cull || savedPolygon.size == 0) {
+    // Only polygons that would be drawn can overflow the polygon RAM
+    bool full = !cull && savedPolygon.size && polygonCountIn >= 2048;
+    if (full) core->gpu3DRenderer.setRamOverflow();
+
+    // Discard polygons that should be culled, are outside of the view area, or don't fit
+    if (cull || full || savedPolygon.size == 0) {
         switch (polygonType) {
         case 0: case 1: // Separate polygons
             // Discard the vertices
@@ -948,7 +951,7 @@ void Gpu3D::addPolygon() {
 
             // Add the clipped vertices
             for (int i = 0; i < savedPolygon.size; i++) {
-                if (vertexCountIn >= 6144) return;
+                if (vertexCountIn >= 6144) return core->gpu3DRenderer.setRamOverflow();
                 verticesIn[vertexCountIn] = clipped[i];
                 vertexCountIn++;
             }
@@ -961,14 +964,14 @@ void Gpu3D::addPolygon() {
 
             // Add the clipped vertices
             for (int i = 0; i < savedPolygon.size; i++) {
-                if (vertexCountIn >= 6144) return;
+                if (vertexCountIn >= 6144) return core->gpu3DRenderer.setRamOverflow();
                 verticesIn[vertexCountIn] = clipped[i];
                 vertexCountIn++;
             }
 
             // End the previous strip, and start a new one with the last 2 vertices
             for (int i = 0; i < 2; i++) {
-                if (vertexCountIn >= 6144) return;
+                if (vertexCountIn >= 6144) return core->gpu3DRenderer.setRamOverflow();
                 verticesIn[vertexCountIn] = unclipped[1 + i];
                 vertexCountIn++;
             }
@@ -982,14 +985,14 @@ void Gpu3D::addPolygon() {
 
             // Add the clipped vertices
             for (int i = 0; i < savedPolygon.size; i++) {
-                if (vertexCountIn >= 6144) return;
+                if (vertexCountIn >= 6144) return core->gpu3DRenderer.setRamOverflow();
                 verticesIn[vertexCountIn] = clipped[i];
                 vertexCountIn++;
             }
 
             // End the previous strip, and start a new one with the last 2 vertices
             for (int i = 0; i < 2; i++) {
-                if (vertexCountIn >= 6144) return;
+                if (vertexCountIn >= 6144) return core->gpu3DRenderer.setRamOverflow();
                 verticesIn[vertexCountIn] = unclipped[3 - i];
                 vertexCountIn++;
             }

@@ -102,6 +102,8 @@ uint32_t *Gpu3DRenderer::reuseHardwareCopy() {
 void Gpu3DRenderer::saveState(FILE *file) {
     // Write state data to the file
     fwrite(&disp3DCnt, sizeof(disp3DCnt), 1, file);
+    int overflow = ramOverflow.load();
+    fwrite(&overflow, sizeof(overflow), 1, file);
     fwrite(edgeColor, 2, sizeof(edgeColor) / 2, file);
     fwrite(&clearColor, sizeof(clearColor), 1, file);
     fwrite(&clearDepth, sizeof(clearDepth), 1, file);
@@ -115,6 +117,9 @@ void Gpu3DRenderer::saveState(FILE *file) {
 void Gpu3DRenderer::loadState(FILE *file) {
     // Read state data from the file
     fread(&disp3DCnt, sizeof(disp3DCnt), 1, file);
+    int overflow = 0;
+    fread(&overflow, sizeof(overflow), 1, file);
+    ramOverflow.store(overflow);
     fread(edgeColor, 2, sizeof(edgeColor) / 2, file);
     fread(&clearColor, sizeof(clearColor), 1, file);
     fread(&clearDepth, sizeof(clearDepth), 1, file);
@@ -1626,7 +1631,7 @@ template <bool wBuffer, bool antiAlias, bool textured> void Gpu3DRenderer::drawS
 void Gpu3DRenderer::writeDisp3DCnt(uint16_t mask, uint16_t value) {
     // If any of the error bits are set, acknowledge the errors by clearing them
     if (value & BIT(12)) disp3DCnt &= ~BIT(12);
-    if (value & BIT(13)) disp3DCnt &= ~BIT(13);
+    if (value & BIT(13)) ramOverflow.store(0);
 
     // Write to the DISP3DCNT register and invalidate the 3D if a parameter changed
     mask &= 0x4FFF;
