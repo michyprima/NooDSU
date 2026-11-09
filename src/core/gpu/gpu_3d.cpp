@@ -112,6 +112,7 @@ void Gpu3D::saveState(FILE *file) {
     fwrite(&polygonAttr, sizeof(polygonAttr), 1, file);
     fwrite(&enabledLights, sizeof(enabledLights), 1, file);
     fwrite(&renderBack, sizeof(renderBack), 1, file);
+    fwrite(&renderFar, sizeof(renderFar), 1, file);
     fwrite(&renderFront, sizeof(renderFront), 1, file);
     fwrite(&diffuseColor, sizeof(diffuseColor), 1, file);
     fwrite(&ambientColor, sizeof(ambientColor), 1, file);
@@ -170,6 +171,7 @@ void Gpu3D::loadState(FILE *file) {
     fread(&polygonAttr, sizeof(polygonAttr), 1, file);
     fread(&enabledLights, sizeof(enabledLights), 1, file);
     fread(&renderBack, sizeof(renderBack), 1, file);
+    fread(&renderFar, sizeof(renderFar), 1, file);
     fread(&renderFront, sizeof(renderFront), 1, file);
     fread(&diffuseColor, sizeof(diffuseColor), 1, file);
     fread(&ambientColor, sizeof(ambientColor), 1, file);
@@ -234,6 +236,17 @@ bool Gpu3D::clipPolygon(Vertex *unclipped, Vertex *clipped, uint8_t *size) {
     // Clip a polygon using the Sutherland-Hodgman algorithm, alternating between two vertex buffers
     // The extra buffer is left uninitialized, since clearing it for every polygon is costly
     bool clip = false;
+
+    // Polygons that reach past the far plane are hidden instead of clipped, unless they ask otherwise
+    if (!renderFar) {
+        for (int i = 0; i < *size; i++) {
+            if (unclipped[i].z > unclipped[i].w) {
+                *size = 0;
+                return false;
+            }
+        }
+    }
+
     alignas(Vertex) uint8_t bufferData[10 * sizeof(Vertex)];
     Vertex *buffer = (Vertex*)bufferData;
     Vertex *vertices = unclipped;
@@ -1522,6 +1535,7 @@ void Gpu3D::beginVtxsCmd(uint32_t param) {
     savedPolygon.mode = (polygonAttr & 0x00000030) >> 4;
     renderBack = polygonAttr & BIT(6);
     renderFront = polygonAttr & BIT(7);
+    renderFar = polygonAttr & BIT(12);
     savedPolygon.transNewDepth = polygonAttr & BIT(11);
     savedPolygon.depthTestEqual = polygonAttr & BIT(14);
     savedPolygon.fog = polygonAttr & BIT(15);

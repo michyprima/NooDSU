@@ -268,7 +268,7 @@ private:
 
     uint32_t polygonAttr = 0;
     uint8_t enabledLights = 0;
-    bool renderBack = false, renderFront = false;
+    bool renderBack = false, renderFront = false, renderFar = false;
 
     uint32_t diffuseColor = 0, ambientColor = 0;
     uint32_t specularColor = 0, emissionColor = 0;
@@ -322,7 +322,7 @@ private:
 
     static uint32_t rgb5ToRgb6(uint16_t color);
     static Vertex intersection(Vertex *vtx1, Vertex *vtx2, int32_t val1, int32_t val2);
-    static bool clipPolygon(Vertex *unclipped, Vertex *clipped, uint8_t *size);
+    bool clipPolygon(Vertex *unclipped, Vertex *clipped, uint8_t *size);
 
     void processVertices();
     void addVertex();
