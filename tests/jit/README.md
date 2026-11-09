@@ -134,3 +134,10 @@ Mario Kart DS with `press=40` reaches a race by about frame 1500. DSi mode with 
 by frame 1300; the next press, at frame 2500, starts the DSi Browser, which runs until it finds no network. With
 `keys=1500:0`, Left (key 5) every 40 frames from 1640 to 1880 and `1960:0`, it starts System Settings, up by frame 2900.
 Pokemon Black 2 in DSi mode with `press=37` names the rival by frame 4400. With generated code in Unicorn, these run at 15 to 65 frames a second.
+
+## NDMA
+
+`ndma.sh <ROM> <system files folder>` checks the DSi's NDMA channels and everything that triggers them, on the Mac with the
+interpreter, and prints how many checks passed. The ROM is only read from, by the DS cart trigger's checks, so it needs to be at
+least 1.5MB; any game will do. It runs in DSi mode, so the folder needs a NAND. See `tests/hardware` for the ROM that showed how a
+real DSi behaves.
