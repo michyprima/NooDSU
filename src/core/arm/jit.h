@@ -173,6 +173,8 @@ private:
     JitCacheEntry *cache = &cacheData[1];
     uint32_t &codeChanged = cacheData[0].key;
     bool wramCached = false; // Whether the cache might have any blocks from WRAM addresses
+    static const int NO_CODE_SIZE = 16;
+    uint32_t noCodePages[NO_CODE_SIZE] = {}; // Guest pages recently found to have nothing to compile, plus 1, by low bits
 
     // Links waiting for their target to be compiled, and jumps to put back to the dispatcher before running again
     std::unordered_multimap<uint32_t, std::pair<JitBlock*, uint32_t*>> pendingLinks;

@@ -199,6 +199,9 @@ void Jit::mapChanged(uint32_t start) {
     // change when a DSi switches to a DS title's RAM size and BIOSes, so other changes don't matter
     if (arm7 ? (start >= 0x04000000) : (start >= 0x03000000 && start < 0xFFFF0000)) return;
 
+    // A page that couldn't be compiled from might be able to now
+    memset(noCodePages, 0, sizeof(noCodePages));
+
     // The DSi's launcher remaps WRAM thousands of times while starting a title, and only addresses there can be affected
     if ((start >> 24) != 0x03 || wramCached) clearCache();
     codeChanged = 1;
@@ -533,6 +536,14 @@ bool Jit::writeCode(uint8_t *host, int size) {
 }
 
 bool Jit::run(const uint32_t *limit) {
+    // Leave code in a page that can't be compiled to the interpreter straight away, since this is called for every
+    // instruction there; the DSi's launcher runs ARM7 code from NWRAM while starting a title
+    Interpreter &arm = core->interpreter[arm7];
+    bool thumb = arm.cpsr & BIT(5);
+    uint32_t address = arm.registersUsr[15] - (thumb ? 2 : 4);
+    uint32_t &noCode = noCodePages[(address >> 12) & (NO_CODE_SIZE - 1)];
+    if (noCode == (address >> 12) + 1) return false;
+
     // Put back unlinked jumps and delete blocks that were invalidated, now that none are running
     if (!unlinks.empty()) applyUnlinks();
     for (size_t i = 0; i < graveyard.size(); i++)
@@ -564,14 +575,17 @@ bool Jit::run(const uint32_t *limit) {
     }
 
     // Find the host memory for the next instruction, if it's somewhere code can be compiled from
-    Interpreter &arm = core->interpreter[arm7];
-    bool thumb = arm.cpsr & BIT(5);
-    uint32_t address = arm.registersUsr[15] - (thumb ? 2 : 4);
     uint8_t *host = codeMap()[address >> 12];
-    if (!host) return false;
+    if (!host) {
+        noCode = (address >> 12) + 1;
+        return false;
+    }
     host += address & 0xFFF;
     int index = tableIndex(host);
-    if (index < 0) return false;
+    if (index < 0) {
+        noCode = (address >> 12) + 1;
+        return false;
+    }
 
     // Look up the block, compiling it if it's missing or was compiled for another address or mode
     // If generated code is close to filling its area, start over to make room
