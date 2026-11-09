@@ -1336,12 +1336,13 @@ void CartridgeNds::writeRomCtrl(bool cpu, uint32_t mask, uint32_t value) {
         else if ((command >> 56) == 0x3C) { // Activate KEY1 encryption mode
             // Initialize KEY1 encryption
             encrypted[cpu] = true;
-            dsiKey[cpu] = false;
+            dsiKey[0] = dsiKey[1] = false;
         }
         else if ((command >> 56) == 0x3D && core->dsiMode && dsiCart) { // Activate KEY1 encryption mode for the DSi area
-            // Like 0x3C, but for the DSi parts of a DSi card, which only a DSi asks for
+            // Like 0x3C, but for the DSi parts of a DSi card, which only a DSi asks for; the card stays unlocked for both
+            // CPUs, since titles read from the ARM9 what the launcher asked for from the ARM7
             encrypted[cpu] = true;
-            dsiKey[cpu] = true;
+            dsiKey[0] = dsiKey[1] = true;
         }
         else if ((command >> 60) == 0x2) { // Get secure area
             cmdMode = CMD_SECURE;
