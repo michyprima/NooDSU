@@ -2039,6 +2039,7 @@ template <typename T> void Memory::ioWrite9(uint32_t address, T value) {
             DEF_IO32(0x40005C4, core->gpu3D.writePosTest(IOWR_PARAMS)) // POS_TEST
             DEF_IO32(0x40005C8, core->gpu3D.writeVecTest(IOWR_PARAMS)) // VEC_TEST
             DEF_IO32(0x4000600, core->gpu3D.writeGxStat(IOWR_PARAMS)) // GXSTAT
+            DEF_IO16(0x4000610, core->gpu3D.writeDotDepth(IOWR_PARAMS)) // DISP_1DOT_DEPTH
             DEF_IO32(0x4001000, core->gpu2D[1].writeDispCnt(IOWR_PARAMS)) // DISPCNT (engine B)
             DEF_IO16(0x4001008, core->gpu2D[1].writeBgCnt(0, IOWR_PARAMS)) // BG0CNT (engine B)
             DEF_IO16(0x400100A, core->gpu2D[1].writeBgCnt(1, IOWR_PARAMS)) // BG1CNT (engine B)

@@ -113,6 +113,8 @@ void Gpu3D::saveState(FILE *file) {
     fwrite(&enabledLights, sizeof(enabledLights), 1, file);
     fwrite(&renderBack, sizeof(renderBack), 1, file);
     fwrite(&renderFar, sizeof(renderFar), 1, file);
+    fwrite(&renderDot, sizeof(renderDot), 1, file);
+    fwrite(&dotDepthReg, sizeof(dotDepthReg), 1, file);
     fwrite(&renderFront, sizeof(renderFront), 1, file);
     fwrite(&diffuseColor, sizeof(diffuseColor), 1, file);
     fwrite(&ambientColor, sizeof(ambientColor), 1, file);
@@ -172,6 +174,8 @@ void Gpu3D::loadState(FILE *file) {
     fread(&enabledLights, sizeof(enabledLights), 1, file);
     fread(&renderBack, sizeof(renderBack), 1, file);
     fread(&renderFar, sizeof(renderFar), 1, file);
+    fread(&renderDot, sizeof(renderDot), 1, file);
+    fread(&dotDepthReg, sizeof(dotDepthReg), 1, file);
     fread(&renderFront, sizeof(renderFront), 1, file);
     fread(&diffuseColor, sizeof(diffuseColor), 1, file);
     fread(&ambientColor, sizeof(ambientColor), 1, file);
@@ -814,6 +818,26 @@ void Gpu3D::addVertex() {
     }
 }
 
+bool Gpu3D::isDistantDot(Vertex *vertices, int size) {
+    // Polygons are only distant if all their vertices are past the 1-dot depth, which is the cheaper thing to check
+    uint32_t limit = dotDepthReg * 0x200 + 0x1FF;
+    for (int i = 0; i < size; i++)
+        if ((uint32_t)(vertices[i].w & 0xFFFFFF) <= limit) return false;
+
+    // They're dots if all their vertices land on the same pixel, at the DS's own resolution
+    auto screen = [&](Vertex &v, int &x, int &y) {
+        x = (((int64_t)v.x + v.w) * viewport[2] / ((int64_t)v.w * 2) + viewport[0]) & 0x1FF;
+        y = ((-(int64_t)v.y + v.w) * viewport[3] / ((int64_t)v.w * 2) + viewport[1]) & 0xFF;
+    };
+    int x0, y0, x, y;
+    screen(vertices[0], x0, y0);
+    for (int i = 1; i < size; i++) {
+        screen(vertices[i], x, y);
+        if (x != x0 || y != y0) return false;
+    }
+    return true;
+}
+
 void Gpu3D::addPolygon() {
     // Set the polygon vertex information
     if (polygonCountIn >= 2048) return;
@@ -869,6 +893,10 @@ void Gpu3D::addPolygon() {
     EP_START_EMU(clipStart);
     bool clip = cull ? false : clipPolygon(unclipped, clipped, &savedPolygon.size);
     EP_ADD_EMU(EP_GEOM_CLIP, clipStart);
+
+    // Hide polygons that are only a distant dot, unless they ask otherwise
+    if (!cull && savedPolygon.size && !renderDot && isDistantDot(clip ? clipped : unclipped, savedPolygon.size))
+        savedPolygon.size = 0;
 
     // Discard polygons that should be culled or are outside of the view area
     if (cull || savedPolygon.size == 0) {
@@ -1536,6 +1564,7 @@ void Gpu3D::beginVtxsCmd(uint32_t param) {
     renderBack = polygonAttr & BIT(6);
     renderFront = polygonAttr & BIT(7);
     renderFar = polygonAttr & BIT(12);
+    renderDot = polygonAttr & BIT(13);
     savedPolygon.transNewDepth = polygonAttr & BIT(11);
     savedPolygon.depthTestEqual = polygonAttr & BIT(14);
     savedPolygon.fog = polygonAttr & BIT(15);
@@ -2030,6 +2059,13 @@ void Gpu3D::writeViewport(uint32_t mask, uint32_t value) {
     // Add an entry to the FIFO
     Entry entry(0x60, value & mask);
     addEntry(entry);
+}
+
+void Gpu3D::writeDotDepth(uint16_t mask, uint16_t value) {
+    // Write to the DISP_1DOT_DEPTH register, which doesn't go through the FIFO
+    sync();
+    mask &= 0x7FFF;
+    dotDepthReg = (dotDepthReg & ~mask) | (value & mask);
 }
 
 void Gpu3D::writeBoxTest(uint32_t mask, uint32_t value) {

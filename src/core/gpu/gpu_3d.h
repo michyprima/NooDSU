@@ -229,6 +229,7 @@ public:
     void writeSwapBuffers(uint32_t mask, uint32_t value);
     void writeViewport(uint32_t mask, uint32_t value);
     void writeBoxTest(uint32_t mask, uint32_t value);
+    void writeDotDepth(uint16_t mask, uint16_t value);
     void writePosTest(uint32_t mask, uint32_t value);
     void writeVecTest(uint32_t mask, uint32_t value);
     void writeGxStat(uint32_t mask, uint32_t value);
@@ -268,7 +269,8 @@ private:
 
     uint32_t polygonAttr = 0;
     uint8_t enabledLights = 0;
-    bool renderBack = false, renderFront = false, renderFar = false;
+    bool renderBack = false, renderFront = false, renderFar = false, renderDot = false;
+    uint16_t dotDepthReg = 0x7FFF;
 
     uint32_t diffuseColor = 0, ambientColor = 0;
     uint32_t specularColor = 0, emissionColor = 0;
@@ -323,6 +325,7 @@ private:
     static uint32_t rgb5ToRgb6(uint16_t color);
     static Vertex intersection(Vertex *vtx1, Vertex *vtx2, int32_t val1, int32_t val2);
     bool clipPolygon(Vertex *unclipped, Vertex *clipped, uint8_t *size);
+    bool isDistantDot(Vertex *vertices, int size);
 
     void processVertices();
     void addVertex();
