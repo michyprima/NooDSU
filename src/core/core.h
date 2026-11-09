@@ -111,6 +111,7 @@ enum SchedTask {
     SDIO_READ_BLOCK,
     SDIO_WRITE_BLOCK,
     CARD_POWER_OFF,
+    RTC_TICK,
     MAX_TASKS
 };
 

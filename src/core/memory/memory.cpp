@@ -1466,6 +1466,7 @@ template <typename T> T Memory::ioRead7(uint32_t address) {
             DEF_IO16(0x400010E, data = core->timers[1].readTmCntH(3)) // TM3CNT_H (ARM7)
             DEF_IO16(0x4000130, data = core->input.readKeyInput()) // KEYINPUT
             DEF_IO16(0x4000132, data = core->input.readKeyCnt(1)) // KEYCNT
+            DEF_IO16(0x4000134, data = core->rtc.readRcnt()) // RCNT
             DEF_IO16(0x4000136, data = core->input.readExtKeyIn()) // EXTKEYIN
             DEF_IO08(0x4000138, data = core->rtc.readRtc()) // RTC
             DEF_IO16(0x4000180, data = core->ipc.readIpcSync(1)) // IPCSYNC (ARM7)
@@ -2195,6 +2196,7 @@ template <typename T> void Memory::ioWrite7(uint32_t address, T value) {
             DEF_IO16(0x400010C, core->timers[1].writeTmCntL(3, IOWR_PARAMS)) // TM3CNT_L (ARM7)
             DEF_IO16(0x400010E, core->timers[1].writeTmCntH(3, IOWR_PARAMS)) // TM3CNT_H (ARM7)
             DEF_IO16(0x4000132, core->input.writeKeyCnt(1, IOWR_PARAMS)) // KEYCNT
+            DEF_IO16(0x4000134, core->rtc.writeRcnt(IOWR_PARAMS)) // RCNT
             DEF_IO08(0x4000138, core->rtc.writeRtc(IOWR_PARAMS8)) // RTC
             DEF_IO16(0x4000180, core->ipc.writeIpcSync(1, IOWR_PARAMS)) // IPCSYNC (ARM7)
             DEF_IO16(0x4000184, core->ipc.writeIpcFifoCnt(1, IOWR_PARAMS)) // IPCFIFOCNT (ARM7)

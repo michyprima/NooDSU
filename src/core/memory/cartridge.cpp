@@ -810,6 +810,8 @@ void CartridgeNds::directBoot() {
     // The system has read a DSi title's DSi area by now, which the title can then read too
     dsiKey[0] = dsiKey[1] = dsi && dsiCart;
 
+    core->rtc.writeRcnt(0xFFFF, 0x8000);
+
     // Handle the header based on DSi mode
     if (dsi) {
         // Apply the header's WRAM mappings

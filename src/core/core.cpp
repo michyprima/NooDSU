@@ -188,6 +188,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
     tasks[SDIO_READ_BLOCK] = std::bind(&SdMmc::readBlock, &sdio);
     tasks[SDIO_WRITE_BLOCK] = std::bind(&SdMmc::writeBlock, &sdio);
     tasks[CARD_POWER_OFF] = std::bind(&Memory::cardPowerOff, &memory);
+    tasks[RTC_TICK] = std::bind(&Rtc::tick, &rtc);
 
     // Schedule initial tasks for NDS mode
     schedule(RESET_CYCLES, 0x7FFFFFFF);
