@@ -527,7 +527,8 @@ void Spu::mixSample() {
     for (int i = 0; enabled >> i; i++) {
         // Skip disabled channels
         if (!(enabled & BIT(i))) continue;
-        uint8_t format = (soundCnt[i] >> 29) & 0x3;
+        uint32_t control = soundCnt[i];
+        uint8_t format = (control >> 29) & 0x3;
         int32_t data = 0;
 
         // Read the sample data
@@ -547,7 +548,7 @@ void Spu::mixSample() {
         case 3: // Pulse/Noise
             if (i >= 8 && i <= 13) { // Pulse waves
                 // Set the sample to low or high depending on the position in the duty cycle
-                uint8_t duty = 7 - ((soundCnt[i] & 0x07000000) >> 24);
+                uint8_t duty = 7 - ((control & 0x07000000) >> 24);
                 data = (dutyCycles[i - 8] < duty) ? -0x7FFF : 0x7FFF;
             }
             else if (i >= 14) { // Noise
@@ -586,21 +587,17 @@ void Spu::mixSample() {
                 uint8_t adpcmData = core->memory.read<uint8_t>(1, soundCurrent[i]);
                 adpcmData = adpcmToggle[i] ? ((adpcmData & 0xF0) >> 4) : (adpcmData & 0x0F);
 
-                // Calculate the sample difference
-                int32_t diff = adpcmTable[adpcmIndex[i]] / 8;
-                if (adpcmData & BIT(0)) diff += adpcmTable[adpcmIndex[i]] / 4;
-                if (adpcmData & BIT(1)) diff += adpcmTable[adpcmIndex[i]] / 2;
-                if (adpcmData & BIT(2)) diff += adpcmTable[adpcmIndex[i]] / 1;
+                // Calculate the sample difference, using masks since which bits are set can't be predicted
+                int32_t step = adpcmTable[adpcmIndex[i]];
+                int32_t diff = (step >> 3) + ((step >> 2) & -(adpcmData & 1)) + ((step >> 1) & -((adpcmData >> 1) & 1)) +
+                    (step & -((adpcmData >> 2) & 1));
 
-                // Apply the sample difference to the sample
-                if (adpcmData & BIT(3)) {
-                    adpcmValue[i] += diff;
-                    if (adpcmValue[i] > 0x7FFF) adpcmValue[i] = 0x7FFF;
-                }
-                else {
-                    adpcmValue[i] -= diff;
-                    if (adpcmValue[i] < -0x7FFF) adpcmValue[i] = -0x7FFF;
-                }
+                // Apply the sample difference to the sample, adding it if the sign bit is set
+                int32_t negate = (adpcmData >> 3) - 1;
+                int32_t value = adpcmValue[i] + ((diff ^ negate) - negate);
+                if (value > 0x7FFF) value = 0x7FFF;
+                else if (value < -0x7FFF && negate) value = -0x7FFF;
+                adpcmValue[i] = value;
 
                 // Calculate the next index
                 adpcmIndex[i] += indexTable[adpcmData & 0x7];
@@ -634,7 +631,7 @@ void Spu::mixSample() {
 
             // Repeat or end the sound if the end of the data is reached
             if (format != 3 && soundCurrent[i] >= soundSad[i] + (soundPnt[i] + soundLen[i]) * 4) {
-                if ((soundCnt[i] & 0x18000000) >> 27 == 1) { // Loop infinite
+                if ((control & 0x18000000) >> 27 == 1) { // Loop infinite
                     soundCurrent[i] = soundSad[i] + soundPnt[i] * 4;
 
                     // Restore the ADPCM values from the loop position
@@ -654,19 +651,19 @@ void Spu::mixSample() {
 
         // Apply the volume divider
         // The sample now has 4 fractional bits
-        int divShift = (soundCnt[i] & 0x00000300) >> 8;
+        int divShift = (control & 0x00000300) >> 8;
         if (divShift == 3) divShift++;
         data <<= 4 - divShift;
 
         // Apply the volume factor
         // The sample now has 11 fractional bits; (data << 7) * factor / 128 is exactly data * factor
-        int mulFactor = (soundCnt[i] & 0x0000007F);
+        int mulFactor = (control & 0x0000007F);
         if (mulFactor == 127) mulFactor++;
         data *= mulFactor;
 
         // Apply panning
         // The samples are now rounded to 8 fractional bits
-        int panValue = (soundCnt[i] & 0x007F0000) >> 16;
+        int panValue = (control & 0x007F0000) >> 16;
         if (panValue == 127) panValue++;
         int32_t dataLeft = (int64_t(data) * (128 - panValue) / 128) >> 3;
         int32_t dataRight = (int64_t(data) * panValue / 128) >> 3;
