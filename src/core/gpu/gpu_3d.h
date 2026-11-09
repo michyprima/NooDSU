@@ -190,6 +190,7 @@ public:
     uint32_t readVecMtxResult(int index);
 
     void writeGxFifo(uint32_t mask, uint32_t value);
+    void writeGxFifoWord(uint32_t value);
     void writeGxFifo(const uint8_t *data, int count);
     void writeMtxMode(uint32_t mask, uint32_t value);
     void writeMtxPush(uint32_t mask, uint32_t value);

@@ -1758,6 +1758,43 @@ void Gpu3D::writeGxFifo(uint32_t mask, uint32_t value) {
     writeGxFifo(data, 1);
 }
 
+void Gpu3D::writeGxFifoWord(uint32_t value) {
+    // Write one word to GXFIFO, which games do a lot; words that only continue a command skip all the work of a batch
+    // Anything that needs more than adding an entry and updating the count goes the long way
+    uint32_t packed = gxFifo, command = packed & 0xFF;
+    if (packed == 0) {
+        if (value == 0 || paramCounts[value & 0xFF] == 0) return writeGxFifo(0xFFFFFFFF, value);
+        gxFifo = value;
+        return;
+    }
+
+    // The next command has to need parameters too, since commands without any are added here as well
+    uint32_t next = packed >> 8, received = gxFifoCount + 1;
+    bool ends = received == paramCounts[command];
+    if (ends && next != 0 && paramCounts[next & 0xFF] == 0) return writeGxFifo(0xFFFFFFFF, value);
+
+    // The entry mustn't track anything, start the engine, or change more than the count in the status
+    // It moves straight into the pipe if the FIFO is empty and the pipe isn't full, which leaves the count alone
+    size_t size = fifo.count;
+    bool toPipe = size == pipeSize && pipeSize < 4;
+    uint32_t count = size + 1 - pipeSize - toPipe;
+    if ((command >= 0x11 && (command <= 0x12 || command >= 0x70)) || state == GX_IDLE || size >= fifo.mask || count > 256 ||
+        (count >= 128 && (gxStat & BIT(25))))
+        return writeGxFifo(0xFFFFFFFF, value);
+
+    fifo.entries[(fifo.head + size) & fifo.mask] = Entry(command, value);
+    fifo.count = size + 1;
+    gxFifo = ends ? next : packed;
+    gxFifoCount = ends ? 0 : received;
+    if (toPipe) {
+        pipeSize++;
+        gxStat |= BIT(27); // Commands executing
+    }
+    else {
+        gxStat = (gxStat & ~0x05FF0000) | (count << 16);
+    }
+}
+
 void Gpu3D::writeGxFifo(const uint8_t *data, int count) {
     // Write a batch of little-endian words to GXFIFO, as a DMA transfer does, updating the FIFO status once at the end
     EP_START(fifoStart);

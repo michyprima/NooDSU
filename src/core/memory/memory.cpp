@@ -1091,6 +1091,10 @@ template <typename T> void Memory::writeFallback(bool arm7, uint32_t address, T 
     address &= ~(sizeof(T) - 1);
     uint8_t *data = nullptr;
 
+    // Send 32-bit GXFIFO writes straight to the 3D engine, since games stream lots of them
+    if (sizeof(T) == 4 && !arm7 && (address & ~0x3F) == 0x4000400)
+        return core->gpu3D.writeGxFifoWord(value);
+
     // Handle writes to pages that were unmapped because they have compiled code
     if (core->jitHasCode() && writeJit<T>(arm7, address, value, tcm))
         return;
@@ -1099,10 +1103,6 @@ template <typename T> void Memory::writeFallback(bool arm7, uint32_t address, T 
     if (!arm7) { // ARM9
         switch (address & 0xFF000000) {
         case 0x4000000: // I/O registers
-            // Send 32-bit GXFIFO writes straight to the 3D engine, since games stream lots of them
-            if (sizeof(T) == 4 && (address & ~0x3F) == 0x4000400)
-                return core->gpu3D.writeGxFifo(0xFFFFFFFF, value);
-
             // Write the math registers straight too, since games save and restore them on every thread switch
             if ((address & ~0x3F) == 0x4000280) {
                 if (sizeof(T) == 2) {
