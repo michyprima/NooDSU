@@ -875,6 +875,29 @@ template <typename T> T Memory::readFallback(bool arm7, uint32_t address) {
             // Read 16-bit IME straight too, since the DSi's startup screen does so in a loop tens of thousands of times a frame
             if (sizeof(T) == 2 && address == 0x4000208)
                 return core->interpreter[0].readIme();
+
+            // Read the math registers straight too, since games save and restore them on every thread switch
+            if ((address & ~0x3F) == 0x4000280) {
+                if (sizeof(T) == 2) {
+                    if (address == 0x4000280) return core->divSqrt.readDivCnt();
+                    if (address == 0x40002B0) return core->divSqrt.readSqrtCnt();
+                }
+                else if (sizeof(T) == 4) {
+                    switch (address) {
+                        case 0x4000290: return core->divSqrt.readDivNumerL();
+                        case 0x4000294: return core->divSqrt.readDivNumerH();
+                        case 0x4000298: return core->divSqrt.readDivDenomL();
+                        case 0x400029C: return core->divSqrt.readDivDenomH();
+                        case 0x40002A0: return core->divSqrt.readDivResultL();
+                        case 0x40002A4: return core->divSqrt.readDivResultH();
+                        case 0x40002A8: return core->divSqrt.readDivRemResultL();
+                        case 0x40002AC: return core->divSqrt.readDivRemResultH();
+                        case 0x40002B4: return core->divSqrt.readSqrtResult();
+                        case 0x40002B8: return core->divSqrt.readSqrtParamL();
+                        case 0x40002BC: return core->divSqrt.readSqrtParamH();
+                    }
+                }
+            }
 #ifdef ROM_TEST
             if ((address & 0xFFFFF000) == 0x4FFF000) return RomTest::read(address);
 #endif
@@ -1079,6 +1102,24 @@ template <typename T> void Memory::writeFallback(bool arm7, uint32_t address, T 
             // Send 32-bit GXFIFO writes straight to the 3D engine, since games stream lots of them
             if (sizeof(T) == 4 && (address & ~0x3F) == 0x4000400)
                 return core->gpu3D.writeGxFifo(0xFFFFFFFF, value);
+
+            // Write the math registers straight too, since games save and restore them on every thread switch
+            if ((address & ~0x3F) == 0x4000280) {
+                if (sizeof(T) == 2) {
+                    if (address == 0x4000280) return core->divSqrt.writeDivCnt(0xFFFF, value);
+                    if (address == 0x40002B0) return core->divSqrt.writeSqrtCnt(0xFFFF, value);
+                }
+                else if (sizeof(T) == 4) {
+                    switch (address) {
+                        case 0x4000290: return core->divSqrt.writeDivNumerL(0xFFFFFFFF, value);
+                        case 0x4000294: return core->divSqrt.writeDivNumerH(0xFFFFFFFF, value);
+                        case 0x4000298: return core->divSqrt.writeDivDenomL(0xFFFFFFFF, value);
+                        case 0x400029C: return core->divSqrt.writeDivDenomH(0xFFFFFFFF, value);
+                        case 0x40002B8: return core->divSqrt.writeSqrtParamL(0xFFFFFFFF, value);
+                        case 0x40002BC: return core->divSqrt.writeSqrtParamH(0xFFFFFFFF, value);
+                    }
+                }
+            }
 #ifdef ROM_TEST
             if ((address & 0xFFFFF000) == 0x4FFF000) return RomTest::write(this, address, value);
 #endif
