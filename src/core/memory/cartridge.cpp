@@ -835,6 +835,9 @@ void CartridgeNds::directBoot() {
         // Copy the DSi ROM header into memory
         for (uint32_t i = 0; i < 0x1000; i += 4)
             core->memory.write<uint32_t>(0, 0x2FFE000 + i, U8TO32(rom, i));
+
+        // Set the system settings flags as the firmware would, with the EULA agreed to and Wi-Fi following its setting
+        core->memory.write<uint32_t>(0, 0x2000400, Settings::wifi ? 0x0100000F : 0x01000007);
     }
     else if (core->dsiMode) {
         // Leave only the DS features, as the system does for a DS title
