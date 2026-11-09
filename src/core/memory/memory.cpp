@@ -1297,6 +1297,7 @@ template <typename T> T Memory::ioRead9(uint32_t address) {
             DEF_IO32(0x40002BC, data = core->divSqrt.readSqrtParamH()) // SQRTPARAM_H
             DEF_IO08(0x4000300, data = core->interpreter[0].readPostFlg()) // POSTFLG (ARM9)
             DEF_IO16(0x4000304, data = core->gpu.readPowCnt1()) // POWCNT1
+            DEF_IO08(0x4000320, data = 46) // RDLINES_COUNT
             DEF_IO32(0x4000600, data = core->gpu3D.readGxStat()) // GXSTAT
             DEF_IO32(0x4000604, data = core->gpu3D.readRamCount()) // RAM_COUNT
             DEF_IO32(0x4000620, data = core->gpu3D.readPosResult(0)) // POS_RESULT
