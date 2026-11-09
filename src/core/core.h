@@ -212,6 +212,7 @@ public:
     Wifi wifi;
 
     Atomic32<bool> running;
+    Atomic32<bool> restartRequested; // Set when the DSi asks to be reset, for frontends to create a new core
     std::atomic<bool> frameEnded; // Set at the end of each frame, for frontends that pace frames themselves
     EventQueue events;
     std::function<void()> tasks[MAX_TASKS];

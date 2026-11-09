@@ -60,6 +60,10 @@ void I2c::writeMcu(uint8_t value) {
 
     // Write to an MCU register and increment the address
     switch (regAddr++) {
+    case 0x11: // Reset, which the DSi's software uses to leave for the menu
+        if (value & BIT(0)) core->restartRequested.store(true);
+        return;
+
     default:
         // Catch writes to unknown MCU registers
         LOG_WARN("Unknown I2C MCU write to register 0x%X\n", regAddr - 1);

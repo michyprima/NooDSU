@@ -784,6 +784,13 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
             fpsLimiterBackup = 0;
         }
 
+        // Restart the emulator if the DSi asked to be reset
+        if (core->restartRequested.load()) {
+            stopCore();
+            if (createCore()) startCore();
+            else fileBrowser();
+        }
+
         // Handle pressing special hotkeys
         if (pressed & keyBinds[INPUT_MENU]) {
             // Open the pause menu
