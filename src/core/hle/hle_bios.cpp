@@ -114,6 +114,140 @@ void HleBios::checkWaitFlags() {
     core->interpreter[arm7].halt(0);
 }
 
+void HleBios::sha1Copy(uint32_t dst, uint32_t src, uint32_t size) {
+    // Copy bytes between guest addresses
+    for (uint32_t i = 0; i < size; i++)
+        core->memory.write<uint8_t>(0, dst + i, core->memory.read<uint8_t>(0, src + i));
+}
+
+void HleBios::sha1Transform(uint32_t context, uint32_t data, uint32_t size) {
+    // Hash whole 64-byte blocks of big-endian words into the context's hash, from a word-aligned address
+    Memory &mem = core->memory;
+    uint32_t hash[5];
+    for (int i = 0; i < 5; i++)
+        hash[i] = mem.read<uint32_t>(0, context + i * 4);
+
+    for (uint32_t pos = 0; pos < size; pos += 0x40) {
+        uint32_t w[80];
+        for (int i = 0; i < 16; i++)
+            w[i] = __builtin_bswap32(mem.read<uint32_t>(0, data + pos + i * 4));
+        for (int i = 16; i < 80; i++) {
+            uint32_t value = w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16];
+            w[i] = (value << 1) | (value >> 31);
+        }
+
+        uint32_t a = hash[0], b = hash[1], c = hash[2], d = hash[3], e = hash[4];
+        for (int i = 0; i < 80; i++) {
+            uint32_t f, k;
+            if (i < 20) { f = (b & c) | (~b & d); k = 0x5A827999; }
+            else if (i < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1; }
+            else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
+            else { f = b ^ c ^ d; k = 0xCA62C1D6; }
+            uint32_t next = ((a << 5) | (a >> 27)) + f + e + k + w[i];
+            e = d;
+            d = c;
+            c = (b << 30) | (b >> 2);
+            b = a;
+            a = next;
+        }
+        hash[0] += a;
+        hash[1] += b;
+        hash[2] += c;
+        hash[3] += d;
+        hash[4] += e;
+    }
+
+    for (int i = 0; i < 5; i++)
+        mem.write<uint32_t>(0, context + i * 4, hash[i]);
+}
+
+int HleBios::swiDsiSha1(uint8_t comment, uint32_t **registers) {
+    // Run the DSi BIOS's SHA-1 update and finish natively, since games check what they read from the card with them
+    // Memory ends up as it would with the real ones; return 0 to run those instead, when the BIOS isn't the one taking
+    // the SWI or the context has a transform function of its own
+    // The context is the hash, the length in bits, a 64-byte buffer, how much of that is used, and the function
+    // Cycles are fitted to the real functions: each block hashed is most of it
+    static const int BLOCK_CYCLES = 1413;
+    comment &= 0x3F;
+    Memory &mem = core->memory;
+    if ((comment != 0x25 && comment != 0x26) || !core->cp15.exceptionAddr || (mem.readScfgRom() & BIT(1)))
+        return 0;
+    uint32_t context = *registers[comment == 0x25 ? 0 : 1], buffer = context + 0x1C;
+    if (mem.read<uint32_t>(0, context + 0x60) != mem.read<uint32_t>(0, 0xFFFF4E1C))
+        return 0;
+    uint32_t used = mem.read<uint32_t>(0, context + 0x5C);
+
+    if (comment == 0x25) {
+        // Add to the length, then hash whatever makes up whole blocks and keep the rest in the buffer
+        uint32_t src = *registers[1], size = *registers[2];
+        if (!size) return 69;
+        uint32_t low = mem.read<uint32_t>(0, context + 0x14), total = low + (size << 3);
+        uint32_t high = mem.read<uint32_t>(0, context + 0x18) + (low > total) + (size >> 29);
+        mem.write<uint32_t>(0, context + 0x14, total);
+        mem.write<uint32_t>(0, context + 0x18, high);
+        int blocks = 0, copied = 0;
+        if (used) {
+            if (used + size < 0x40) {
+                sha1Copy(buffer + used, src, size);
+                mem.write<uint32_t>(0, context + 0x5C, used + size);
+                return 120 + size * 5 / 2;
+            }
+            uint32_t part = 0x40 - used;
+            sha1Copy(buffer + used, src, part);
+            sha1Transform(context, buffer, 0x40);
+            mem.write<uint32_t>(0, context + 0x5C, 0);
+            src += part;
+            size -= part;
+            blocks = 1;
+            copied = part;
+        }
+        uint32_t whole = size & ~0x3F;
+        size -= whole;
+        blocks += whole / 0x40;
+        copied += size + ((src & 0x3) ? whole : 0);
+        if (src & 0x3) {
+            // The transform only reads whole words, so unaligned data goes through the buffer
+            for (uint32_t i = 0; i < whole; i += 0x40) {
+                sha1Copy(buffer, src + i, 0x40);
+                sha1Transform(context, buffer, 0x40);
+            }
+        }
+        else if (whole) {
+            sha1Transform(context, src, whole);
+        }
+        mem.write<uint32_t>(0, context + 0x5C, size);
+        sha1Copy(buffer, src + whole, size);
+        return 120 + blocks * BLOCK_CYCLES + copied * 5 / 2;
+    }
+
+    // Pad the buffer with a set bit and zeros, using another block if the length doesn't fit after them
+    mem.write<uint8_t>(0, buffer + used, 0x80);
+    for (uint32_t i = used + 1; i & 0x3; i++)
+        mem.write<uint8_t>(0, buffer + i, 0);
+    uint32_t word = (used >> 2) + 1;
+    if (used >= 0x38) {
+        for (; word < 16; word++)
+            mem.write<uint32_t>(0, buffer + word * 4, 0);
+        sha1Transform(context, buffer, 0x40);
+        word = 0;
+    }
+    for (; word < 14; word++)
+        mem.write<uint32_t>(0, buffer + word * 4, 0);
+
+    // Finish with the length in bits as a big-endian value, then give the hash as big-endian words
+    uint32_t low = mem.read<uint32_t>(0, context + 0x14), high = mem.read<uint32_t>(0, context + 0x18);
+    for (int i = 0; i < 4; i++) {
+        mem.write<uint8_t>(0, buffer + 0x38 + i, high >> (24 - i * 8));
+        mem.write<uint8_t>(0, buffer + 0x3C + i, low >> (24 - i * 8));
+    }
+    sha1Transform(context, buffer, 0x40);
+    uint32_t dst = *registers[0];
+    for (int i = 0; i < 20; i++)
+        mem.write<uint8_t>(0, dst + i, mem.read<uint32_t>(0, context + (i & ~3)) >> (24 - (i & 3) * 8));
+    mem.write<uint32_t>(0, context + 0x5C, 0);
+    return 130 + ((used >= 0x38) ? 2 : 1) * BLOCK_CYCLES;
+}
+
 int HleBios::swiRegRamReset(uint32_t **registers) {
     // Enable forced blank for PPU memory access
     core->memory.write<uint16_t>(arm7, 0x4000000, 0x80);

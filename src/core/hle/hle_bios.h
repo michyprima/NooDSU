@@ -68,6 +68,8 @@ public:
     int swiGetVolumeTable(uint32_t **registers);
     int swiUnknown(uint32_t **registers);
 
+    int swiDsiSha1(uint8_t comment, uint32_t **registers);
+
 private:
     Core *core;
     bool arm7;
@@ -75,4 +77,7 @@ private:
 
     static const uint16_t affineTable[0x100];
     uint32_t waitFlags = 0;
+
+    void sha1Copy(uint32_t dst, uint32_t src, uint32_t size);
+    void sha1Transform(uint32_t context, uint32_t data, uint32_t size);
 };
