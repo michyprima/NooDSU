@@ -869,6 +869,10 @@ template <typename T> T Memory::readFallback(bool arm7, uint32_t address) {
                 return core->cartridgeNds.readRomDataIn(0);
             if (sizeof(T) == 4 && address == 0x40001A4)
                 return core->cartridgeNds.readRomCtrl(0);
+
+            // Read 16-bit IME straight too, since the DSi's startup screen does so in a loop tens of thousands of times a frame
+            if (sizeof(T) == 2 && address == 0x4000208)
+                return core->interpreter[0].readIme();
 #ifdef ROM_TEST
             if ((address & 0xFFFFF000) == 0x4FFF000) return RomTest::read(address);
 #endif
