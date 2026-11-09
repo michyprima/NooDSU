@@ -206,6 +206,7 @@ private:
     // Addresses that native instructions use, which tests can point elsewhere
     uint32_t addrCondition = 0, addrMemory = 0, addrReadMap = 0, addrWriteMap = 0;
     uint32_t addrDtcmReg = 0, addrWriteCpsr = 0, addrRestoreCpsr = 0, addrModeBanks = 0;
+    uint32_t addrDivCnt = 0, addrDivNumer = 0, addrDivDirty = 0, addrSqrtCnt = 0, addrSqrtParam = 0, addrSqrtDirty = 0;
     uint32_t addrLoad32 = 0, addrLoad8 = 0, addrStore32 = 0, addrStore8 = 0, addrLoad16 = 0, addrStore16 = 0;
 
     uint32_t modeBanks[32][4] = {}; // R13, R14 and the SPSR by CPU mode, for returning from exceptions in generated code
@@ -240,6 +241,7 @@ private:
     void *generateEntry(JitBlock *host, size_t index);
     void linkEntry(JitBlock *block);
     void emitStubs(PpcEmitter &e);
+    void emitMath(PpcEmitter &e, bool load, int size);
     bool emitNative(PpcEmitter &e, uint32_t op, uint32_t pc);
     uint32_t armOpcode(JitBlock *block, size_t i);
     bool batched(JitBlock *block, size_t i);

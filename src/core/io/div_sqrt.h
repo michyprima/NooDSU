@@ -26,6 +26,8 @@
 class Core;
 
 class DivSqrt {
+    friend class Jit;
+
 public:
     DivSqrt(Core *core): core(core) {}
     void saveState(FILE *file);

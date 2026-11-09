@@ -63,10 +63,14 @@ public:
     void li(int rt, int32_t si) { d(14, rt, 0, si); }
     void lis(int rt, int32_t si) { d(15, rt, 0, si); }
     void ori(int ra, int rs, uint32_t ui) { d(24, rs, ra, ui); }
+    void xori(int ra, int rs, uint32_t ui) { d(26, rs, ra, ui); }
+    void xoris(int ra, int rs, uint32_t ui) { d(27, rs, ra, ui); }
     void lwz(int rt, int32_t disp, int ra) { d(32, rt, ra, disp); }
     void lbz(int rt, int32_t disp, int ra) { d(34, rt, ra, disp); }
+    void lhz(int rt, int32_t disp, int ra) { d(40, rt, ra, disp); }
     void stw(int rs, int32_t disp, int ra) { d(36, rs, ra, disp); }
     void stb(int rs, int32_t disp, int ra) { d(38, rs, ra, disp); }
+    void sth(int rs, int32_t disp, int ra) { d(44, rs, ra, disp); }
     void stwu(int rs, int32_t disp, int ra) { d(37, rs, ra, disp); }
     void lmw(int rt, int32_t disp, int ra) { d(46, rt, ra, disp); }
     void stmw(int rs, int32_t disp, int ra) { d(47, rs, ra, disp); }
@@ -104,6 +108,7 @@ public:
     void sthbrx(int rs, int ra, int rb) { x(rs, ra, rb, 918); }
     void lwzx(int rt, int ra, int rb) { x(rt, ra, rb, 23); }
     void stbx(int rs, int ra, int rb) { x(rs, ra, rb, 215); }
+    void stwx(int rs, int ra, int rb) { x(rs, ra, rb, 151); }
     void lwbrx(int rt, int ra, int rb) { x(rt, ra, rb, 534); }
     void stwbrx(int rs, int ra, int rb) { x(rs, ra, rb, 662); }
     void rlwnm(int ra, int rs, int rb, int mb, int me) {
@@ -268,6 +273,12 @@ void Jit::initCodegen() {
     addrReadMap = (uint32_t)(uintptr_t)(arm7 ? &core->memory.readMap7[0] : &core->memory.readMap9A[0]);
     addrWriteMap = (uint32_t)(uintptr_t)(arm7 ? &core->memory.writeMap7[0] : &core->memory.writeMap9A[0]);
     addrDtcmReg = (uint32_t)(uintptr_t)&core->cp15.dtcmReg;
+    addrDivCnt = (uint32_t)(uintptr_t)&core->divSqrt.divCnt;
+    addrDivNumer = (uint32_t)(uintptr_t)&core->divSqrt.divNumer;
+    addrDivDirty = (uint32_t)(uintptr_t)&core->divSqrt.divDirty;
+    addrSqrtCnt = (uint32_t)(uintptr_t)&core->divSqrt.sqrtCnt;
+    addrSqrtParam = (uint32_t)(uintptr_t)&core->divSqrt.sqrtParam;
+    addrSqrtDirty = (uint32_t)(uintptr_t)&core->divSqrt.sqrtDirty;
 
     // Banked registers for each mode that only banks R13 and R14; FIQ and invalid modes stay 0, which leaves them to C++
     auto banks = [&](int mode, uint32_t *r13, uint32_t *r14, uint32_t *spsr) {
@@ -787,6 +798,7 @@ void Jit::emitStubs(PpcEmitter &e) {
         e.blr();
 
         e.patchBc(slow);
+        if (!arm7 && size > 1) emitMath(e, load, size);
         e.stwu(1, -16, 1);
         e.mflr(0);
         e.stw(0, 20, 1);
@@ -804,6 +816,80 @@ void Jit::emitStubs(PpcEmitter &e) {
         e.addi(1, 1, 16);
         e.blr();
     }
+}
+
+void Jit::emitMath(PpcEmitter &e, bool load, int size) {
+    // Access the math registers that games save and restore on every thread switch, with the address in r5 and value in r8
+    // Anything else falls through to the memory handlers, including results that might have to be calculated first
+    static_assert(offsetof(DivSqrt, divDenom) == offsetof(DivSqrt, divNumer) + 8, "Generated code expects these together");
+    static_assert(sizeof(DivSqrt::divCnt) == 2 && sizeof(DivSqrt::sqrtCnt) == 2 && sizeof(DivSqrt::sqrtParam) == 8, "Generated code expects these sizes");
+    std::vector<uint32_t*> others;
+    auto other = [&]() {
+        others.push_back(e.here());
+        e.bne(nullptr);
+    };
+    auto setDirty = [&](uint32_t address) {
+        e.li(7, 1);
+        e.loadConst(9, address);
+        e.stb(7, 0, 9);
+    };
+    e.xoris(6, 5, 0x0400);
+    e.rlwinm(7, 6, 0, 0, 25);
+    e.cmpwi(7, 0x280);
+    other();
+    e.rlwinm(6, 6, 0, 26, 31);
+
+    if (size == 2) {
+        // Only the control bits can be written, and DIVCNT has to be up to date to read it
+        for (int sqrt = 1; sqrt >= 0; sqrt--) {
+            e.cmpwi(6, sqrt ? 0x30 : 0);
+            uint32_t *next = e.here();
+            e.bne(nullptr);
+            if (load && !sqrt) {
+                e.loadConst(9, addrDivDirty);
+                e.lbz(7, 0, 9);
+                e.cmpwi(7, 0);
+                other();
+            }
+            e.loadConst(9, sqrt ? addrSqrtCnt : addrDivCnt);
+            if (load) {
+                e.lhz(8, 0, 9);
+            }
+            else {
+                e.lhz(7, 0, 9);
+                e.rlwimi(7, 8, 0, sqrt ? 31 : 30, 31);
+                e.sth(7, 0, 9);
+                setDirty(sqrt ? addrSqrtDirty : addrDivDirty);
+            }
+            e.blr();
+            e.patchBc(next);
+        }
+    }
+    else {
+        // The numerator and denominator are next to each other, as 64-bit values with their high words first on the host
+        e.andi_(7, 5, 3);
+        other();
+        for (int sqrt = 0; sqrt < 2; sqrt++) {
+            e.rlwinm(7, 6, 0, 26, sqrt ? 28 : 27);
+            e.cmpwi(7, sqrt ? 0x38 : 0x10);
+            uint32_t *next = e.here();
+            e.bne(nullptr);
+            e.addi(6, 6, sqrt ? -0x38 : -0x10);
+            e.xori(6, 6, 4);
+            e.loadConst(9, sqrt ? addrSqrtParam : addrDivNumer);
+            if (load) {
+                e.lwzx(8, 9, 6);
+            }
+            else {
+                e.stwx(8, 9, 6);
+                setDirty(sqrt ? addrSqrtDirty : addrDivDirty);
+            }
+            e.blr();
+            e.patchBc(next);
+        }
+    }
+    for (uint32_t *at: others)
+        e.patchBc(at);
 }
 
 void Jit::freeCodegen() {
