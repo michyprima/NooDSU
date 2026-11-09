@@ -1889,6 +1889,7 @@ template <typename T> void Memory::ioWrite9(uint32_t address, T value) {
             DEF_IO32(0x40001A4, core->cartridgeNds.writeRomCtrl(0, IOWR_PARAMS)) // ROMCTRL (ARM9)
             DEF_IO32(0x40001A8, core->cartridgeNds.writeRomCmdOutL(0, IOWR_PARAMS)) // ROMCMDOUT_L (ARM9)
             DEF_IO32(0x40001AC, core->cartridgeNds.writeRomCmdOutH(0, IOWR_PARAMS)) // ROMCMDOUT_H (ARM9)
+            DEF_IO32(0x4100010, core->cartridgeNds.writeRomDataIn(0, IOWR_PARAMS)) // ROMDATAIN (ARM9)
             DEF_IO16(0x4000204, writeExMemCnt(IOWR_PARAMS)) // EXMEMCNT
             DEF_IO08(0x4000208, core->interpreter[0].writeIme(IOWR_PARAMS8)) // IME (ARM9)
             DEF_IO32(0x4000210, core->interpreter[0].writeIe(0, IOWR_PARAMS)) // IE (ARM9)
@@ -2206,6 +2207,7 @@ template <typename T> void Memory::ioWrite7(uint32_t address, T value) {
             DEF_IO32(0x40001A4, core->cartridgeNds.writeRomCtrl(1, IOWR_PARAMS)) // ROMCTRL (ARM7)
             DEF_IO32(0x40001A8, core->cartridgeNds.writeRomCmdOutL(1, IOWR_PARAMS)) // ROMCMDOUT_L (ARM7)
             DEF_IO32(0x40001AC, core->cartridgeNds.writeRomCmdOutH(1, IOWR_PARAMS)) // ROMCMDOUT_H (ARM7)
+            DEF_IO32(0x4100010, core->cartridgeNds.writeRomDataIn(1, IOWR_PARAMS)) // ROMDATAIN (ARM7)
             DEF_IO16(0x40001C0, core->spi.writeSpiCnt(IOWR_PARAMS)) // SPICNT
             DEF_IO08(0x40001C2, core->spi.writeSpiData(IOWR_PARAMS8)) // SPIDATA
             DEF_IO16(0x4000204, writeExMemStat(IOWR_PARAMS)) // EXMEMSTAT

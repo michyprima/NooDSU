@@ -99,7 +99,7 @@ bool Cartridge::setRom(std::string romPath, int romFd, int saveFd, int stateFd, 
     if (!loadRom()) return false;
 
     // Apply a save size chosen for this launch, now that the ROM is loaded
-    if (launchSaveSize >= 0 && romPath == launchSavePath)
+    if (launchSaveSize >= 0 && romPath == launchSavePath && dirtyPages.empty())
         resizeSave(launchSaveSize);
     return true;
 }
@@ -508,7 +508,64 @@ void Cartridge::finishRomLoad() {
 #endif
 }
 
+void Cartridge::writeSavePages() {
+    // Only take the save's lock to copy each piece, so a game saving meanwhile doesn't wait for the file
+    mutex.lock();
+    bool dirty = saveDirty;
+    saveDirty = false;
+    mutex.unlock();
+    if (!dirty) return;
+
+    const char *mode = saveRewrite ? "wb" : "r+b";
+    FILE *saveFile;
+    {
+        std::lock_guard<FileLock> guard(fileLock());
+        saveFile = (saveFd == -1) ? fopen(savePath.c_str(), mode) : fdopen(dup(saveFd), mode);
+    }
+    if (!saveFile) {
+        mutex.lock();
+        saveDirty = true;
+        mutex.unlock();
+        return;
+    }
+
+    // Write runs of changed pages, up to a size that doesn't keep other threads from their files for long
+    static const uint32_t MAX_PAGES = 64;
+    uint8_t *buffer = new uint8_t[MAX_PAGES * SAVE_PAGE];
+    uint32_t pages = saveSize / SAVE_PAGE;
+    uint32_t page = 0;
+    while (true) {
+        uint32_t count = 0;
+        mutex.lock();
+        while (page < pages && !(dirtyPages[page / 32] & BIT(page % 32))) page++;
+        while (page + count < pages && count < MAX_PAGES && (dirtyPages[(page + count) / 32] & BIT((page + count) % 32))) {
+            dirtyPages[(page + count) / 32] &= ~BIT((page + count) % 32);
+            count++;
+        }
+        memcpy(buffer, &save[page * SAVE_PAGE], count * SAVE_PAGE);
+        mutex.unlock();
+        if (!count) break;
+
+        std::lock_guard<FileLock> guard(fileLock());
+        fseek(saveFile, page * SAVE_PAGE, SEEK_SET);
+        fwrite(buffer, sizeof(uint8_t), count * SAVE_PAGE, saveFile);
+        page += count;
+    }
+    delete[] buffer;
+
+    std::lock_guard<FileLock> guard(fileLock());
+    LOG_INFO("Writing save pages to disk\n");
+    fclose(saveFile);
+    saveRewrite = false;
+}
+
 void Cartridge::writeSave() {
+    // Saves written in pages have their own way of updating the file
+    if (!dirtyPages.empty()) {
+        writeSavePages();
+        return;
+    }
+
     // Update the save file if the data changed
     mutex.lock();
     if (saveDirty) {
@@ -606,6 +663,13 @@ void CartridgeNds::saveState(FILE *file) {
     fwrite(auxSpiData, 1, sizeof(auxSpiData), file);
     fwrite(romCtrl, 4, sizeof(romCtrl) / 4, file);
     fwrite(romCmdOut, 8, sizeof(romCmdOut) / 8, file);
+    fwrite(&nandWindow, sizeof(nandWindow), 1, file);
+    fwrite(&nandRead, sizeof(nandRead), 1, file);
+    fwrite(&nandWrite, sizeof(nandWrite), 1, file);
+    fwrite(&nandWritePos, sizeof(nandWritePos), 1, file);
+    fwrite(&nandWriteLen, sizeof(nandWriteLen), 1, file);
+    fwrite(&nandStatus, sizeof(nandStatus), 1, file);
+    fwrite(nandBuffer, 1, sizeof(nandBuffer), file);
 }
 
 void CartridgeNds::loadState(FILE *file) {
@@ -630,9 +694,17 @@ void CartridgeNds::loadState(FILE *file) {
     fread(romCtrl, 4, sizeof(romCtrl) / 4, file);
     wordWaiting = false;
     fread(romCmdOut, 8, sizeof(romCmdOut) / 8, file);
+    fread(&nandWindow, sizeof(nandWindow), 1, file);
+    fread(&nandRead, sizeof(nandRead), 1, file);
+    fread(&nandWrite, sizeof(nandWrite), 1, file);
+    fread(&nandWritePos, sizeof(nandWritePos), 1, file);
+    fread(&nandWriteLen, sizeof(nandWriteLen), 1, file);
+    fread(&nandStatus, sizeof(nandStatus), 1, file);
+    fread(nandBuffer, 1, sizeof(nandBuffer), file);
 
     // Don't overwrite the save file right away; wait until it's modified
     saveDirty = false;
+    saveStale = true;
 }
 
 bool CartridgeNds::loadRom() {
@@ -648,6 +720,8 @@ bool CartridgeNds::loadRom() {
         saveSizes.push_back(0x080000); // FLASH 512KB
         saveSizes.push_back(0x100000); // FLASH 1024KB
         saveSizes.push_back(0x800000); // FLASH 8192KB
+        saveSizes.push_back(0x1000000); // NAND 16MB
+        saveSizes.push_back(0x5200000); // NAND 82MB
     }
 
     // Try to load the ROM into RAM if enabled; otherwise fall back to file-based loading
@@ -690,6 +764,41 @@ bool CartridgeNds::loadRom() {
 
     // DSi cards keep their DSi code in an area of its own, given in 512KB units
     dsiBase = U8TO16(rom, 0x92) << 19;
+
+    // NAND cards say where their writable part starts, in 128KB units or 512KB for DSi cards, and it ends at a fixed address
+    // The oldest one, Band Brothers DX, leaves that out, so use where Jam with the Band's overseas release has it
+    bool dsiNand = rom[0x12] & BIT(1);
+    if ((romCode & 0xFF) == 'U') {
+        nandBase = U8TO16(rom, 0x96) << (dsiNand ? 19 : 17);
+        if (!nandBase && (romCode & 0xFFFFFF) == 0x425855) nandBase = 0x7200000;
+        if (nandBase >= NAND_END) nandBase = 0;
+    }
+
+    if (nandBase) {
+        chipId |= BIT(27);
+        uint32_t size = NAND_END - nandBase;
+
+        // Make a save that's new or the wrong size, which writes the whole file the first time
+        bool rewrite = (saveSize != int(size));
+        if (rewrite) resizeSave(size, false);
+        dirtyPages.assign((size / SAVE_PAGE + 31) / 32, rewrite ? 0xFFFFFFFF : 0);
+        saveRewrite = saveDirty = rewrite;
+
+        // The last 128KB of a DS card's writable part is read-only, and holds an ID that Jam with the Band checks; the
+        // same ID comes from a command (values from a Jam with the Band card, via melonDS)
+        static const uint8_t id[0x10] = {
+            0xEC, 0x00, 0x9E, 0xA1, 0x51, 0x65, 0x34, 0x35, 0x30, 0x35, 0x30, 0x31, 0x19, 0x19, 0x02, 0x0A
+        };
+        static const uint8_t chip[5] = { 0xEC, 0xF1, 0x00, 0x95, 0x40 };
+        memcpy(nandId, chip, sizeof(chip));
+        memcpy(&nandId[0x18], id, sizeof(id));
+        nandWritable = size;
+        if (!dsiNand) {
+            nandWritable = size - 0x20000;
+            memset(&save[nandWritable], 0xFF, 0x20000);
+            memcpy(&save[size - 0x800], id, sizeof(id));
+        }
+    }
 
     // Check if the ROM is encrypted
     if (romSize >= 0x8000) { // ROM has secure area
@@ -922,6 +1031,8 @@ void CartridgeNds::powerReset() {
         encrypted[i] = dsiKey[i] = false;
         romCtrl[i] &= ~BIT(29);
     }
+    nandWindow = nandRead = nandWrite = nandWritePos = nandWriteLen = 0;
+    nandStatus = 0x20;
 }
 
 void CartridgeNds::initKeycode(int level, bool dsi) {
@@ -1337,7 +1448,7 @@ void CartridgeNds::writeRomCtrl(bool cpu, uint32_t mask, uint32_t value) {
     cmdMode = CMD_NONE;
 
     // Interpret the ROM command
-    if (rom) {
+    if (rom && !(nandBase && nandCommand(command))) {
         if (command == 0x0000000000000000) { // Get header
             cmdMode = CMD_HEADER;
 
@@ -1431,18 +1542,105 @@ void CartridgeNds::writeRomCtrl(bool cpu, uint32_t mask, uint32_t value) {
     }
 }
 
+bool CartridgeNds::nandCommand(uint64_t command) {
+    // Handle a command for a card with NAND memory, returning whether it was one
+    uint32_t address = command >> 24;
+    uint32_t end = nandBase + saveSize;
+    bool window = (nandWindow >= nandBase && nandWindow < end);
+    bool inWindow = (window && address >= nandWindow && address < nandWindow + 0x20000);
+
+    switch (command >> 56) {
+    case 0x81: // Write to the write buffer
+        // This is sent 4 times, for 0x200 bytes each, and the address of the first is what counts
+        cmdMode = CMD_NAND_WRITE;
+        if (!(nandStatus & BIT(4)) || !window)
+            nandWrite = 0;
+        else if (!nandWrite && inWindow)
+            nandWrite = address;
+        return true;
+
+    case 0x82: // Write the write buffer to NAND
+        commitNand();
+        return true;
+
+    case 0x84: // Discard the write buffer
+        nandWrite = nandWritePos = nandWriteLen = 0;
+        return true;
+
+    case 0x85: // Write enable
+        if (nandWindow) {
+            nandStatus |= BIT(4);
+            nandWritePos = 0;
+        }
+        return true;
+
+    case 0x87: // Write disable
+        nandStatus &= ~BIT(4);
+        return true;
+
+    case 0x8B: // Select the ROM
+        nandWindow = 0;
+        return true;
+
+    case 0x94: // Read the NAND ID
+        cmdMode = CMD_NAND_ID;
+        return true;
+
+    case 0xB2: // Select a 128KB window of the writable part, which stays on the ROM for addresses before it
+        if ((address & ~0x1FFFF) >= nandBase)
+            nandWindow = address & ~0x1FFFF;
+        return true;
+
+    case 0xB7: // Read from the ROM or the selected window
+        if (!nandWindow) {
+            // The writable part reads as endless 0xFFs from the ROM
+            return address >= nandBase && address < end;
+        }
+        if (inWindow) {
+            cmdMode = CMD_NAND_READ;
+            nandRead = address - nandBase;
+        }
+        return true;
+
+    case 0xD6: // Read the status
+        cmdMode = CMD_NAND_STATUS;
+        return true;
+
+    default:
+        return false;
+    }
+}
+
+void CartridgeNds::commitNand() {
+    // Write the write buffer to NAND, unless it's for the read-only part
+    uint32_t offset = nandWrite - nandBase;
+    if (nandWrite && nandWriteLen && offset + 0x800 <= nandWritable) {
+        mutex.lock();
+        memcpy(&save[offset], nandBuffer, 0x800);
+
+        // Write everything once a state changed what the file should have
+        if (saveStale) {
+            std::fill(dirtyPages.begin(), dirtyPages.end(), 0xFFFFFFFF);
+            saveStale = false;
+        }
+        for (uint32_t i = offset / SAVE_PAGE; i <= (offset + 0x7FF) / SAVE_PAGE; i++)
+            dirtyPages[i / 32] |= BIT(i % 32);
+        saveDirty = true;
+        mutex.unlock();
+    }
+
+    // Writing finishes by leaving write mode
+    if (nandWrite && nandWriteLen) nandWrite = nandWritePos = nandWriteLen = 0;
+    nandStatus &= ~BIT(4);
+}
+
 uint32_t CartridgeNds::readRomCtrl(bool cpu) {
     // Read from one of the ROMCTRL registers
     if (cpu == 0) checkWord();
     return romCtrl[cpu];
 }
 
-uint32_t CartridgeNds::readRomDataIn(bool cpu) {
-    // Don't transfer if the word ready bit isn't set
-    if (cpu == 0) checkWord();
-    if (!(romCtrl[cpu] & BIT(23)))
-        return 0;
-
+inline void CartridgeNds::nextWord(bool cpu) {
     // Mark the next word as not ready
     romCtrl[cpu] &= ~BIT(23);
 
@@ -1459,6 +1657,31 @@ uint32_t CartridgeNds::readRomDataIn(bool cpu) {
         // Schedule the next word to be ready
         scheduleWord(cpu);
     }
+}
+
+void CartridgeNds::writeRomDataIn(bool cpu, uint32_t mask, uint32_t value) {
+    // Don't transfer unless the card is ready for a word and the transfer is a write
+    if (cpu == 0) checkWord();
+    if ((romCtrl[cpu] & (BIT(23) | BIT(30))) != (BIT(23) | BIT(30)))
+        return;
+
+    nextWord(cpu);
+    if (cmdMode != CMD_NAND_WRITE || !nandWrite)
+        return;
+
+    // Add the word to the write buffer
+    U32TO8(nandBuffer, nandWritePos, (U8TO32(nandBuffer, nandWritePos) & ~mask) | (value & mask));
+    nandWritePos = (nandWritePos + 4) & 0x7FF;
+    nandWriteLen = std::min(nandWriteLen + 4, 0x800U);
+}
+
+uint32_t CartridgeNds::readRomDataIn(bool cpu) {
+    // Don't transfer if the word ready bit isn't set
+    if (cpu == 0) checkWord();
+    if (!(romCtrl[cpu] & BIT(23)))
+        return 0;
+
+    nextWord(cpu);
 
     // Return a value from the cart depending on the current command
     switch (cmdMode) {
@@ -1493,13 +1716,33 @@ uint32_t CartridgeNds::readRomDataIn(bool cpu) {
         // Read data from the selected secure area block
         return U8TO32(rom, romAddrVirt[cpu] + readCount[cpu] - 4);
 
-    case CMD_DATA:
+    case CMD_DATA: {
         // Read ROM data from the given address
         // This command can't read the first 32KB of a ROM, so it redirects the address
         // Some games verify that the first 32KB are unreadable as an anti-piracy measure
         uint32_t address = romAddrVirt[cpu] + readCount[cpu] - 4;
         if (romAddrReal[cpu] + readCount[cpu] <= 0x8000) address = 0x8000 + (address & 0x1FF);
         if (address < romSize) return U8TO32(rom, address);
+        break;
+    }
+
+    case CMD_NAND_ID:
+        // Read the NAND ID, which is zero after its first part
+        return (readCount[cpu] <= sizeof(nandId)) ? U8TO32(nandId, readCount[cpu] - 4) : 0;
+
+    case CMD_NAND_STATUS:
+        // Read the status, repeated in every byte
+        return nandStatus * 0x01010101;
+
+    case CMD_NAND_READ: {
+        // Read from the selected window, wrapping around within a 4KB page
+        uint32_t data = 0;
+        for (int i = 0; i < 4; i++) {
+            uint32_t offset = (nandRead & ~0xFFF) | ((nandRead + readCount[cpu] - 4 + i) & 0xFFF);
+            data |= save[offset] << (i * 8);
+        }
+        return data;
+    }
     }
 
     // Default to endless 0xFFs if there's no actual data to read

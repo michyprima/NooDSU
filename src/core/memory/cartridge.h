@@ -38,7 +38,11 @@ enum NdsCmdMode {
     CMD_HEADER,
     CMD_CHIP,
     CMD_SECURE,
-    CMD_DATA
+    CMD_DATA,
+    CMD_NAND_ID,
+    CMD_NAND_STATUS,
+    CMD_NAND_READ,
+    CMD_NAND_WRITE
 };
 
 class Cartridge {
@@ -74,6 +78,12 @@ protected:
     int romSize = 0, saveSize = -1;
     bool saveDirty = false;
     std::mutex mutex;
+
+    // Saves too big to rewrite whenever they change are written to their file in 2KB pages, tracked with one bit each
+    // Without any, the whole file is written; a stale file differs from the save in other ways too, after loading a state
+    static const uint32_t SAVE_PAGE = 0x800;
+    std::vector<uint32_t> dirtyPages;
+    bool saveRewrite = false, saveStale = false;
 
     std::vector<uint32_t> saveSizes;
     uint32_t romMask = 0;
@@ -145,6 +155,7 @@ private:
     uint64_t loadStart = 0;
 #endif
 
+    void writeSavePages();
     void readRomFile(FILE *file, uint8_t *data, size_t offset, size_t size);
     void loadRomBlocks(size_t first, size_t count);
     void runRomLoad();
@@ -175,6 +186,7 @@ public:
     uint32_t readRomCtrl(bool cpu);
     uint32_t readRomDataIn(bool cpu);
 
+    void writeRomDataIn(bool cpu, uint32_t mask, uint32_t value);
     void writeAuxSpiCnt(bool cpu, uint16_t mask, uint16_t value);
     void writeAuxSpiData(bool cpu, uint8_t value);
     void writeRomCtrl(bool cpu, uint32_t mask, uint32_t value);
@@ -213,6 +225,19 @@ private:
     uint8_t auxSpiData[2] = {};
     uint32_t romCtrl[2] = {};
     uint64_t romCmdOut[2] = {};
+
+    // NAND cards keep saves on the ROM chip, in a part that has to be selected 128KB at a time
+    // A window of 0 selects the ROM, and a write address of 0 means nothing is being written
+    static const uint32_t NAND_END = 0x7A00000;
+    uint32_t nandBase = 0, nandWritable = 0, nandWindow = 0, nandRead = 0, nandWrite = 0;
+    uint32_t nandWritePos = 0, nandWriteLen = 0;
+    uint8_t nandStatus = 0x20;
+    uint8_t nandBuffer[0x800] = {};
+    uint8_t nandId[0x30] = {};
+
+    bool nandCommand(uint64_t command);
+    void commitNand();
+    void nextWord(bool cpu);
 
     virtual bool loadRom();
     void loadNdsCode(bool arm7);
