@@ -197,7 +197,7 @@ private:
     void *codePost[3][2][2] = {}, *codeSlowPost[2] = {}; // Indexed by how cycles are halved, impure, then storing the PC
     void *codeCond[14] = {}, *codeFlags[5] = {}, *codeMemory[6] = {}, *codeShift[4] = {}, *codeShiftCarry[4] = {}, *codeMultiplyCycles = nullptr, *codeOverflowQ = nullptr, *codeMsr[2] = {}, *codeReturn = nullptr;
     int offPc = 0, offCpsr = 0, offSpsr = 0, offCycles = 0, offEventCycles = 0, offUsr = 0, offRegs = 0, offIe = 0, offIrf = 0;
-    int offDsiCycle = 0;
+    int offDsiCycle = 0, offIme = 0;
     uint32_t codeCore = 0;
     bool codeFailed = false;
     bool codeFast = false; // Whether code was generated for fast timing, which checks cycles less often
@@ -206,7 +206,7 @@ private:
     // Addresses that native instructions use, which tests can point elsewhere
     uint32_t addrCondition = 0, addrMemory = 0, addrReadMap = 0, addrWriteMap = 0;
     uint32_t addrDtcmReg = 0, addrWriteCpsr = 0, addrRestoreCpsr = 0, addrModeBanks = 0;
-    uint32_t addrDivCnt = 0, addrDivNumer = 0, addrDivDirty = 0, addrSqrtCnt = 0, addrSqrtParam = 0, addrSqrtDirty = 0;
+    uint32_t addrDivCnt = 0, addrDivNumer = 0, addrDivDirty = 0, addrSqrtCnt = 0, addrSqrtParam = 0, addrSqrtDirty = 0, addrGxStat = 0;
     uint32_t addrLoad32 = 0, addrLoad8 = 0, addrStore32 = 0, addrStore8 = 0, addrLoad16 = 0, addrStore16 = 0;
 
     uint32_t modeBanks[32][4] = {}; // R13, R14 and the SPSR by CPU mode, for returning from exceptions in generated code

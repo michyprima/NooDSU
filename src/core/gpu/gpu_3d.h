@@ -164,6 +164,8 @@ struct _Polygon {
 };
 
 class Gpu3D {
+    friend class Jit;
+
     friend class Core;
 public:
     _Polygon *polygonsOut = polygons2;

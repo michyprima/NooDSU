@@ -266,6 +266,7 @@ void Jit::initCodegen() {
     offIe = (uint8_t*)&arm.ie - (uint8_t*)&arm;
     offIrf = (uint8_t*)&arm.irf - (uint8_t*)&arm;
     offDsiCycle = (uint8_t*)&arm.dsiCycle - (uint8_t*)&arm;
+    offIme = (uint8_t*)&arm.ime - (uint8_t*)&arm;
     addrWriteCpsr = (uint32_t)(uintptr_t)&Jit::writeCpsrCall;
     addrRestoreCpsr = (uint32_t)(uintptr_t)&Jit::restoreCpsrCall;
     addrCondition = (uint32_t)(uintptr_t)&Interpreter::condition[0];
@@ -279,6 +280,7 @@ void Jit::initCodegen() {
     addrSqrtCnt = (uint32_t)(uintptr_t)&core->divSqrt.sqrtCnt;
     addrSqrtParam = (uint32_t)(uintptr_t)&core->divSqrt.sqrtParam;
     addrSqrtDirty = (uint32_t)(uintptr_t)&core->divSqrt.sqrtDirty;
+    addrGxStat = (uint32_t)(uintptr_t)&core->gpu3D.gxStat;
 
     // Banked registers for each mode that only banks R13 and R14; FIQ and invalid modes stay 0, which leaves them to C++
     auto banks = [&](int mode, uint32_t *r13, uint32_t *r14, uint32_t *spsr) {
@@ -835,6 +837,120 @@ void Jit::emitMath(PpcEmitter &e, bool load, int size) {
     };
     e.xoris(6, 5, 0x0400);
     e.rlwinm(7, 6, 0, 0, 25);
+    e.cmpwi(7, 0x200);
+    uint32_t *notInterrupts = e.here();
+    e.bne(nullptr);
+    e.rlwinm(6, 6, 0, 26, 31);
+
+    // A register's address only matches if it's aligned, so misaligned accesses are left to the memory handlers
+    // Interrupt registers keep their high words first on the host, and the top half only matters on the ARM7
+    auto skip = [&](int offset) {
+        e.cmpwi(6, offset);
+        uint32_t *at = e.here();
+        e.bne(nullptr);
+        return at;
+    };
+
+    // Whether an interrupt would be sent, from the low word of IE in r7, when the CPU isn't masking them
+    // Taking it is left to the interpreter, so this is checked before anything is stored
+    auto pending = [&]() {
+        e.lwz(9, offIrf + 4, R_ARM);
+        e.and_(9, 9, 7);
+        e.lwz(10, offIe, R_ARM);
+        e.lwz(0, offIrf, R_ARM);
+        e.and_(10, 10, 0);
+        e.or_(9, 9, 10);
+        e.cmpwi(9, 0);
+        other();
+    };
+
+    if (load) {
+        uint32_t *notIme = skip(0x08);
+        e.lbz(8, offIme, R_ARM);
+        e.blr();
+        e.patchBc(notIme);
+        if (size == 4) {
+            uint32_t *notIe = skip(0x10);
+            e.lwz(8, offIe + 4, R_ARM);
+            e.blr();
+            e.patchBc(notIe);
+            uint32_t *notIrf = skip(0x14);
+            e.lwz(8, offIrf + 4, R_ARM);
+            e.blr();
+            e.patchBc(notIrf);
+        }
+    }
+    else {
+        uint32_t *notIme = skip(0x08);
+        e.andi_(7, 8, 1);
+        uint32_t *disabling = e.here();
+        e.beq(nullptr);
+        e.lwz(9, offCpsr, R_ARM);
+        e.andi_(9, 9, BIT(7));
+        uint32_t *masked = e.here();
+        e.bne(nullptr);
+        e.lwz(7, offIe + 4, R_ARM);
+        pending();
+        e.patchBc(disabling);
+        e.patchBc(masked);
+        e.rlwinm(7, 8, 0, 31, 31);
+        e.stb(7, offIme, R_ARM);
+        e.blr();
+        e.patchBc(notIme);
+
+        if (size == 4) {
+            // The ARM9 can't change bit 7 of IE
+            uint32_t *notIe = skip(0x10);
+            e.mr(7, 8);
+            e.lwz(9, offIe + 4, R_ARM);
+            e.rlwimi(7, 9, 0, 24, 24);
+            e.lbz(9, offIme, R_ARM);
+            e.cmpwi(9, 0);
+            uint32_t *disabled = e.here();
+            e.beq(nullptr);
+            e.lwz(9, offCpsr, R_ARM);
+            e.andi_(9, 9, BIT(7));
+            uint32_t *maskedIe = e.here();
+            e.bne(nullptr);
+            pending();
+            e.patchBc(disabled);
+            e.patchBc(maskedIe);
+            e.stw(7, offIe + 4, R_ARM);
+            e.blr();
+            e.patchBc(notIe);
+
+            // Clearing IF can send the GXFIFO interrupt again if the FIFO still meets its condition
+            uint32_t *notIrf = skip(0x14);
+            e.loadConst(9, addrGxStat);
+            e.lwz(9, 0, 9);
+            e.rlwinm(10, 9, 2, 30, 31);
+            e.cmpwi(10, 1);
+            uint32_t *notHalf = e.here();
+            e.bne(nullptr);
+            e.rlwinm_(9, 9, 7, 31, 31);
+            other();
+            uint32_t *clear = e.here();
+            e.b(nullptr);
+            e.patchBc(notHalf);
+            e.cmpwi(10, 2);
+            uint32_t *noCondition = e.here();
+            e.bne(nullptr);
+            e.rlwinm_(9, 9, 6, 31, 31);
+            other();
+            e.patchB(clear);
+            e.patchBc(noCondition);
+            e.lwz(7, offIrf + 4, R_ARM);
+            e.andc(7, 7, 8);
+            e.stw(7, offIrf + 4, R_ARM);
+            e.blr();
+            e.patchBc(notIrf);
+        }
+    }
+    uint32_t *done = e.here();
+    e.b(nullptr);
+
+    // The math registers
+    e.patchBc(notInterrupts);
     e.cmpwi(7, 0x280);
     other();
     e.rlwinm(6, 6, 0, 26, 31);
@@ -888,6 +1004,7 @@ void Jit::emitMath(PpcEmitter &e, bool load, int size) {
             e.patchBc(next);
         }
     }
+    e.patchB(done);
     for (uint32_t *at: others)
         e.patchBc(at);
 }
