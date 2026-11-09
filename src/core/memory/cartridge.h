@@ -166,6 +166,7 @@ public:
     void powerReset();
     void wordReady(bool cpu);
     void flushWord();
+    bool burstReady() { return burstDone && (romCtrl[1] & BIT(23)); }
     void resetCycles();
 
     uint32_t getChipId() { return chipId; }
@@ -196,6 +197,10 @@ private:
     // The ARM9's next word, when it's only noted when it'll be ready instead of being scheduled
     bool wordWaiting = false;
     uint32_t wordTime = 0;
+
+    // Words of the current burst for an ARM7 DMA; they only last until its transfer ends, so they aren't saved in states
+    static const uint8_t BURST_WORDS = 16;
+    uint8_t burstLeft = 0, burstDone = 0;
     void scheduleWord(bool cpu);
     void checkWord();
     bool encrypted[2] = {}, dsiKey[2] = {};

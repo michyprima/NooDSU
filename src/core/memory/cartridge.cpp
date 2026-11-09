@@ -954,8 +954,12 @@ void CartridgeNds::applyKeycode() {
 }
 
 void CartridgeNds::wordReady(bool cpu) {
-    // Indicate that a word is ready
+    // Indicate that a word is ready, which can start a new burst of ARM7 words
     romCtrl[cpu] |= BIT(23);
+    if (cpu == 1) {
+        burstLeft = BURST_WORDS - 1;
+        burstDone = 0;
+    }
 
     // Trigger DS cartridge DMA transfers
     core->dma[cpu].trigger((cpu == 0) ? 5 : 2);
@@ -970,7 +974,16 @@ void CartridgeNds::scheduleWord(bool cpu) {
         wordTime = core->globalCycles + wordCycles[0];
         return;
     }
-    core->schedule(SchedTask(CART9_WORD_READY + cpu), wordCycles[cpu]);
+
+    // The DSi's launcher reads cards with ARM7 DMA, and a task for each word keeps the ARM9 from running compiled code
+    // So with fast timing, a DMA takes several words at once, and the next task comes later to make up for it
+    if (cpu == 1 && burstLeft && Settings::fastTiming && core->dma[1].cartArmed()) {
+        burstLeft--;
+        burstDone++;
+        romCtrl[1] |= BIT(23);
+        return;
+    }
+    core->schedule(SchedTask(CART9_WORD_READY + cpu), wordCycles[cpu] * (cpu ? burstDone + 1 : 1));
 }
 
 void CartridgeNds::checkWord() {
@@ -1391,6 +1404,7 @@ void CartridgeNds::writeRomCtrl(bool cpu, uint32_t mask, uint32_t value) {
     }
     else {
         // Schedule the first word to be ready
+        if (cpu == 1) burstLeft = burstDone = 0;
         scheduleWord(cpu);
         readCount[cpu] = 0;
     }

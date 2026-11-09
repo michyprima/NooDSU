@@ -168,6 +168,10 @@ void Dma::transfer(int channel) {
     // Trigger an end of transfer IRQ if enabled
     if (dmaCnt[channel] & BIT(30))
         core->interpreter[cpu].sendInterrupt(8 + channel);
+
+    // Carry on with the next word of a burst from the DS cart
+    if (cpu == 1 && mode == 4 && (dmaCnt[channel] & BIT(31)) && core->cartridgeNds.burstReady())
+        transfer(channel);
 }
 
 void Dma::trigger(int mode, uint8_t channels) {
@@ -182,9 +186,9 @@ void Dma::trigger(int mode, uint8_t channels) {
 }
 
 bool Dma::cartArmed() {
-    // Check if an ARM9 channel is waiting for words from the DS cart
+    // Check if a channel is waiting for words from the DS cart
     for (int i = 0; i < 4; i++) {
-        if ((dmaCnt[i] & BIT(31)) && ((dmaCnt[i] & 0x38000000) >> 27) == 5)
+        if ((dmaCnt[i] & BIT(31)) && ((dmaCnt[i] & 0x38000000) >> 27) == (cpu ? 4 : 5))
             return true;
     }
     return false;
