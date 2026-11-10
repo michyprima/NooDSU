@@ -75,7 +75,7 @@ def ppm(path, px):
 a = load(args[0])
 b = load(args[1]) if len(args) > 1 else None
 print(f"status: {'done' if a[D['R_STATUS']] == D['STATUS_DONE'] else 'stopped at scene %d' % a[D['R_STEP']]}, "
-      f"SCFG_EXT {a[D['R_SCFG9']]:08X} ({'DSi mode' if a[D['R_SCFG9']] else 'DS mode'}), "
+      f"SCFG_EXT {a[D['R_SCFG9']]:08X} ({'DSi mode' if a[D['R_SCFG9']] & 0x10000 else 'DS mode on a DSi' if a[D['R_SCFG9']] else 'DS mode'}), "
       f"reads of DISP_MMEM_FIFO {a[D['R_READ32']]:08X} and {a[D['R_READ16']]:04X}")
 if b and (a[D['R_READ32']], a[D['R_READ16']]) != (b[D['R_READ32']], b[D['R_READ16']]):
     print(f"  the other read {b[D['R_READ32']]:08X} and {b[D['R_READ16']]:04X}")

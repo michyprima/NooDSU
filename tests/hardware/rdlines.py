@@ -80,7 +80,7 @@ def showCapture(name, px):
 a = load(args[0])
 b = load(args[1]) if len(args) > 1 else None
 print(f"status: {'done' if a[D['R_STATUS']] == D['STATUS_DONE'] else 'stopped at scene %d' % a[D['R_STEP']]}, "
-      f"SCFG_EXT {a[D['R_SCFG9']]:08X} ({'DSi mode' if a[D['R_SCFG9']] else 'DS mode'})")
+      f"SCFG_EXT {a[D['R_SCFG9']]:08X} ({'DSi mode' if a[D['R_SCFG9']] & 0x10000 else 'DS mode on a DSi' if a[D['R_SCFG9']] else 'DS mode'})")
 same = 0
 for s, (name, n, w, y0, y1, cap) in enumerate(SCENES):
     label = f"{name:8s} {n:4d}x{w:<3d} lines {y0}-{y1 - 1}"
