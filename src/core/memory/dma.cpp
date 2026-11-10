@@ -194,6 +194,35 @@ bool Dma::cartArmed() {
     return false;
 }
 
+bool Dma::armed(int mode) {
+    // Check if a channel is enabled and set to a mode
+    if (cpu == 1) mode <<= 1;
+    for (int i = 0; i < 4; i++) {
+        if ((dmaCnt[i] & BIT(31)) && ((dmaCnt[i] & 0x38000000) >> 27) == mode)
+            return true;
+    }
+    return false;
+}
+
+void Dma::transferNow(int mode) {
+    // Transfer right away on channels that are enabled and set to a mode, for events that need the words before the
+    // emulator carries on, like the display FIFO
+    if (cpu == 1) mode <<= 1;
+    for (int i = 0; i < 4; i++) {
+        if ((dmaCnt[i] & BIT(31)) && ((dmaCnt[i] & 0x38000000) >> 27) == mode)
+            transfer(i);
+    }
+}
+
+void Dma::stop(int mode) {
+    // Disable channels that are set to a mode
+    if (cpu == 1) mode <<= 1;
+    for (int i = 0; i < 4; i++) {
+        if (((dmaCnt[i] & 0x38000000) >> 27) == mode)
+            dmaCnt[i] &= ~BIT(31);
+    }
+}
+
 void Dma::writeDmaSad(int channel, uint32_t mask, uint32_t value) {
     // Write to one of the DMASAD registers
     mask &= ((cpu == 0 || channel != 0) ? 0x0FFFFFFF : 0x07FFFFFF);

@@ -133,6 +133,11 @@ void Gpu::saveState(FILE *file) {
     fwrite(&vCount, sizeof(vCount), 1, file);
     fwrite(&dispCapCnt, sizeof(dispCapCnt), 1, file);
     fwrite(&powCnt1, sizeof(powCnt1), 1, file);
+    fwrite(dispFifo, 2, sizeof(dispFifo) / 2, file);
+    fwrite(&fifoRead, sizeof(fifoRead), 1, file);
+    fwrite(&fifoWrite, sizeof(fifoWrite), 1, file);
+    fwrite(&runFifo, sizeof(runFifo), 1, file);
+    fwrite(fifoLines[vCount < 192 ? vCount : 0], 2, 256, file);
 }
 
 void Gpu::loadState(FILE *file) {
@@ -141,6 +146,11 @@ void Gpu::loadState(FILE *file) {
     fread(&vCount, sizeof(vCount), 1, file);
     fread(&dispCapCnt, sizeof(dispCapCnt), 1, file);
     fread(&powCnt1, sizeof(powCnt1), 1, file);
+    fread(dispFifo, 2, sizeof(dispFifo) / 2, file);
+    fread(&fifoRead, sizeof(fifoRead), 1, file);
+    fread(&fifoWrite, sizeof(fifoWrite), 1, file);
+    fread(&runFifo, sizeof(runFifo), 1, file);
+    fread(fifoLines[vCount < 192 ? vCount : 0], 2, 256, file);
 
     // Drop the 2D threads' frame, since the loaded scanline can be anywhere in it; sleeping threads would never take
     // the rest of a fast 2D frame, leaving the emulator waiting for them at V-blank
@@ -607,6 +617,10 @@ void Gpu::scanline355() {
             core->ndma[i].trigger(0x6);
         }
 
+        // Empty the display FIFO and stop the DMAs that fill it, which have to be started again for the next frame
+        fifoRead = fifoWrite = 0;
+        core->dma[0].stop(4);
+
         // Swap the buffers of the 3D engine if needed
         if (core->gpu3D.shouldSwap()) {
             EP_START(swap);
@@ -729,6 +743,10 @@ void Gpu::scanline355() {
         core->gpu2D[0].reloadRegisters();
         core->gpu2D[1].reloadRegisters();
 
+        // Run the display FIFO this frame if it's shown or captured, or if a DMA is waiting to fill it
+        // NDMA isn't counted, since a real DSi moved nothing in mode 9 while the display didn't use the FIFO
+        runFifo = usesFifo() || core->dma[0].armed(4);
+
         // Draw the frame straight into a buffer for the frontend if it won't be skipped, saving a copy at V-blank
         // Each engine gets the half it's expected to be shown in, based on the current display swap
         if (frames == 0 && !drawBuffer) {
@@ -772,6 +790,10 @@ void Gpu::scanline355() {
         EP_ADD(EP_JOIN2D, start);
         break;
     }
+
+    // Take the scanline's pixels from the display FIFO before anything draws it
+    if (vCount < 192 && runFifo)
+        runFifoLine(vCount);
 
     // Update window flags for the next scanline
     core->gpu2D[0].updateWindows(vCount);
@@ -982,19 +1004,15 @@ bool Gpu::captureLine(uint32_t cnt, int line, const uint32_t *rawLine, bool dire
     }
 
     case 1: { // Source B
-        if (cnt & BIT(25)) {
-            LOG_CRIT("Unimplemented display capture source: display FIFO\n");
-            break;
-        }
-
-        // Get the VRAM source address for the current scanline
+        // Get the VRAM source address for the current scanline, or the display FIFO's pixels
         uint32_t readOffset = ((cnt & 0x0C000000) >> 11) + line * width * 2;
-        uint8_t *src = linePtr(readOffset, false);
-        if (directOnly && !src) return false;
+        const uint16_t *fifo = (cnt & BIT(25)) ? fifoLines[line] : nullptr;
+        uint8_t *src = fifo ? nullptr : linePtr(readOffset, false);
+        if (directOnly && !src && !fifo) return false;
 
         // Copy a scanline to memory
         for (int i = 0; i < width; i++) {
-            uint16_t color = src ? readLsb<uint16_t>(&src[i * 2]) :
+            uint16_t color = fifo ? fifo[i] : src ? readLsb<uint16_t>(&src[i * 2]) :
                 core->memory.read<uint16_t>(0, base + ((readOffset + i * 2) & 0x1FFFF));
             if (dst) writeLsb<uint16_t>(&dst[i * 2], color);
             else core->memory.write<uint16_t>(0, base + ((writeOffset + i * 2) & 0x1FFFF), color);
@@ -1003,20 +1021,16 @@ bool Gpu::captureLine(uint32_t cnt, int line, const uint32_t *rawLine, bool dire
     }
 
     default: { // Blended
-        if (cnt & BIT(25)) {
-            LOG_CRIT("Unimplemented display capture source: display FIFO\n");
-            break;
-        }
-
         // Choose from 2D engine A or the 3D engine
         // In high-res mode, skip every other pixel when capturing 3D
         const uint32_t *source = (cnt & BIT(24)) ? core->gpu3DRenderer.getLine(line) : rawLine;
         bool resShift = (Settings::highRes3D && (cnt & BIT(24)));
 
-        // Get the VRAM source address for the current scanline
+        // Get the VRAM source address for the current scanline, or the display FIFO's pixels
         uint32_t readOffset = ((cnt & 0x0C000000) >> 11) + line * width * 2;
-        uint8_t *src = linePtr(readOffset, false);
-        if (directOnly && !src) return false;
+        const uint16_t *fifo = (cnt & BIT(25)) ? fifoLines[line] : nullptr;
+        uint8_t *src = fifo ? nullptr : linePtr(readOffset, false);
+        if (directOnly && !src && !fifo) return false;
 
         // Build a table of blended color channels for the current blending factors, indexed by the two sources
         uint8_t eva = std::min((cnt >> 0) & 0x1F, 16U);
@@ -1032,7 +1046,7 @@ bool Gpu::captureLine(uint32_t cnt, int line, const uint32_t *rawLine, bool dire
         for (int i = 0; i < width; i++) {
             // Get colors from the two sources
             uint16_t c1 = rgb6ToRgb5(source[i << resShift]);
-            uint16_t c2 = src ? readLsb<uint16_t>(&src[i * 2]) :
+            uint16_t c2 = fifo ? fifo[i] : src ? readLsb<uint16_t>(&src[i * 2]) :
                 core->memory.read<uint16_t>(0, base + ((readOffset + i * 2) & 0x1FFFF));
 
             // Blend the color values
@@ -1047,6 +1061,37 @@ bool Gpu::captureLine(uint32_t cnt, int line, const uint32_t *rawLine, bool dire
         break;
     }}
     return true;
+}
+
+bool Gpu::usesFifo() {
+    // Check if engine A shows the display FIFO, or display capture takes it as source B
+    if (((core->gpu2D[0].readDispCnt() >> 16) & 0x3) == 3) return true;
+    return (dispCapCnt & BIT(25)) && ((dispCapCnt >> 29) & 0x3) != 0;
+}
+
+void Gpu::runFifoLine(int line) {
+    // Give a scanline its pixels from the display FIFO, which the display reads 8 at a time, each time after DMA has had
+    // the chance to send the next 8; reading starts 3 pixels early, so the first read only fills 5 and the last 3 are
+    // read at the end
+    // A real DS does this across the scanline, which only differs from doing it all at once if the CPU writes the FIFO
+    // or changes its DMA during the scanline
+    uint16_t *out = fifoLines[line];
+    auto read = [&](int first, int count) {
+        for (int i = 0; i < count; i++) {
+            out[first + i] = dispFifo[fifoRead];
+            fifoRead = (fifoRead + 1) & 0xF;
+        }
+    };
+    for (int x = 0; x <= 256; x += 8) {
+        if (x > 0)
+            read((x == 8) ? 0 : (x - 11), (x == 8) ? 5 : 8);
+        if (x == 256) {
+            read(253, 3);
+            break;
+        }
+        core->dma[0].transferNow(4);
+        if (core->dsiMode) core->ndma[0].transferNow(0x9);
+    }
 }
 
 void Gpu::enterGbaMode() {
@@ -1091,6 +1136,20 @@ void Gpu::writeDispCapCnt(uint32_t mask, uint32_t value) {
     // Write to the DISPCAPCNT register
     mask &= 0xEF3F1F1F;
     dispCapCnt = (dispCapCnt & ~mask) | (value & mask);
+}
+
+void Gpu::writeDispMmemFifo(uint32_t mask, uint32_t value) {
+    // Write pixels to the display FIFO; a byte goes in both halves of a pixel, and writing the top byte moves on 2 pixels
+    for (int i = 0; i < 2; i++) {
+        uint16_t half = mask >> (i * 16);
+        uint16_t data = value >> (i * 16);
+        if (half == 0xFFFF)
+            dispFifo[(fifoWrite + i) & 0xF] = data;
+        else if (half & 0xFF)
+            dispFifo[(fifoWrite + i) & 0xF] = (data & 0xFF) * 0x0101;
+    }
+    if (mask & 0xFF000000)
+        fifoWrite = (fifoWrite + 2) & 0xF;
 }
 
 void Gpu::writePowCnt1(uint16_t mask, uint16_t value) {

@@ -324,9 +324,17 @@ void Gpu2D::drawScanline(int line, uint32_t capCnt) {
         break;
     }
 
-    case 3: // Main memory display
-        LOG_CRIT("Unimplemented engine %c display mode: display FIFO\n", (engine == 0) ? 'A' : 'B');
+    case 3: { // Main memory display
+        // Draw the pixels the display FIFO gave the scanline
+        const uint16_t *src = core->gpu.getFifoLine(line);
+        uint32_t *dst = &framebuffer[line * 256];
+        if (!((uintptr_t)dst & 31))
+            for (int i = 0; i < 256; i += 8)
+                claimBlock(&dst[i]);
+        for (int i = 0; i < 256; i++)
+            dst[i] = rgb5ToRgb6(src[i]);
         break;
+    }
     }
 
     // Apply master brightness (DS-only, 18-bit)

@@ -34,6 +34,7 @@ public:
     void clearDrq(uint8_t type);
     void update();
     bool cartArmed();
+    void transferNow(uint8_t type);
 
     uint32_t readGcnt() { return ndmaGcnt; }
     uint32_t readSad(int i) { return ndmaSad[i]; }

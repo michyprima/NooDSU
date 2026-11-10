@@ -1877,6 +1877,7 @@ template <typename T> void Memory::ioWrite9(uint32_t address, T value) {
             DEF_IO08(0x4000054, core->gpu2D[0].writeBldY(IOWR_PARAMS8)) // BLDY (engine A)
             DEF_IO16(0x4000060, core->gpu3DRenderer.writeDisp3DCnt(IOWR_PARAMS)) // DISP3DCNT
             DEF_IO32(0x4000064, core->gpu.writeDispCapCnt(IOWR_PARAMS)) // DISPCAPCNT
+            DEF_IO32(0x4000068, core->gpu.writeDispMmemFifo(IOWR_PARAMS)) // DISP_MMEM_FIFO
             DEF_IO16(0x400006C, core->gpu2D[0].writeMasterBright(IOWR_PARAMS)) // MASTER_BRIGHT (engine A)
             DEF_IO32(0x40000B0, core->dma[0].writeDmaSad(0, IOWR_PARAMS)) // DMA0SAD (ARM9)
             DEF_IO32(0x40000B4, core->dma[0].writeDmaDad(0, IOWR_PARAMS)) // DMA0DAD (ARM9)

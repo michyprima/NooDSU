@@ -71,9 +71,11 @@ public:
     uint16_t readVCount() { return vCount; }
     uint32_t readDispCapCnt() { return dispCapCnt; }
     uint16_t readPowCnt1() { return powCnt1; }
+    const uint16_t *getFifoLine(int line) { return fifoLines[line]; }
 
     void writeDispStat(bool cpu, uint16_t mask, uint16_t value);
     void writeDispCapCnt(uint32_t mask, uint32_t value);
+    void writeDispMmemFifo(uint32_t mask, uint32_t value);
     void writePowCnt1(uint16_t mask, uint16_t value);
 
 private:
@@ -133,6 +135,14 @@ private:
     uint16_t blendFactors = 0xFFFF;
     uint16_t powCnt1 = 0;
 
+    // The main memory display FIFO, a ring of 16 pixels that the display keeps reading from even if nothing new was
+    // written, and the pixels it gave each visible scanline, which engine A shows in display mode 3 and can capture
+    uint16_t dispFifo[16] = {};
+    uint8_t fifoRead = 0;
+    uint8_t fifoWrite = 0;
+    bool runFifo = false;
+    uint16_t fifoLines[192][256] = {};
+
     static uint32_t rgb5ToRgb8(uint32_t color);
     static uint32_t rgb6ToRgb8(uint32_t color);
     static uint16_t rgb6ToRgb5(uint32_t color);
@@ -143,4 +153,6 @@ private:
     bool fastStep(int engine);
     bool fastEntry(int engine);
     bool captureLine(uint32_t cnt, int line, const uint32_t *rawLine, bool directOnly);
+    bool usesFifo();
+    void runFifoLine(int line);
 };
