@@ -151,8 +151,11 @@ template <bool _arm7, int shift> void Interpreter::runCoreSingle(Core &core) {
                 }
                 if (arm.pipelineStale) arm.refillPipeline();
             }
+            uint32_t pc = *arm.registers[15];
             int cycles = arm.runOpcode();
-            arm.cycles = (core.globalCycles += (shift < 0) ? arm.dsiCycles(cycles) : (cycles << (shift & 1)));
+            if (shift < 0) cycles = arm.dsiCycles(cycles);
+            else if (shift) cycles = arm7Cycles(cycles, pc);
+            arm.cycles = (core.globalCycles += cycles);
             if (!_arm7) EP_INC(EC_INTERP9);
         }
         EP_ADD(_arm7 ? EP_ARM7 : EP_ARM9, cpu);
@@ -284,7 +287,8 @@ void Interpreter::stepArm7(Core &core) {
 
     // Compiled code might have run while the ARM7 was alone, leaving the pipeline for the interpreter to fill
     if (arm7.pipelineStale) arm7.refillPipeline();
-    arm7.cycles = core.globalCycles + (arm7.runOpcode() << 1);
+    uint32_t pc = *arm7.registers[15];
+    arm7.cycles = core.globalCycles + arm7Cycles(arm7.runOpcode(), pc);
 }
 
 bool Interpreter::runArm7UntilArm9(Core &core) {

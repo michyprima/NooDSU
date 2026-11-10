@@ -544,6 +544,10 @@ bool Jit::run(const uint32_t *limit) {
     uint32_t &noCode = noCodePages[(address >> 12) & (NO_CODE_SIZE - 1)];
     if (noCode == (address >> 12) + 1) return false;
 
+    // The ARM7's BIOS is left to the interpreter, which times it at full speed unlike the rest of the ARM7's code;
+    // it's only a few hundred instructions a frame, mostly delays and waiting for interrupts
+    if (arm7 && address < 0x10000) return false;
+
     // Put back unlinked jumps and delete blocks that were invalidated, now that none are running
     if (!unlinks.empty()) applyUnlinks();
     for (size_t i = 0; i < graveyard.size(); i++)

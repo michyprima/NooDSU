@@ -112,6 +112,12 @@ private:
     static const uint8_t bitCount[0x100];
 
     int runOpcode();
+    static int arm7Cycles(int cycles, uint32_t pc) {
+        // The ARM7 runs at half speed, so each cycle counts as two, except in its BIOS, whose bus has no wait states;
+        // timed delays there, like the ones the DSi's software waits with while shutting down, take as long as on
+        // hardware
+        return (pc < 0x10000) ? cycles : (cycles << 1);
+    }
     int dsiCycles(int cycles) {
         // The DSi's ARM9 runs twice as fast, so each cycle counts as half, with an odd half kept for the next instruction
         cycles += dsiCycle;
