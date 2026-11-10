@@ -28,9 +28,10 @@
 
 #include "file_lock.h"
 
-// Reads a file in large chunks and keeps the most recent ones, for callers that read a small block at a time
-// On Wii U every file access takes a few milliseconds whatever its size, so reading sector by sector is very slow
-// Writes go straight to the file, and also update any chunk holding that data
+// Reads a file in large chunks and keeps the most recent ones, for callers that read and write a small block at a time
+// On Wii U every file access takes a few milliseconds whatever its size, so going sector by sector is very slow
+// Writes change the chunks, which go back to the file whole when they're dropped or flushed; the DSi writes hundreds of
+// sectors in a burst, like Flipnote Studio backing up to the SD card, which took tens of seconds one at a time
 class FileCache {
 public:
     ~FileCache() {
@@ -57,23 +58,30 @@ public:
     }
 
     void write(FILE *file, uint64_t offset, const uint8_t *data, uint32_t size) {
-        // Write to the file
-        {
+        // Write straight to the file if there's no memory for chunks
+        if (!alloc && !allocate()) {
             std::lock_guard<FileLock> guard(fileLock());
             fseeko(file, offset, SEEK_SET);
             fwrite(data, sizeof(uint8_t), size, file);
+            return;
         }
 
-        // Update the part of each chunk the write touches, if it's held
-        while (size && alloc) {
+        // Change each chunk the write touches, loading any that are missing, and mark them for writing back
+        while (size) {
             uint32_t start = offset % CHUNK_SIZE;
             uint32_t count = std::min(size, CHUNK_SIZE - start);
-            int held = find(offset / CHUNK_SIZE);
-            if (held != -1) memcpy(&buffer[held * CHUNK_SIZE + start], data, count);
+            memcpy(chunk(file, offset / CHUNK_SIZE) + start, data, count);
+            dirty[slot] = true;
             offset += count;
             data += count;
             size -= count;
         }
+    }
+
+    void flush(FILE *file) {
+        // Write back every chunk that was changed
+        for (int i = 0; alloc && i < CHUNK_COUNT; i++)
+            if (dirty[i]) writeBack(file, i);
     }
 
 private:
@@ -84,6 +92,8 @@ private:
     uint8_t *alloc = nullptr, *buffer = nullptr;
     uint32_t indices[CHUNK_COUNT];
     uint32_t lastUse[CHUNK_COUNT];
+    bool dirty[CHUNK_COUNT];
+    uint64_t fileSize = 0;
     uint32_t uses = 0;
     int slot = 0; // The chunk last found or loaded
 
@@ -94,6 +104,7 @@ private:
         for (int i = 0; i < CHUNK_COUNT; i++) {
             indices[i] = NO_CHUNK;
             lastUse[i] = 0;
+            dirty[i] = false;
         }
         return true;
     }
@@ -113,6 +124,7 @@ private:
             held = 0;
             for (int i = 1; i < CHUNK_COUNT; i++)
                 if (lastUse[i] < lastUse[held]) held = i;
+            if (dirty[held]) writeBack(file, held);
             std::lock_guard<FileLock> guard(fileLock());
             indices[held] = index;
             readFile(file, uint64_t(index) * CHUNK_SIZE, &buffer[held * CHUNK_SIZE], CHUNK_SIZE);
@@ -120,6 +132,21 @@ private:
         lastUse[held] = ++uses;
         slot = held;
         return &buffer[held * CHUNK_SIZE];
+    }
+
+    void writeBack(FILE *file, int held) {
+        // Write a chunk back to the file, leaving out any part past its end, so the file never grows
+        std::lock_guard<FileLock> guard(fileLock());
+        if (!fileSize) {
+            fseeko(file, 0, SEEK_END);
+            fileSize = ftello(file);
+        }
+        uint64_t offset = uint64_t(indices[held]) * CHUNK_SIZE;
+        if (offset < fileSize) {
+            fseeko(file, offset, SEEK_SET);
+            fwrite(&buffer[held * CHUNK_SIZE], sizeof(uint8_t), std::min<uint64_t>(CHUNK_SIZE, fileSize - offset), file);
+        }
+        dirty[held] = false;
     }
 
     static void readFile(FILE *file, uint64_t offset, uint8_t *data, uint32_t size) {

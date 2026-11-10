@@ -191,6 +191,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
     tasks[RTC_TICK] = std::bind(&Rtc::tick, &rtc);
     tasks[MIC_UPDATE] = std::bind(&DsiMic::update, &dsiMic);
     tasks[SDMMC_CARD_DETECT] = std::bind(&SdMmc::detectCard, &sdMmc);
+    tasks[SDMMC_FLUSH] = std::bind(&SdMmc::flush, &sdMmc);
 
     // Schedule initial tasks for NDS mode
     schedule(RESET_CYCLES, 0x7FFFFFFF);

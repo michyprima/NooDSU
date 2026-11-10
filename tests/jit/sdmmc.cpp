@@ -201,7 +201,7 @@ int main(int argc, char **argv) {
     for (int blocks : { 1, 2, 4 }) {
         snprintf(tag, sizeof tag, "write %d", blocks);
         boot("sd64m.img");
-        const uint32_t SRC = 0x2300000, ADDR = 0x40000 + blocks * 0x10000;
+        const uint32_t SRC = 0x2300000, ADDR = 0x40000 + blocks * 0x10000; // Away from what earlier cores wrote back on exit
         for (int i = 0; i < blocks * 128; i++) w(SRC + i * 4, 0x11110000 * (i / 128 + 1) + i);
         cmd(0, 16, 0x200);
         wh(0x4004900, 0x0402); wh(0x4004904, 0x200); wh(0x40048D8, 0x2); wh(0x400480A, blocks);
@@ -215,7 +215,7 @@ int main(int argc, char **argv) {
         EQ(rh(SD_IRQ_STATUS) & 0x4, 0x4); // Data end
         EQ(r(0x400411C) >> 31, 0); // NDMA finished
 
-        // Reading the blocks back gives the new data, and so does the file
+        // Reading the blocks back gives the new data straight away, from the cache
         wh(0x4004900, 0x0002); wh(0x40048D8, 0x0); wh(SD_DATA16_BLKLEN, 0x200); wh(0x400480A, blocks);
         cmd(0, 18, ADDR);
         int badRead = 0;
@@ -226,7 +226,11 @@ int main(int argc, char **argv) {
         }
         EQ(badRead, 0);
 
-        FILE *img = fopen("sd64m.img", "rb"); fseek(img, ADDR, SEEK_SET);
+        // The file only gets it when the cache is written back, about half a second later, in one go
+        FILE *img = fopen("sd64m.img", "rb"); fseek(img, ADDR, SEEK_SET); uint8_t before[4]; fread(before, 1, 4, img); fclose(img);
+        EQ(before[0] | before[1] | before[2] | before[3], 0);
+        frame(40);
+        img = fopen("sd64m.img", "rb"); fseek(img, ADDR, SEEK_SET);
         int bad = 0;
         for (int i = 0; i < blocks * 128; i++) {
             uint8_t b[4]; fread(b, 1, 4, img);
@@ -235,6 +239,31 @@ int main(int argc, char **argv) {
         uint8_t after[4]; fread(after, 1, 4, img); fclose(img);
         EQ(bad, 0);
         EQ(after[0] | after[1] | after[2] | after[3], 0); // Nothing past the last block
+    }
+
+    // Writing back the NAND's last chunk leaves the footer after it alone, and a write past the end of the SD image
+    // doesn't make the file bigger
+    strcpy(tag, "write back ends");
+    {
+        auto size = [](const char *path) { FILE *f = fopen(path, "rb"); fseeko(f, 0, SEEK_END); int64_t n = ftello(f); fclose(f); return n; };
+        uint8_t footer[0x40], after[0x40];
+        FILE *f = fopen("nand.bin", "rb"); fseeko(f, -0x40, SEEK_END); fread(footer, 1, 0x40, f); fclose(f);
+        int64_t nandSize = size("nand.bin"), sdSize = size("sd64m.img");
+        boot("sd64m.img");
+        wh(0x4004900, 0x0002); wh(0x40048D8, 0x0); wh(SD_DATA16_BLKLEN, 0x200);
+        for (int port = 1; port >= 0; port--) {
+            cmd(port, 16, 0x200); wh(0x400480A, 1);
+            cmd(port, 24, port ? 0xEFFFE00 : 0x4000000); // The NAND's last sector, and just past the 64MB image
+            for (int i = 0; i < 256; i++) wh(SD_DATA16_FIFO, 0xA5A5);
+            frame(1);
+        }
+        frame(40);
+        f = fopen("nand.bin", "rb"); fseeko(f, -0x40, SEEK_END); fread(after, 1, 0x40, f);
+        fseeko(f, 0xEFFFE00, SEEK_SET); uint8_t last[2]; fread(last, 1, 2, f); fclose(f);
+        EQ(memcmp(footer, after, 0x40), 0);
+        EQ(last[0] << 8 | last[1], 0xA5A5);
+        EQ(size("nand.bin"), nandSize);
+        EQ(size("sd64m.img"), sdSize);
     }
 
     // With no SD image the slot is empty, its commands time out, and the NAND and Wi-Fi chip still answer

@@ -38,6 +38,7 @@ public:
     void readBlock();
     void writeBlock();
     void detectCard();
+    void flush();
 
     uint16_t readCmd() { return sdCmd; }
     uint16_t readPortSelect() { return sdPortSelect; }
@@ -98,6 +99,7 @@ private:
     uint16_t curBlock = 0;
     uint8_t busWidth = 0;
     bool detecting = false;
+    bool flushPending = false;
     uint32_t detectAt = 0;
 
     std::deque<uint16_t> dataFifo16;

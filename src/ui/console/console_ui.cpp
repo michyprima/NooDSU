@@ -2559,6 +2559,10 @@ void ConsoleUI::stopCore() {
     }
     saveThread->join();
     delete saveThread;
+
+    // Write back the DSi's NAND and SD card writes that are still cached, since the app can be closed from the HOME menu
+    // without the core being deleted
+    core->sdMmc.flush();
 }
 
 

@@ -174,7 +174,8 @@ it isn't run. It runs in DSi mode, so the folder needs a NAND. The expected valu
 the interpreter, and prints how many checks passed: the NAND's CSD (a real DSi eMMC's), the CSD of standard- and
 high-capacity SD images of several sizes and the capacity a driver works out from it, the OCR's capacity bit, the SCR and SD
 status read through the FIFO, the bus width from ACMD6, the card detect after a reset, multi-block writes with the first block
-in the FIFO before the command and NDMA sending the rest (as Flipnote Studio's backup does), and an empty SD slot, whose commands time out while the NAND and Wi-Fi
+in the FIFO before the command and NDMA sending the rest (as Flipnote Studio's backup does), the cache writing back to the
+files only later and never past their ends, and an empty SD slot, whose commands time out while the NAND and Wi-Fi
 chip still answer. It makes sparse images in its run folder and removes them. Any small ROM will do, since it isn't run. It
 runs in DSi mode, so the folder needs a NAND. The SD card values come from the SD specification, not a real DSi.
 

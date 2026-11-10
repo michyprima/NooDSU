@@ -22,7 +22,8 @@
 #include "../file_lock.h"
 
 SdMmc::~SdMmc() {
-    // Close the NAND and SD files
+    // Write back what's still cached, and close the NAND and SD files
+    flush();
     std::lock_guard<FileLock> guard(fileLock());
     fclose(nand);
     fclose(sd);
@@ -94,6 +95,9 @@ void SdMmc::loadState(FILE *file) {
     fread(&sdSoftReset, sizeof(sdSoftReset), 1, file);
     SaveStates::readFifo(dataFifo16, file);
     SaveStates::readFifo(dataFifo32, file);
+
+    // Let the next write schedule a flush, since the state might not have one coming
+    flushPending = false;
 }
 
 uint32_t *SdMmc::init() {
@@ -152,6 +156,13 @@ void SdMmc::startDetect() {
     int n = sdCardOption & 0xF;
     detectAt = core->globalCycles + ((n == 0xF) ? 0x100 : (0x400 << n));
     core->schedule(SDMMC_CARD_DETECT, detectAt - core->globalCycles);
+}
+
+void SdMmc::flush() {
+    // Write back the parts of the NAND and SD files that the cache changed
+    flushPending = false;
+    if (nand) nandCache.flush(nand);
+    if (sd) sdCache.flush(sd);
 }
 
 void SdMmc::detectCard() {
@@ -328,6 +339,12 @@ void SdMmc::writeBlock() {
     else if (FILE *dst = (sdPortSelect & BIT(0)) ? nand : sd) {
         FileCache &cache = (sdPortSelect & BIT(0)) ? nandCache : sdCache;
         cache.write(dst, hc ? (int64_t(curAddress) << 9) : curAddress, data, len << 2);
+
+        // Write the cached data back to the file about half a second after the first write, so a burst goes back together
+        if (!flushPending) {
+            flushPending = true;
+            core->schedule(SDMMC_FLUSH, 1 << 24);
+        }
     }
 
     // Change state and trigger a DRQ or end interrupt based on blocks left
