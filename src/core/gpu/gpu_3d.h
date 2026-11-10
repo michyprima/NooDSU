@@ -182,6 +182,15 @@ public:
     void swapBuffers();
     bool shouldSwap() { return state == GX_HALTED; }
 
+    uint8_t readRdLinesCount();
+    void noteTimingRead();
+    void latchRdLines();
+    void powerRendering(bool on);
+    void checkUnderflow(int line) {
+        if (timingPending) waitTiming();
+        if (underflowAny && (underflowLines[line >> 5] >> (line & 31) & 1)) setUnderflow();
+    }
+
     uint32_t readGxStat();
     bool fifoHalfEmpty() { return gxStat & BIT(25); }
     void checkFifoIrq();
@@ -238,6 +247,19 @@ private:
     Core *core;
 
     GXState state = GX_IDLE;
+
+    // How far rendering runs behind the display, worked out from the polygons shown, only once a game reads it
+    // RDLINES_COUNT is latched each V-blank; the underflow lines are where DISP3DCNT bit 12 gets set while displaying
+    bool timingUsed = false;
+    uint8_t swapsSinceOn = 0;
+    uint8_t rdLines = 63, rdLinesNext = 63;
+    uint32_t underflowLines[6] = {};
+    bool underflowAny = false;
+
+    // With a worker, the timing is worked out there after a swap, and waited for only when it's needed
+    static const uint8_t TIMING_JOB = 0xFF;
+    bool timingPending = false;
+    uint32_t timingEnd = 0;
 
     EntryFifo fifo;
     uint32_t pipeSize = 0;
@@ -328,6 +350,11 @@ private:
     bool isDistantDot(Vertex *vertices, int size);
 
     void processVertices();
+    void requestRenderTiming();
+    void waitTiming();
+    void updateRenderTiming();
+    void setUnderflow();
+
     void addVertex();
     void addPolygon();
 
