@@ -1,7 +1,7 @@
 // Checks the main memory display FIFO with both CPUs halted, through the real registers and events: what writes to
 // DISP_MMEM_FIFO do, engine A showing it in display mode 3, display capture taking it as source B, DMA timing 4 and DSi
-// NDMA mode 9 filling it, and the DMA being stopped at V-blank. The expected values come from GBATEK and melonDS, not a
-// real DS; tests/hardware's noodsu-fifo.nds is for that
+// NDMA mode 9 filling it, and the DMA being stopped at V-blank. The expected values are what tests/hardware's
+// noodsu-fifo.nds found on a real DSi, and melonDS for the rest
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -55,10 +55,19 @@ template <typename F> static int topDiffers(F want) {
     return bad;
 }
 
-// Start ARM9 DMA channel 3 in display FIFO mode from the bitmap, 32-bit with the destination fixed
-static void fifoDma(uint32_t count, bool repeat, uint32_t src = BITMAP) {
-    w(DMA3 + 8, 0); w(DMA3, src); w(DMA3 + 4, FIFO);
-    w(DMA3 + 8, BIT(31) | (4 << 27) | BIT(26) | (repeat ? BIT(25) : 0) | (2 << 21) | count);
+// Start ARM9 DMA channel 3 in display FIFO mode from the bitmap, 32-bit or 16-bit with the destination fixed
+static void fifoDma(uint32_t count, bool repeat, bool words = true) {
+    w(DMA3 + 8, 0); w(DMA3, BITMAP); w(DMA3 + 4, FIFO);
+    w(DMA3 + 8, BIT(31) | (4 << 27) | (words ? BIT(26) : 0) | (repeat ? BIT(25) : 0) | (2 << 21) | count);
+}
+
+// Run the scheduled tasks until a scanline starts, the way the core does with both CPUs halted
+static void runTo(int line) {
+    while (c->gpu.vCount != line) {
+        c->globalCycles = c->events[0].cycles;
+        while (c->events[0].cycles <= c->globalCycles) { c->tasks[c->events[0].task](); c->events.popFront(); }
+    }
+    c->frameEnded.store(false);
 }
 
 static void boot(const char *rom, bool dsi, bool threads) {
@@ -97,7 +106,34 @@ static void displayChecks(const char *rom, bool dsi, bool threads) {
     fifoDma(4, true); frame(); EQ(c->gpu.getFrame(screen, false), true);
     EQ(topDiffers(pixel), 0);
 
+    // Repeating 8 words at a time still sends 4 at each request, carrying on with the rest at the next, and so does
+    // repeating 8 half-words, each of which is a pixel
+    snprintf(tag, sizeof tag, "%s count 8", mode);
+    fifoDma(8, true); frame(); EQ(c->gpu.getFrame(screen, false), true);
+    EQ(topDiffers(pixel), 0);
+    snprintf(tag, sizeof tag, "%s half-words", mode);
+    fifoDma(8, true, false); frame(); EQ(c->gpu.getFrame(screen, false), true);
+    EQ(topDiffers(pixel), 0);
+    EQ(c->dma[0].srcAddrs[3], BITMAP + 256 * 192 * 2);
+
+    // Repeating 2 words at a time sends 4 pixels every 8, which land between reading pixels 8n + 2 and 8n + 3, as a real
+    // DSi showed: a line shows the 4 sent for it where they arrive in time, and otherwise the ring's older pixels
+    snprintf(tag, sizeof tag, "%s count 2", mode);
+    fifoDma(2, true); frame(); EQ(c->gpu.getFrame(screen, false), true);
+    EQ(c->dma[0].srcAddrs[3], BITMAP + 192 * 32 * 8);
+    for (int x = 0; x < 8; x++) EQ(screen[256 + x], shown(pixel(128 + x, 0)));
+    for (int x = 8; x < 11; x++) EQ(screen[256 + x], shown(pixel(112 + x, 0)));
+    EQ(screen[256 + 11], shown(pixel(139, 0)));
+
+    // A DMA started after the frame started waits for the next frame, which it doesn't reach since V-blank stops it
+    snprintf(tag, sizeof tag, "%s mid-frame", mode);
+    fifoDma(4, true); frame(); drain();
+    runTo(100); fifoDma(4, true); frame(); EQ(c->gpu.getFrame(screen, false), true);
+    EQ(c->dma[0].srcAddrs[3], BITMAP);
+    EQ(topDiffers([](int x, int) { return pixel(240 + (x & 15), 191); }), 0);
+
     // One transfer of the whole bitmap at the first request overruns the 16-pixel ring, leaving its last 16 pixels
+    // A real DSi sends it as fast as it can while the display reads, which shows a different jumble
     snprintf(tag, sizeof tag, "%s one big transfer", mode);
     fifoDma(256 * 192 / 2, false); frame(); EQ(c->gpu.getFrame(screen, false), true);
     EQ(topDiffers([](int x, int) { return pixel(240 + (x & 15), 191); }), 0);
@@ -124,20 +160,33 @@ static void displayChecks(const char *rom, bool dsi, bool threads) {
     EQ(bad, 0);
     EQ(r(0x4000064) >> 31, 0);
 
-    // Blended with engine A's backdrop at full source B weight, it's the FIFO's colors with bit 15 set
+    // Blended with engine A's backdrop at full source B weight, it's the FIFO's colors with bit 15 set, or black where
+    // their bit 15 is clear
     snprintf(tag, sizeof tag, "%s capture blended", mode);
     wh(0x5000000, 0);
     w(0x4000064, BIT(31) | (2 << 29) | BIT(25) | (3 << 20) | (16 << 8));
     fifoDma(4, true); frame(); drain();
     bad = 0;
-    for (int i = 0; i < 256 * 192; i++) bad += rh(0x6800000 + i * 2) != (pixel(i & 255, i >> 8) | BIT(15));
+    for (int i = 0; i < 256 * 192; i++) {
+        uint16_t p = pixel(i & 255, i >> 8);
+        bad += rh(0x6800000 + i * 2) != ((p & BIT(15)) ? p : BIT(15));
+    }
     EQ(bad, 0);
+
+    // Blending rounds to the nearest
+    snprintf(tag, sizeof tag, "%s capture rounding", mode);
+    wh(0x5000000, 0x0003);
+    w(0x4000064, BIT(31) | (2 << 29) | BIT(25) | (3 << 20) | (8 << 8) | 8);
+    for (int i = 0; i < 8; i++) w(FIFO, 0x80008000);
+    frame(); drain();
+    EQ(rh(0x6800000), BIT(15) | 2);
     w(0x4000064, 0);
 
-    // With the FIFO neither shown nor captured, a DMA waiting at the start of the frame still takes all of a frame's pixels
+    // With the FIFO neither shown nor captured, a DMA waiting for it never transfers, and V-blank still stops it
     snprintf(tag, sizeof tag, "%s unused", mode);
     fifoDma(4, true); frame(); drain();
-    EQ(c->dma[0].srcAddrs[3], BITMAP + 256 * 192 * 2);
+    EQ(c->dma[0].srcAddrs[3], BITMAP);
+    EQ(r(DMA3 + 8) >> 31, 0);
 
     // With nothing using it and no DMA waiting at the start of the frame, the FIFO doesn't run that frame
     snprintf(tag, sizeof tag, "%s not running", mode);

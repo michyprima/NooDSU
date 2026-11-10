@@ -137,6 +137,7 @@ void Gpu::saveState(FILE *file) {
     fwrite(&fifoRead, sizeof(fifoRead), 1, file);
     fwrite(&fifoWrite, sizeof(fifoWrite), 1, file);
     fwrite(&runFifo, sizeof(runFifo), 1, file);
+    fwrite(&fifoDmas, sizeof(fifoDmas), 1, file);
     fwrite(fifoLines[vCount < 192 ? vCount : 0], 2, 256, file);
 }
 
@@ -150,6 +151,7 @@ void Gpu::loadState(FILE *file) {
     fread(&fifoRead, sizeof(fifoRead), 1, file);
     fread(&fifoWrite, sizeof(fifoWrite), 1, file);
     fread(&runFifo, sizeof(runFifo), 1, file);
+    fread(&fifoDmas, sizeof(fifoDmas), 1, file);
     fread(fifoLines[vCount < 192 ? vCount : 0], 2, 256, file);
 
     // Drop the 2D threads' frame, since the loaded scanline can be anywhere in it; sleeping threads would never take
@@ -743,9 +745,10 @@ void Gpu::scanline355() {
         core->gpu2D[0].reloadRegisters();
         core->gpu2D[1].reloadRegisters();
 
-        // Run the display FIFO this frame if it's shown or captured, or if a DMA is waiting to fill it
-        // NDMA isn't counted, since a real DSi moved nothing in mode 9 while the display didn't use the FIFO
-        runFifo = usesFifo() || core->dma[0].armed(4);
+        // Run the display FIFO this frame if it's shown or captured; on a real DS, nothing triggers its DMAs otherwise,
+        // and DMAs started after this don't transfer until the next frame
+        runFifo = usesFifo();
+        fifoDmas = core->dma[0].armed(4);
 
         // Draw the frame straight into a buffer for the frontend if it won't be skipped, saving a copy at V-blank
         // Each engine gets the half it's expected to be shown in, based on the current display swap
@@ -1039,7 +1042,7 @@ bool Gpu::captureLine(uint32_t cnt, int line, const uint32_t *rawLine, bool dire
             blendFactors = (eva << 8) | evb;
             for (int c1 = 0; c1 < 32; c1++)
                 for (int c2 = 0; c2 < 32; c2++)
-                    blendTable[(c1 << 5) | c2] = std::min((c1 * eva + c2 * evb) / 16, 31);
+                    blendTable[(c1 << 5) | c2] = std::min((c1 * eva + c2 * evb + 8) / 16, 31);
         }
 
         // Copy a scanline to memory
@@ -1048,6 +1051,7 @@ bool Gpu::captureLine(uint32_t cnt, int line, const uint32_t *rawLine, bool dire
             uint16_t c1 = rgb6ToRgb5(source[i << resShift]);
             uint16_t c2 = fifo ? fifo[i] : src ? readLsb<uint16_t>(&src[i * 2]) :
                 core->memory.read<uint16_t>(0, base + ((readOffset + i * 2) & 0x1FFFF));
+            if (!(c2 & BIT(15))) c2 = 0;
 
             // Blend the color values
             uint8_t r = blendTable[((c1 << 5) & 0x3E0) | ((c2 >> 0) & 0x1F)];
@@ -1070,27 +1074,20 @@ bool Gpu::usesFifo() {
 }
 
 void Gpu::runFifoLine(int line) {
-    // Give a scanline its pixels from the display FIFO, which the display reads 8 at a time, each time after DMA has had
-    // the chance to send the next 8; reading starts 3 pixels early, so the first read only fills 5 and the last 3 are
-    // read at the end
+    // Give a scanline its pixels from the display FIFO, which the display reads one at a time, whatever was last written
+    // to each place in the ring; DMA is requested every 8 pixels, and on a real DSi its writes land between reading
+    // pixels 8n + 2 and 8n + 3
     // A real DS does this across the scanline, which only differs from doing it all at once if the CPU writes the FIFO
     // or changes its DMA during the scanline
     uint16_t *out = fifoLines[line];
-    auto read = [&](int first, int count) {
-        for (int i = 0; i < count; i++) {
-            out[first + i] = dispFifo[fifoRead];
-            fifoRead = (fifoRead + 1) & 0xF;
+    for (int x = 0, request = 0; x < 256; x++) {
+        if (request < 32 && request * 8 <= x + 5) {
+            core->dma[0].transferNow(4, fifoDmas);
+            if (core->dsiMode) core->ndma[0].transferNow(0x9);
+            request++;
         }
-    };
-    for (int x = 0; x <= 256; x += 8) {
-        if (x > 0)
-            read((x == 8) ? 0 : (x - 11), (x == 8) ? 5 : 8);
-        if (x == 256) {
-            read(253, 3);
-            break;
-        }
-        core->dma[0].transferNow(4);
-        if (core->dsiMode) core->ndma[0].transferNow(0x9);
+        out[x] = dispFifo[fifoRead];
+        fifoRead = (fifoRead + 1) & 0xF;
     }
 }
 
@@ -1150,6 +1147,12 @@ void Gpu::writeDispMmemFifo(uint32_t mask, uint32_t value) {
     }
     if (mask & 0xFF000000)
         fifoWrite = (fifoWrite + 2) & 0xF;
+}
+
+void Gpu::pushDispFifo(uint16_t value) {
+    // Add a single pixel to the display FIFO, as DMA does with half-words
+    dispFifo[fifoWrite] = value;
+    fifoWrite = (fifoWrite + 1) & 0xF;
 }
 
 void Gpu::writePowCnt1(uint16_t mask, uint16_t value) {

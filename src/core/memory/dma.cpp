@@ -44,7 +44,12 @@ void Dma::transfer(int channel) {
     int dstAddrCnt = (dmaCnt[channel] & 0x00600000) >> 21;
     int srcAddrCnt = (dmaCnt[channel] & 0x01800000) >> 23;
     int mode = (dmaCnt[channel] & 0x38000000) >> 27;
-    int gxFifoCount = 0;
+
+    // In GXFIFO mode, only send 112 words at a time, and when repeating to the display FIFO only 16 bytes, carrying on
+    // with the rest at the next request; a real DS sends a display FIFO transfer that doesn't repeat all at once
+    unsigned int limit = (mode == 7) ? 112 : (!cpu && mode == 4 && (dmaCnt[channel] & BIT(25))) ?
+        ((dmaCnt[channel] & BIT(26)) ? 4 : 8) : 0;
+    unsigned int sent = 0;
 
     // Perform the transfer
     if (core->gbaMode && mode == 6 && (channel == 1 || channel == 2)) { // GBA sound DMA
@@ -69,8 +74,7 @@ void Dma::transfer(int channel) {
             channel, wordCounts[channel], srcAddrs[channel], mode);
 
         // Send runs of words within a memory page straight to the 3D engine, which updates its status once per run
-        // In GXFIFO mode, only send 112 words at a time
-        unsigned int total = (mode == 7) ? std::min(wordCounts[channel], 112U) : wordCounts[channel];
+        unsigned int total = limit ? std::min(wordCounts[channel], limit) : wordCounts[channel];
         for (unsigned int done = 0; done < total;) {
             uint32_t count = std::min(total - done, (0x1000 - (srcAddrs[channel] & 0xFFF)) >> 2);
             if (const uint8_t *data = core->memory.getReadPtr(0, srcAddrs[channel], false)) {
@@ -83,7 +87,7 @@ void Dma::transfer(int channel) {
             srcAddrs[channel] += count << 2;
             done += count;
         }
-        if (mode == 7) gxFifoCount = total;
+        if (limit) sent = total;
     }
     else if (dmaCnt[channel] & BIT(26)) { // Whole word transfer
         LOG_INFO("ARM%d DMA channel %d transferring %d words from 0x%X to 0x%X in mode %d\n",
@@ -108,8 +112,8 @@ void Dma::transfer(int channel) {
             else if (dstAddrCnt == 1) // Decrement
                 dstAddrs[channel] -= 4;
 
-            // In GXFIFO mode, only send 112 words at a time
-            if (mode == 7 && ++gxFifoCount == 112)
+            // Stop at the limit of words at a time
+            if (limit && ++sent == limit)
                 break;
         }
     }
@@ -117,9 +121,12 @@ void Dma::transfer(int channel) {
         LOG_INFO("ARM%d DMA channel %d transferring %d half-words from 0x%X to 0x%X in mode %d\n",
             cpu ? 7 : 9, channel, wordCounts[channel], srcAddrs[channel], dstAddrs[channel], mode);
         for (unsigned int i = 0; i < wordCounts[channel]; i++) {
-            // Transfer a half-word
+            // Transfer a half-word; the display FIFO takes each one from DMA as a pixel, unlike from the CPU
             uint16_t value = core->memory.read<uint16_t>(cpu, srcAddrs[channel], false);
-            core->memory.write<uint16_t>(cpu, dstAddrs[channel], value, false);
+            if (!cpu && (dstAddrs[channel] & ~0x3) == 0x4000068)
+                core->gpu.pushDispFifo(value);
+            else
+                core->memory.write<uint16_t>(cpu, dstAddrs[channel], value, false);
 
             // Adjust the source address
             if (srcAddrCnt == 0) // Increment
@@ -133,18 +140,18 @@ void Dma::transfer(int channel) {
             else if (dstAddrCnt == 1) // Decrement
                 dstAddrs[channel] -= 2;
 
-            // In GXFIFO mode, only send 112 words at a time
-            if (mode == 7 && ++gxFifoCount == 112)
+            // Stop at the limit of words at a time
+            if (limit && ++sent == limit)
                 break;
         }
     }
 
-    if (mode == 7) {
-        // Don't end a GXFIFO transfer if there are still words left
-        wordCounts[channel] -= gxFifoCount;
+    if (limit) {
+        // Don't end a transfer with a limit if there are still words left
+        wordCounts[channel] -= sent;
         if (wordCounts[channel] > 0) {
-            // Schedule another transfer immediately if the FIFO is still half empty
-            if (core->gpu3D.fifoHalfEmpty())
+            // In GXFIFO mode, schedule another transfer immediately if the FIFO is still half empty
+            if (mode == 7 && core->gpu3D.fifoHalfEmpty())
                 core->schedule(SchedTask(DMA9_TRANSFER0 + (cpu << 2) + channel), 1);
             return;
         }
@@ -194,22 +201,23 @@ bool Dma::cartArmed() {
     return false;
 }
 
-bool Dma::armed(int mode) {
-    // Check if a channel is enabled and set to a mode
+uint8_t Dma::armed(int mode) {
+    // Get the channels that are enabled and set to a mode
     if (cpu == 1) mode <<= 1;
+    uint8_t channels = 0;
     for (int i = 0; i < 4; i++) {
         if ((dmaCnt[i] & BIT(31)) && ((dmaCnt[i] & 0x38000000) >> 27) == mode)
-            return true;
+            channels |= BIT(i);
     }
-    return false;
+    return channels;
 }
 
-void Dma::transferNow(int mode) {
+void Dma::transferNow(int mode, uint8_t channels) {
     // Transfer right away on channels that are enabled and set to a mode, for events that need the words before the
     // emulator carries on, like the display FIFO
     if (cpu == 1) mode <<= 1;
     for (int i = 0; i < 4; i++) {
-        if ((dmaCnt[i] & BIT(31)) && ((dmaCnt[i] & 0x38000000) >> 27) == mode)
+        if ((channels & BIT(i)) && (dmaCnt[i] & BIT(31)) && ((dmaCnt[i] & 0x38000000) >> 27) == mode)
             transfer(i);
     }
 }

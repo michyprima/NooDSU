@@ -33,8 +33,8 @@ public:
     void transfer(int channel);
     void trigger(int mode, uint8_t channels = 0xF);
     bool cartArmed();
-    bool armed(int mode);
-    void transferNow(int mode);
+    uint8_t armed(int mode);
+    void transferNow(int mode, uint8_t channels = 0xF);
     void stop(int mode);
 
     uint32_t readDmaSad(int channel) { return dmaSad[channel]; }

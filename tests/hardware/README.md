@@ -135,6 +135,20 @@ tests/hardware/fifo.py noodsu-fifotest.bin [NooDS U's] [--images folder]
 NooDS U's comes from a RAM dump, `tests/jit/game.sh tests/hardware/build/noodsu-fifo.nds <system files folder> 400 --modes
 interp ram=fifo.bin`, adding `dsi` for DSi mode. `--images` writes each capture as a PPM file.
 
+A real DSi in DSi mode settled it, and NooDS U now matches 15 of its 16 scenes:
+
+- DMA timing 4 is requested every 8 pixels, 32 times a line, and only while the FIFO is shown or captured. Only channels
+  already started when the frame starts answer, and V-blank stops them. NDMA mode 9 is the same, except that V-blank doesn't
+  stop it.
+- A repeating DMA sends at most 16 bytes a request, carrying on with the rest of its count at the next, so 8 words at a time
+  still works. Each half-word from DMA is a pixel, though half-word writes from the CPU only move on with the top half.
+- Its writes land between the display reading pixels 8n + 2 and 8n + 3, and the display shows whatever each of the ring's 16
+  places last held, so 2 words a request shows a mix of new and older pixels.
+- Capture blending rounds to the nearest, and a source B pixel with bit 15 clear blends as black.
+- `BIG` is the one that differs: a DMA without repeat sends its whole count at the first request, as fast as the bus allows
+  while the display reads, which NooDS U does all at once. Two pixels of `COUNT2` also came out 16 pixels older on the DSi,
+  which looks like bus timing.
+
 ## Building it
 
 ```

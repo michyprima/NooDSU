@@ -76,6 +76,7 @@ public:
     void writeDispStat(bool cpu, uint16_t mask, uint16_t value);
     void writeDispCapCnt(uint32_t mask, uint32_t value);
     void writeDispMmemFifo(uint32_t mask, uint32_t value);
+    void pushDispFifo(uint16_t value);
     void writePowCnt1(uint16_t mask, uint16_t value);
 
 private:
@@ -141,6 +142,7 @@ private:
     uint8_t fifoRead = 0;
     uint8_t fifoWrite = 0;
     bool runFifo = false;
+    uint8_t fifoDmas = 0; // The DMA channels waiting for it when the frame started, the only ones it starts
     uint16_t fifoLines[192][256] = {};
 
     static uint32_t rgb5ToRgb8(uint32_t color);
