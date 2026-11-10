@@ -1674,6 +1674,11 @@ template <typename T> T Memory::ioRead7(uint32_t address) {
                 DEF_IO16(0x4004600, data = core->dsiMic.readMicCnt()) // MIC_CNT
                 DEF_IO32(0x4004604, data = core->dsiMic.readMicData()) // MIC_DATA
                 DEF_IO16(0x4004700, data = core->dsiMic.readSndExCnt()) // SNDEXCNT
+                DEF_IO08(0x4004C00, data = core->dsiGpio.readData()) // GPIO_DATA
+                DEF_IO08(0x4004C01, data = core->dsiGpio.readDir()) // GPIO_DIR
+                DEF_IO08(0x4004C02, data = core->dsiGpio.readEdge()) // GPIO_IEDGE
+                DEF_IO08(0x4004C03, data = core->dsiGpio.readIe()) // GPIO_IE
+                DEF_IO16(0x4004C04, data = core->dsiGpio.readWifi()) // GPIO_WIFI
                 DEF_IO16(0x4004800, data = core->sdMmc.readCmd()) // SD_CMD
                 DEF_IO16(0x4004802, data = core->sdMmc.readPortSelect()) // SD_PORT_SELECT
                 DEF_IO32(0x4004804, data = core->sdMmc.readCmdParam()) // SD_CMD_PARAM
@@ -2518,6 +2523,11 @@ template <typename T> void Memory::ioWrite7(uint32_t address, T value) {
                 DEF_IO08(0x4004501, core->i2c.writeCnt(IOWR_PARAMS8)) // I2C_CNT
                 DEF_IO16(0x4004600, core->dsiMic.writeMicCnt(IOWR_PARAMS)) // MIC_CNT
                 DEF_IO16(0x4004700, core->dsiMic.writeSndExCnt(IOWR_PARAMS)) // SNDEXCNT
+                DEF_IO08(0x4004C00, core->dsiGpio.writeData(IOWR_PARAMS8)) // GPIO_DATA
+                DEF_IO08(0x4004C01, core->dsiGpio.writeDir(IOWR_PARAMS8)) // GPIO_DIR
+                DEF_IO08(0x4004C02, core->dsiGpio.writeEdge(IOWR_PARAMS8)) // GPIO_IEDGE
+                DEF_IO08(0x4004C03, core->dsiGpio.writeIe(IOWR_PARAMS8)) // GPIO_IE
+                DEF_IO16(0x4004C04, core->dsiGpio.writeWifi(IOWR_PARAMS)) // GPIO_WIFI
                 DEF_IO16(0x4004800, core->sdMmc.writeCmd(IOWR_PARAMS)) // SD_CMD
                 DEF_IO16(0x4004802, core->sdMmc.writePortSelect(IOWR_PARAMS)) // SD_PORT_SELECT
                 DEF_IO32(0x4004804, core->sdMmc.writeCmdParam(IOWR_PARAMS)) // SD_CMD_PARAM

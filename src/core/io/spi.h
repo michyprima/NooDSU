@@ -61,6 +61,7 @@ public:
     void setMicBlow(bool blow) { micBlow.store(blow); }
     int16_t readMic(uint32_t cycles);
     void resetCycles();
+    void changeHeadset();
 
     uint16_t readSpiCnt() { return spiCnt; }
     uint8_t readSpiData() { return spiData; }
@@ -101,6 +102,11 @@ private:
     uint8_t tscIndex = 0; // The register being accessed, times 2, plus 1 to read
     uint8_t tscPage = 0;
     uint8_t tscPage3[0x80] = {};
+    uint8_t tscIntSelect[2] = {}; // Page 0 registers 0x30-0x31, which pick the sources of INT1 and INT2
+    uint8_t tscGpi12 = 0; // Page 0 register 0x39, GPI2 being the headphone pin
+    uint8_t tscGpi3 = 0; // Page 0 register 0x3A
+    uint8_t tscHeadset = 0; // Page 0 register 0x43, headset detection
+    bool tscHeadsetChanged = false; // The sticky flag for headphones being plugged in or out
     bool tscPressed = false; // The pen state last reported, and whether X and Y are yet to report a change
     bool tscChangedX = false;
     bool tscChangedY = false;

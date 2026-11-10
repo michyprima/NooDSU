@@ -77,6 +77,7 @@ program counters, then hashes of RAM and WRAM, and every way is compared with th
 - `trace=N` to also print both CPUs' registers at the start of every scanline from frame N
 - `ppm=file` to save the last frame, `ram=file` to save main RAM at the end, and `results=file` to save what
   `tests/hardware`'s ROM recorded, for its build
+- `headphones=N` to plug headphones into the DSi at frame N, as the GamePad's jack would
 
 To watch a run, `--live` also prints each way's lines as they come, marked with its mode, and `--window` shows each way's
 screens in a window of its own, at most 60 times a second. The window needs SDL2 (`brew install sdl2`), and is only built
@@ -166,3 +167,11 @@ with the interpreter, and prints how many checks passed: register bits, nothing 
 every rate and data format through NDMA mode 0xC, the order of samples in each word, the status bits as the FIFO fills to
 an overrun, clearing it, the interrupt modes, NDMA starting late and stopping, and save states. Any small ROM will do, since
 it isn't run. It runs in DSi mode, so the folder needs a NAND. The expected values come from GBATEK, not a real DSi.
+
+## DSi headphones
+
+`gpio.sh <DS ROM> <system files folder>` checks the DSi's GPIO pins and the touchscreen controller's headset detection, on the
+Mac with the interpreter, and prints how many checks passed: the pins' register bits and idle levels, outputs ANDed with the
+lines, the headphone pin following the GamePad's jack with its interrupt on the chosen edge, the codec's headset detection,
+sticky change flag and GPI2 pin, save states, and nothing in DS mode. Any small ROM will do, since it isn't run. It runs in DSi
+mode, so the folder needs a NAND. The expected values come from GBATEK, not a real DSi.

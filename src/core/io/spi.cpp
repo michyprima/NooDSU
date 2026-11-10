@@ -43,6 +43,11 @@ void Spi::saveState(FILE *file) {
     fwrite(&tscIndex, sizeof(tscIndex), 1, file);
     fwrite(&tscPage, sizeof(tscPage), 1, file);
     fwrite(tscPage3, sizeof(tscPage3), 1, file);
+    fwrite(tscIntSelect, sizeof(tscIntSelect), 1, file);
+    fwrite(&tscGpi12, sizeof(tscGpi12), 1, file);
+    fwrite(&tscGpi3, sizeof(tscGpi3), 1, file);
+    fwrite(&tscHeadset, sizeof(tscHeadset), 1, file);
+    fwrite(&tscHeadsetChanged, sizeof(tscHeadsetChanged), 1, file);
     fwrite(&tscPressed, sizeof(tscPressed), 1, file);
     fwrite(&tscChangedX, sizeof(tscChangedX), 1, file);
     fwrite(&tscChangedY, sizeof(tscChangedY), 1, file);
@@ -59,6 +64,11 @@ void Spi::loadState(FILE *file) {
     fread(&tscIndex, sizeof(tscIndex), 1, file);
     fread(&tscPage, sizeof(tscPage), 1, file);
     fread(tscPage3, sizeof(tscPage3), 1, file);
+    fread(tscIntSelect, sizeof(tscIntSelect), 1, file);
+    fread(&tscGpi12, sizeof(tscGpi12), 1, file);
+    fread(&tscGpi3, sizeof(tscGpi3), 1, file);
+    fread(&tscHeadset, sizeof(tscHeadset), 1, file);
+    fread(&tscHeadsetChanged, sizeof(tscHeadsetChanged), 1, file);
     fread(&tscPressed, sizeof(tscPressed), 1, file);
     fread(&tscChangedX, sizeof(tscChangedX), 1, file);
     fread(&tscChangedY, sizeof(tscChangedY), 1, file);
@@ -360,6 +370,39 @@ void Spi::writeTscDsi(uint8_t value) {
         if (read) spiData = tscPage;
         else tscPage = value;
     }
+    else if (tscPage == 0x00) {
+        // Headset detection, which follows the headphones while enabled, and the pins they're wired to
+        bool headset = core->dsiGpio.readHeadphones();
+        bool detect = (tscHeadset & BIT(7));
+        switch (reg) {
+        case 0x2C: // DAC interrupt flags, sticky until read
+            spiData = (read && detect && tscHeadsetChanged) ? BIT(4) : 0;
+            if (read) tscHeadsetChanged = false;
+            break;
+        case 0x2E: // DAC interrupt flags, current state
+            spiData = (read && detect && headset) ? BIT(4) : 0;
+            break;
+        case 0x30: case 0x31: // INT1 and INT2 sources
+            if (read) spiData = tscIntSelect[reg - 0x30];
+            else tscIntSelect[reg - 0x30] = value;
+            break;
+        case 0x39: // GPI1 and GPI2, which shows the headphone pin unless powered down
+            if (read) spiData = tscGpi12 | ((tscGpi12 & 0x06) && headset);
+            else tscGpi12 = value & 0x66;
+            break;
+        case 0x3A: // GPI3
+            if (read) spiData = tscGpi3;
+            else tscGpi3 = value & 0x60;
+            break;
+        case 0x43: // Headset detection, reporting a headset without a microphone
+            if (read) spiData = tscHeadset | ((detect && headset) << 5);
+            else tscHeadset = value & 0x9F;
+            break;
+        default:
+            spiData = 0;
+            break;
+        }
+    }
     else if (tscPage == 0x03) {
         // Registers 0x09 and 0x0E show whether the pen is down
         if (reg == 0x09) tscPage3[reg] = pressed ? 0x80 : 0x40;
@@ -396,6 +439,11 @@ void Spi::writeTscDsi(uint8_t value) {
         spiData = 0;
     }
     tscIndex += 2;
+}
+
+void Spi::changeHeadset() {
+    // Set the sticky flag for headphones being plugged in or out while headset detection is on
+    if (tscHeadset & BIT(7)) tscHeadsetChanged = true;
 }
 
 void Spi::sendMicData(const int16_t *samples, size_t count, size_t rate) {

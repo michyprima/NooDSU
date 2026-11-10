@@ -517,11 +517,11 @@ static uint64_t hash(const void *data, size_t size, uint64_t h = 0xCBF29CE484222
 int main(int argc, char **argv) {
     if (argc < 5) {
         printf("Usage: game <system files folder> <rom, or - for none> <interp|portable|native> <frames> [fast] [dsi] [firmware] [press=N] "
-            "[start=N] [touch=N] [trace=frame] [ppm=path] [results=path] [ram=path] [audio] [wav=path] [keys=frame:key,...] [taps=frame:x:y,...] [wifi] [realtime] [live] [window] [input]\n");
+            "[start=N] [touch=N] [trace=frame] [ppm=path] [headphones=N] [results=path] [ram=path] [audio] [wav=path] [keys=frame:key,...] [taps=frame:x:y,...] [wifi] [realtime] [live] [window] [input]\n");
         return 2;
     }
     std::string files = argv[1], mode = argv[3];
-    int frames = atoi(argv[4]), press = 0, startKey = 0, touch = 0, traceFrom = -1;
+    int frames = atoi(argv[4]), headphones = -1, press = 0, startKey = 0, touch = 0, traceFrom = -1;
     bool fast = false, dsi = false, firmware = false, window = false, wifi = false, realtime = false, input = false;
     bool threads = false, stress = false, audio = false;
     std::string ppm, results, ramFile, wav;
@@ -545,6 +545,7 @@ int main(int argc, char **argv) {
         else if (arg.rfind("touch=", 0) == 0) touch = atoi(arg.c_str() + 6);
         else if (arg.rfind("trace=", 0) == 0) traceFrom = atoi(arg.c_str() + 6);
         else if (arg.rfind("ppm=", 0) == 0) ppm = arg.substr(4);
+        else if (arg.rfind("headphones=", 0) == 0) headphones = atoi(arg.c_str() + 11); // Plug them in at frame N
         else if (arg.rfind("results=", 0) == 0) results = arg.substr(8);
         else if (arg.rfind("ram=", 0) == 0) ramFile = arg.substr(4);
         else if (arg.rfind("wav=", 0) == 0) { wav = arg.substr(4); audio = true; }
@@ -683,6 +684,7 @@ int main(int argc, char **argv) {
             else if (touching) { core->input.releaseScreen(); core->spi.clearTouch(); }
             touching = touch;
         }
+        if (i == headphones) DsiGpio::headphonesIn.store(true);
         for (auto &tap: taps) {
             if (i == tap[0]) { core->input.pressScreen(); core->spi.setTouch(tap[1], tap[2]); }
             if (i == tap[0] + 8) { core->input.releaseScreen(); core->spi.clearTouch(); }

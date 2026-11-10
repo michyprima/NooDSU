@@ -48,6 +48,7 @@
 #include "io/div_sqrt.h"
 #include "io/dsi_wifi.h"
 #include "io/dsi_mic.h"
+#include "io/dsi_gpio.h"
 #include "io/i2c.h"
 #include "io/input.h"
 #include "io/ipc.h"
@@ -212,6 +213,7 @@ public:
     Slot2 slot2;
     DsiWifi dsiWifi;
     DsiMic dsiMic;
+    DsiGpio dsiGpio;
     Spi spi;
     Spu spu;
     Timers timers[2];

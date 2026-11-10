@@ -846,6 +846,9 @@ void scanInput() {
     bool gamepad = (vpadError != VPAD_READ_INVALID_CONTROLLER);
     if (!gamepad) gamepadBattery = -1;
     else if (vpadError == VPAD_READ_SUCCESS) gamepadBattery = vpad.battery;
+
+    // Let the DSi see headphones plugged into the GamePad
+    if (vpadError == VPAD_READ_SUCCESS) DsiGpio::headphonesIn.store(vpad.usingHeadphones);
     if (gamepad == ScreenLayout::splitDisplays) {
         gamepadFrames = 0;
     }
