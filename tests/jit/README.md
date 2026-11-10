@@ -141,3 +141,11 @@ Pokemon Black 2 in DSi mode with `press=37` names the rival by frame 4400. With 
 interpreter, and prints how many checks passed. The ROM is only read from, by the DS cart trigger's checks, so it needs to be at
 least 1.5MB; any game will do. It runs in DSi mode, so the folder needs a NAND. See `tests/hardware` for the ROM that showed how a
 real DSi behaves.
+
+## GBA slot
+
+`slot2.sh <DS ROM> <system files folder>` checks the GBA slot in DS mode, on the Mac with the interpreter, and prints how many
+checks passed: what an empty slot reads at each ROM access time, `EXMEMCNT` giving the slot to one CPU, each accessory (Rumble
+Pak, Memory Expansion Pak, Guitar Grip, Easy Piano, paddle, solar sensor), and the GPIO pins of Boktai and WarioWare: Twisted
+carts in DS and GBA mode, with small GBA ROMs it makes. The DS ROM only gives the solar sensor's header its logo, and GBA mode
+needs `gba_bios.bin` in the folder. The expected values come from GBATEK, DeSmuME and melonDS, not a real DS.
