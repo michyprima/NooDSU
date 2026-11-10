@@ -36,6 +36,9 @@ void SdMmc::saveState(FILE *file) {
     fwrite(&blockLen, sizeof(blockLen), 1, file);
     fwrite(&curAddress, sizeof(curAddress), 1, file);
     fwrite(&curBlock, sizeof(curBlock), 1, file);
+    fwrite(&busWidth, sizeof(busWidth), 1, file);
+    fwrite(&detecting, sizeof(detecting), 1, file);
+    fwrite(&detectAt, sizeof(detectAt), 1, file);
     fwrite(&sdCmd, sizeof(sdCmd), 1, file);
     fwrite(&sdPortSelect, sizeof(sdPortSelect), 1, file);
     fwrite(&sdCmdParam, sizeof(sdCmdParam), 1, file);
@@ -44,6 +47,7 @@ void SdMmc::saveState(FILE *file) {
     fwrite(&sdIrqStatus, sizeof(sdIrqStatus), 1, file);
     fwrite(&sdIrqMask, sizeof(sdIrqMask), 1, file);
     fwrite(&sdData16Blklen, sizeof(sdData16Blklen), 1, file);
+    fwrite(&sdCardOption, sizeof(sdCardOption), 1, file);
     fwrite(&sdErrDetail, sizeof(sdErrDetail), 1, file);
     fwrite(&sdData16Fifo, sizeof(sdData16Fifo), 1, file);
     fwrite(&sdDataCtl, sizeof(sdDataCtl), 1, file);
@@ -66,6 +70,9 @@ void SdMmc::loadState(FILE *file) {
     fread(&blockLen, sizeof(blockLen), 1, file);
     fread(&curAddress, sizeof(curAddress), 1, file);
     fread(&curBlock, sizeof(curBlock), 1, file);
+    fread(&busWidth, sizeof(busWidth), 1, file);
+    fread(&detecting, sizeof(detecting), 1, file);
+    fread(&detectAt, sizeof(detectAt), 1, file);
     fread(&sdCmd, sizeof(sdCmd), 1, file);
     fread(&sdPortSelect, sizeof(sdPortSelect), 1, file);
     fread(&sdCmdParam, sizeof(sdCmdParam), 1, file);
@@ -74,6 +81,7 @@ void SdMmc::loadState(FILE *file) {
     fread(&sdIrqStatus, sizeof(sdIrqStatus), 1, file);
     fread(&sdIrqMask, sizeof(sdIrqMask), 1, file);
     fread(&sdData16Blklen, sizeof(sdData16Blklen), 1, file);
+    fread(&sdCardOption, sizeof(sdCardOption), 1, file);
     fread(&sdErrDetail, sizeof(sdErrDetail), 1, file);
     fread(&sdData16Fifo, sizeof(sdData16Fifo), 1, file);
     fread(&sdDataCtl, sizeof(sdDataCtl), 1, file);
@@ -101,14 +109,24 @@ uint32_t *SdMmc::init() {
     // The files are read through caches in large chunks, which the standard library's buffering would only split up
     if (sd = fopen(Settings::sdImagePath.c_str(), mode)) {
         setvbuf(sd, nullptr, _IONBF, 0);
-        fseek(sd, 0, SEEK_END);
-        sdhc = (ftello(sd) > 0x40000000);
+        fseeko(sd, 0, SEEK_END);
+        sdSize = ftello(sd);
+        sdhc = (sdSize > 0x40000000);
         LOG_INFO("SD card is being treated as %s-capacity\n", sdhc ? "high" : "standard");
+
+        // Request the card inserted interrupt, as if the card was detected at power on
+        sdIrqStatus |= BIT(4);
+    }
+    else {
+        // Report the SD slot as empty, without the card detect and write-enable bits
+        sdIrqStatus &= ~0xA0;
     }
 
     // Try to open a NAND dump and load IDs from its nocash footer
     if (!(nand = fopen(Settings::dsiNandPath.c_str(), mode))) return nullptr;
     setvbuf(nand, nullptr, _IONBF, 0);
+    fseeko(nand, 0, SEEK_END);
+    nandSize = ftello(nand);
     uint8_t footer[0x18];
     fseek(nand, -0x30, SEEK_END);
     fread(footer, sizeof(uint8_t), sizeof(footer), nand);
@@ -127,6 +145,21 @@ void SdMmc::scheduleRead() {
 void SdMmc::scheduleWrite() {
     // Write the next block of data a little later
     core->schedule(sdio ? SDIO_WRITE_BLOCK : SDMMC_WRITE_BLOCK, 1);
+}
+
+void SdMmc::startDetect() {
+    // Detect the card once its detect time has passed with SD_CARD_OPTION's current setting, which can change on the way
+    int n = sdCardOption & 0xF;
+    detectAt = core->globalCycles + ((n == 0xF) ? 0x100 : (0x400 << n));
+    core->schedule(SDMMC_CARD_DETECT, detectAt - core->globalCycles);
+}
+
+void SdMmc::detectCard() {
+    // Request the card inserted interrupt, which the system waits for after resetting the controller before it uses the
+    // card; ignore events left from an earlier detect time
+    if (!detecting || int32_t(core->globalCycles - detectAt) < 0) return;
+    detecting = false;
+    sendInterrupt(4);
 }
 
 void SdMmc::sendInterrupt(int bit) {
@@ -230,6 +263,13 @@ void SdMmc::pushResponse(uint32_t value) {
     sdResponse[0] = value;
 }
 
+void SdMmc::pushBytes(const uint8_t *data, int size) {
+    // Push a register sent over the data lines to a FIFO, its first byte lowest like block data
+    curBlock = 1;
+    for (int i = 0; i < size; i += 4)
+        pushFifo(U8TO32(data, i));
+}
+
 void SdMmc::readBlock() {
     // Check for high capacity and hardcode the block length if so
     bool hc = (~sdPortSelect & sdhc);
@@ -299,6 +339,9 @@ void SdMmc::runCommand() {
     // Commands for the Wi-Fi chip are its own
     if (sdio) return runSdioCommand();
 
+    // Nothing answers in an empty SD slot, so the command times out
+    if (noCard()) return sendInterrupt(22);
+
     // Ensure the command is being run in normal mode
     if (cardStatus & BIT(5)) {
         LOG_WARN("Tried to run %s CMD in app mode\n", name());
@@ -334,6 +377,9 @@ void SdMmc::runCommand() {
 }
 
 void SdMmc::runAppCommand() {
+    // Nothing answers in an empty SD slot, so the command times out
+    if (noCard()) return sendInterrupt(22);
+
     // Ensure the command is being run in app mode
     if (~cardStatus & BIT(5)) {
         LOG_WARN("Tried to run %s ACMD in normal mode\n", name());
@@ -345,6 +391,7 @@ void SdMmc::runAppCommand() {
 
     // Execute an app SD/MMC command
     switch (uint8_t cmd = sdCmd & 0x3F) {
+        case 6: return setBusWidth(); // SET_BUS_WIDTH
         case 13: return sdStatus(); // SD_STATUS
         case 41: return sdSendOpCond(); // SD_SEND_OP_COND
         case 51: return getScr(); // GET_SCR
@@ -385,9 +432,55 @@ void SdMmc::setIfCond() {
 }
 
 void SdMmc::getCsd() {
-    // Pretend to read the 128-bit CSD register
-    for (int i = 0; i < 4; i++)
-        pushResponse(0);
+    // Build the 128-bit CSD register, which gives the capacity, block sizes and speeds, in the response registers' layout:
+    // the CRC byte is left off, so bits 127-8 fill bits 119-0 (as the CID from the NAND footer is stored)
+    uint8_t csd[16] = {};
+    auto set = [&](int hi, int lo, uint32_t value) {
+        for (int i = lo; i <= hi; i++) {
+            uint8_t &byte = csd[(i - 8) >> 3];
+            byte = (byte & ~BIT((i - 8) & 0x7)) | (((value >> (i - lo)) & 0x1) << ((i - 8) & 0x7));
+        }
+    };
+
+    if (sdPortSelect & BIT(0)) {
+        // Copy the CSD of a real DSi's eMMC (as in melonDS), whose 240MB is 1920 units of 128KB, sizing it to the NAND
+        static const uint8_t mmc[16] = { 0x40, 0x40, 0x96, 0xE9, 0x7F, 0xDB, 0xF6, 0xDF,
+            0x01, 0x59, 0x0F, 0x2A, 0x01, 0x26, 0x90, 0x00 };
+        memcpy(csd, mmc, sizeof(csd));
+        set(73, 62, std::min<int64_t>(0x1000, std::max<int64_t>(1, nandSize >> 17)) - 1); // C_SIZE
+    }
+    else if (sdhc) {
+        // Describe an SDHC card with CSD version 2.0, sized in units of 512KB
+        set(127, 126, 1); // CSD_STRUCTURE
+        set(119, 112, 0x0E); // TAAC
+        set(103, 96, 0x32); // TRAN_SPEED: 25MHz
+        set(95, 84, 0x5B5); // CCC
+        set(83, 80, 9); // READ_BL_LEN: 512 bytes
+        set(69, 48, std::min<int64_t>(0x400000, sdSize >> 19) - 1); // C_SIZE
+        set(46, 46, 1); // ERASE_BLK_EN
+        set(45, 39, 0x7F); // SECTOR_SIZE
+        set(28, 26, 2); // R2W_FACTOR
+        set(25, 22, 9); // WRITE_BL_LEN: 512 bytes
+    }
+    else {
+        // Describe a standard-capacity card with CSD version 1.0, sized in units of 256KB, up to 1GB
+        set(119, 112, 0x26); // TAAC
+        set(103, 96, 0x32); // TRAN_SPEED: 25MHz
+        set(95, 84, 0x5B5); // CCC
+        set(83, 80, 9); // READ_BL_LEN: 512 bytes
+        set(79, 79, 1); // READ_BL_PARTIAL
+        set(73, 62, std::min<int64_t>(0x1000, std::max<int64_t>(1, sdSize >> 18)) - 1); // C_SIZE
+        set(61, 50, 0xFF6); // VDD_R_CURR_MIN/MAX, VDD_W_CURR_MIN/MAX
+        set(49, 47, 7); // C_SIZE_MULT: 512
+        set(46, 46, 1); // ERASE_BLK_EN
+        set(45, 39, 0x7F); // SECTOR_SIZE
+        set(28, 26, 2); // R2W_FACTOR
+        set(25, 22, 9); // WRITE_BL_LEN: 512 bytes
+    }
+
+    // Send the register as a long response, the highest word last
+    for (int i = 3; i >= 0; i--)
+        pushResponse(U8TO32(csd, i * 4));
 }
 
 void SdMmc::getCid() {
@@ -445,12 +538,20 @@ void SdMmc::appCmd() {
     pushResponse(cardStatus);
 }
 
-void SdMmc::sdStatus() {
-    // Pretend to read the 512-bit SD status register
-    curBlock = 1;
-    for (int i = 0; i < 16; i++)
-        pushFifo(0);
+void SdMmc::setBusWidth() {
+    // Remember the bus width, which only shows in the SD status register
+    busWidth = sdCmdParam & 0x3;
     pushResponse(cardStatus);
+}
+
+void SdMmc::sdStatus() {
+    // Send the 512-bit SD status register: the bus width, speed class 4 and a 4MB allocation unit
+    uint8_t status[64] = {};
+    status[0] = busWidth << 6; // DAT_BUS_WIDTH
+    status[8] = 0x02; // SPEED_CLASS
+    status[10] = 0x90; // AU_SIZE
+    pushResponse(cardStatus);
+    pushBytes(status, sizeof(status));
 }
 
 void SdMmc::sdSendOpCond() {
@@ -460,11 +561,11 @@ void SdMmc::sdSendOpCond() {
 }
 
 void SdMmc::getScr() {
-    // Pretend to read the 64-bit SD configuration register
-    curBlock = 1;
-    pushFifo(0);
-    pushFifo(0);
+    // Send the 64-bit SD configuration register: SD version 2.00, 1- and 4-bit buses, and the security version that goes
+    // with the card's capacity
+    uint8_t scr[8] = { 0x02, uint8_t((~sdPortSelect & sdhc) ? 0x35 : 0x25) };
     pushResponse(cardStatus);
+    pushBytes(scr, sizeof(scr));
 }
 
 uint16_t SdMmc::readData16Fifo() {
@@ -505,8 +606,8 @@ void SdMmc::writeCmd(uint16_t mask, uint16_t value) {
     // TODO: handle response type and other bits
     sdCmd = (sdCmd & ~mask) | (value & mask);
 
-    // Run the written command and send an interrupt for completion
-    sendInterrupt(0);
+    // Run the written command and send an interrupt for completion, unless there's no card to answer
+    if (!noCard()) sendInterrupt(0);
     switch (uint8_t type = (sdCmd >> 6) & 0x3) {
         case 0: return runCommand();
         case 1: return runAppCommand();
@@ -554,6 +655,13 @@ void SdMmc::writeData16Blklen(uint16_t mask, uint16_t value) {
     // Write to the SD_DATA16_BLKLEN block length, clipping past 0x200
     mask &= 0x3FF;
     sdData16Blklen = std::min(0x200, (sdData16Blklen & ~mask) | (value & mask));
+}
+
+void SdMmc::writeCardOption(uint16_t mask, uint16_t value) {
+    // Write to the SD_CARD_OPTION register, restarting a card detect in progress with the new detect time
+    mask &= 0xC0FF;
+    sdCardOption = (sdCardOption & ~mask) | (value & mask);
+    if (detecting) startDetect();
 }
 
 void SdMmc::writeData16Fifo(uint16_t mask, uint16_t value) {
@@ -652,9 +760,25 @@ void SdMmc::writeSoftReset(uint16_t mask, uint16_t value) {
     // Wi-Fi chip over, like after using the DS Wi-Fi hardware
     mask &= 0x0001;
     bool reset = (sdSoftReset & ~value & mask & BIT(0));
+    bool release = (~sdSoftReset & value & mask & BIT(0));
     sdSoftReset = (sdSoftReset & ~mask) | (value & mask);
     if (reset && sdio) {
         core->dsiWifi.reset();
         updateCardIrq();
+    }
+
+    // Reset acknowledges all interrupts and resets the detect time
+    if (!sdio && reset) {
+        sdIrqStatus &= 0xA0;
+        sdCardOption = 0x40EE;
+        detecting = false;
+    }
+
+    // Detect the SD card again when coming out of reset, after its detect time
+    if (!sdio && sd) {
+        if (release) {
+            detecting = true;
+            startDetect();
+        }
     }
 }

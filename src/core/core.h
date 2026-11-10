@@ -116,6 +116,7 @@ enum SchedTask {
     CARD_POWER_OFF,
     RTC_TICK,
     MIC_UPDATE,
+    SDMMC_CARD_DETECT,
     MAX_TASKS
 };
 

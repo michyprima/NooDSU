@@ -168,6 +168,15 @@ every rate and data format through NDMA mode 0xC, the order of samples in each w
 an overrun, clearing it, the interrupt modes, NDMA starting late and stopping, and save states. Any small ROM will do, since
 it isn't run. It runs in DSi mode, so the folder needs a NAND. The expected values come from GBATEK, not a real DSi.
 
+## DSi SD card and NAND
+
+`sdmmc.sh <DS ROM> <system files folder>` checks what the DSi's SD/MMC controller reports about its cards, on the Mac with
+the interpreter, and prints how many checks passed: the NAND's CSD (a real DSi eMMC's), the CSD of standard- and
+high-capacity SD images of several sizes and the capacity a driver works out from it, the OCR's capacity bit, the SCR and SD
+status read through the FIFO, the bus width from ACMD6, the card detect after a reset, and an empty SD slot, whose commands time out while the NAND and Wi-Fi
+chip still answer. It makes sparse images in its run folder and removes them. Any small ROM will do, since it isn't run. It
+runs in DSi mode, so the folder needs a NAND. The SD card values come from the SD specification, not a real DSi.
+
 ## DSi headphones
 
 `gpio.sh <DS ROM> <system files folder>` checks the DSi's GPIO pins and the touchscreen controller's headset detection, on the

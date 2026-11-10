@@ -1690,9 +1690,11 @@ template <typename T> T Memory::ioRead7(uint32_t address) {
                 DEF_IO32(0x400481C, data = core->sdMmc.readIrqStatus()) // SD_IRQ_STATUS
                 DEF_IO32(0x4004820, data = core->sdMmc.readIrqMask()) // SD_IRQ_MASK
                 DEF_IO16(0x4004826, data = core->sdMmc.readData16Blklen()) // SD_DATA16_BLKLEN
+                DEF_IO16(0x4004828, data = core->sdMmc.readCardOption()) // SD_CARD_OPTION
                 DEF_IO32(0x400482C, data = core->sdMmc.readErrDetail()) // SD_ERR_DETAIL
                 DEF_IO16(0x4004830, data = core->sdMmc.readData16Fifo()) // SD_DATA16_FIFO
                 DEF_IO16(0x40048D8, data = core->sdMmc.readDataCtl()) // SD_DATA_CTL
+                DEF_IO16(0x40048E0, data = core->sdMmc.readSoftReset()) // SD_SOFT_RESET
                 DEF_IO16(0x4004900, data = core->sdMmc.readData32Irq()) // SD_DATA32_IRQ
                 DEF_IO16(0x4004904, data = core->sdMmc.readData32Blklen()) // SD_DATA32_BLKLEN
                 DEF_IO32(0x400490C, data = core->sdMmc.readData32Fifo()) // SD_DATA32_FIFO
@@ -2535,8 +2537,10 @@ template <typename T> void Memory::ioWrite7(uint32_t address, T value) {
                 DEF_IO32(0x400481C, core->sdMmc.writeIrqStatus(IOWR_PARAMS)) // SD_IRQ_STATUS
                 DEF_IO32(0x4004820, core->sdMmc.writeIrqMask(IOWR_PARAMS)) // SD_IRQ_MASK
                 DEF_IO16(0x4004826, core->sdMmc.writeData16Blklen(IOWR_PARAMS)) // SD_DATA16_BLKLEN
+                DEF_IO16(0x4004828, core->sdMmc.writeCardOption(IOWR_PARAMS)) // SD_CARD_OPTION
                 DEF_IO16(0x4004830, core->sdMmc.writeData16Fifo(IOWR_PARAMS)) // SD_DATA16_FIFO
                 DEF_IO16(0x40048D8, core->sdMmc.writeDataCtl(IOWR_PARAMS)) // SD_DATA_CTL
+                DEF_IO16(0x40048E0, core->sdMmc.writeSoftReset(IOWR_PARAMS)) // SD_SOFT_RESET
                 DEF_IO16(0x4004900, core->sdMmc.writeData32Irq(IOWR_PARAMS)) // SD_DATA32_IRQ
                 DEF_IO16(0x4004904, core->sdMmc.writeData32Blklen(IOWR_PARAMS)) // SD_DATA32_BLKLEN
                 DEF_IO32(0x400490C, core->sdMmc.writeData32Fifo(IOWR_PARAMS)) // SD_DATA32_FIFO

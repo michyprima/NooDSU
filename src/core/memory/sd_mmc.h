@@ -37,6 +37,7 @@ public:
     uint32_t *init();
     void readBlock();
     void writeBlock();
+    void detectCard();
 
     uint16_t readCmd() { return sdCmd; }
     uint16_t readPortSelect() { return sdPortSelect; }
@@ -46,6 +47,7 @@ public:
     uint32_t readIrqStatus() { return sdIrqStatus; }
     uint32_t readIrqMask() { return sdIrqMask; }
     uint16_t readData16Blklen() { return sdData16Blklen; }
+    uint16_t readCardOption() { return sdCardOption; }
     uint32_t readErrDetail() { return sdErrDetail; }
     uint16_t readData16Fifo();
     uint16_t readDataCtl() { return sdDataCtl; }
@@ -65,6 +67,7 @@ public:
     void writeIrqStatus(uint32_t mask, uint32_t value);
     void writeIrqMask(uint32_t mask, uint32_t value);
     void writeData16Blklen(uint16_t mask, uint16_t value);
+    void writeCardOption(uint16_t mask, uint16_t value);
     void writeData16Fifo(uint16_t mask, uint16_t value);
     void writeDataCtl(uint16_t mask, uint16_t value);
     void writeData32Irq(uint16_t mask, uint16_t value);
@@ -85,12 +88,17 @@ private:
     FileCache nandCache;
     FileCache sdCache;
     bool sdhc = false;
+    int64_t sdSize = 0;
+    int64_t nandSize = 0;
 
     uint32_t cardStatus = 0;
     uint32_t opCond = 0x80000000;
     uint32_t blockLen = 0;
     uint32_t curAddress = 0;
     uint16_t curBlock = 0;
+    uint8_t busWidth = 0;
+    bool detecting = false;
+    uint32_t detectAt = 0;
 
     std::deque<uint16_t> dataFifo16;
     std::deque<uint32_t> dataFifo32;
@@ -103,6 +111,7 @@ private:
     uint32_t sdIrqStatus = 0xA0;
     uint32_t sdIrqMask = 0x8B7F031D;
     uint16_t sdData16Blklen = 0;
+    uint16_t sdCardOption = 0x40EE;
     uint32_t sdErrDetail = 0;
     uint16_t sdData16Fifo = 0;
     uint32_t sdDataCtl = 0x1010;
@@ -122,6 +131,7 @@ private:
     const char *name() { return sdio ? "SDIO" : (sdPortSelect & 0x1) ? "MMC" : "SD"; }
     void scheduleRead();
     void scheduleWrite();
+    void startDetect();
     void sendInterrupt(int bit);
     void startWrite();
     uint32_t popFifo();
@@ -130,6 +140,8 @@ private:
     void runCommand();
     void runAppCommand();
     void runSdioCommand();
+    bool noCard() { return !sdio && !(sdPortSelect & 0x1) && !sd; }
+    void pushBytes(const uint8_t *data, int size);
     void ioExtended();
 
     void setIfCond();
@@ -142,6 +154,7 @@ private:
     void writeSingleBlock();
     void writeMultiBlock();
     void appCmd();
+    void setBusWidth();
     void sdStatus();
     void sdSendOpCond();
     void getScr();
