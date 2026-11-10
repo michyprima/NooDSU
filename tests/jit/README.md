@@ -78,6 +78,11 @@ program counters, then hashes of RAM and WRAM, and every way is compared with th
 - `ppm=file` to save the last frame, `ram=file` to save main RAM at the end, and `results=file` to save what
   `tests/hardware`'s ROM recorded, for its build
 - `headphones=N` to plug headphones into the DSi at frame N, as the GamePad's jack would
+- `sd=file` to give DSi mode an SD card image, which the run writes to, so give it a copy; without it the SD slot is empty
+- `shots=N` with `ppm=file` to also save the screens every N frames, named after it with the frame number added
+
+A run also ends early when the DSi asks to be reset, as it does to go back to its menu, since the harness can't start a new
+core; it prints the frame, and the NAND and SD images keep what was written.
 
 To watch a run, `--live` also prints each way's lines as they come, marked with its mode, and `--window` shows each way's
 screens in a window of its own, at most 60 times a second. The window needs SDL2 (`brew install sdl2`), and is only built

@@ -517,14 +517,14 @@ static uint64_t hash(const void *data, size_t size, uint64_t h = 0xCBF29CE484222
 int main(int argc, char **argv) {
     if (argc < 5) {
         printf("Usage: game <system files folder> <rom, or - for none> <interp|portable|native> <frames> [fast] [dsi] [firmware] [press=N] "
-            "[start=N] [touch=N] [trace=frame] [ppm=path] [headphones=N] [results=path] [ram=path] [audio] [wav=path] [keys=frame:key,...] [taps=frame:x:y,...] [wifi] [realtime] [live] [window] [input]\n");
+            "[start=N] [touch=N] [trace=frame] [ppm=path] [shots=N] [sd=path] [headphones=N] [results=path] [ram=path] [audio] [wav=path] [keys=frame:key,...] [taps=frame:x:y,...] [wifi] [realtime] [live] [window] [input]\n");
         return 2;
     }
     std::string files = argv[1], mode = argv[3];
-    int frames = atoi(argv[4]), headphones = -1, press = 0, startKey = 0, touch = 0, traceFrom = -1;
+    int frames = atoi(argv[4]), shots = 0, headphones = -1, press = 0, startKey = 0, touch = 0, traceFrom = -1;
     bool fast = false, dsi = false, firmware = false, window = false, wifi = false, realtime = false, input = false;
     bool threads = false, stress = false, audio = false;
-    std::string ppm, results, ramFile, wav;
+    std::string ppm, results, ramFile, wav, sdImage;
     std::vector<std::pair<int, int>> inputs; // Frame and key to press then, for 2 frames
     std::vector<std::array<int, 3>> taps; // Frame and bottom screen position to touch then, for 8 frames
     for (int i = 5; i < argc; i++) {
@@ -545,7 +545,9 @@ int main(int argc, char **argv) {
         else if (arg.rfind("touch=", 0) == 0) touch = atoi(arg.c_str() + 6);
         else if (arg.rfind("trace=", 0) == 0) traceFrom = atoi(arg.c_str() + 6);
         else if (arg.rfind("ppm=", 0) == 0) ppm = arg.substr(4);
+        else if (arg.rfind("shots=", 0) == 0) shots = atoi(arg.c_str() + 6); // Save the screens every N frames, with ppm's name
         else if (arg.rfind("headphones=", 0) == 0) headphones = atoi(arg.c_str() + 11); // Plug them in at frame N
+        else if (arg.rfind("sd=", 0) == 0) sdImage = arg.substr(3); // An SD card image for DSi mode, none by default
         else if (arg.rfind("results=", 0) == 0) results = arg.substr(8);
         else if (arg.rfind("ram=", 0) == 0) ramFile = arg.substr(4);
         else if (arg.rfind("wav=", 0) == 0) { wav = arg.substr(4); audio = true; }
@@ -587,6 +589,7 @@ int main(int argc, char **argv) {
     Settings::dsiBios7Path = files + "/bios7i.bin";
     Settings::dsiFirmPath = files + "/firmwarei.bin";
     Settings::dsiNandPath = "nand.bin";
+    Settings::sdImagePath = sdImage.empty() ? "sd.img" : sdImage;
     Settings::jit = mode != "interp";
     Settings::fastTiming = fast;
     Settings::dsiMode = dsi;
@@ -649,6 +652,15 @@ int main(int argc, char **argv) {
 
     // Print a line per frame that the runs can be compared by
     static uint32_t frame[256 * 192 * 2 * 4];
+    auto savePpm = [](const std::string &path) {
+        FILE *out = fopen(path.c_str(), "wb");
+        fprintf(out, "P6\n256 384\n255\n");
+        for (int p = 0; p < 256 * 384; p++) {
+            uint8_t rgb[3] = { uint8_t(frame[p]), uint8_t(frame[p] >> 8), uint8_t(frame[p] >> 16) };
+            fwrite(rgb, 1, 3, out);
+        }
+        fclose(out);
+    };
     uint64_t last = 0;
     auto start = std::chrono::steady_clock::now();
     for (int i = 0; i < frames; i++) {
@@ -695,6 +707,15 @@ int main(int argc, char **argv) {
             last = hash(frame, 256 * 192 * 2 * 4);
             if (window) windowShow(frame);
         }
+        if (shots && !ppm.empty() && i % shots == 0) savePpm(ppm + "." + std::to_string(i) + ".ppm");
+
+        // The DSi asking to be reset, as it does to go back to the menu, ends the run, since the harness can't start
+        // a new core; the NAND is left as it was for the next run
+        if (core->restartRequested.load()) {
+            printf("restart requested at frame %d\n", i);
+            frames = i + 1;
+            break;
+        }
         Interpreter &arm9 = core->interpreter[0], &arm7 = core->interpreter[1];
         printf("frame %d\tscreen %016llX\tcycles %u %u %u\tpc %08X %08X", i, (unsigned long long)last,
             core->globalCycles, arm9.cycles, arm7.cycles, arm9.registersUsr[15], arm7.registersUsr[15]);
@@ -737,15 +758,8 @@ int main(int argc, char **argv) {
         }
         fclose(out);
     }
-    if (!ppm.empty()) {
-        FILE *out = fopen(ppm.c_str(), "wb");
-        fprintf(out, "P6\n256 384\n255\n");
-        for (int p = 0; p < 256 * 384; p++) {
-            uint8_t rgb[3] = { uint8_t(frame[p]), uint8_t(frame[p] >> 8), uint8_t(frame[p] >> 16) };
-            fwrite(rgb, 1, 3, out);
-        }
-        fclose(out);
-    }
+    if (!ppm.empty()) savePpm(ppm);
+    core->sdMmc.flush(); // As the frontend does when it stops, since the core isn't deleted
     fflush(stdout);
     _exit(0);
 }

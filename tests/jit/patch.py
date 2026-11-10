@@ -25,6 +25,13 @@ if 'addrRestoreCpsr' not in open(root + '/arm/jit.h').read():
         '    static void restoreCpsrCall(Interpreter *arm, uint32_t before) {}\n    uint32_t modeBanks[32][4] = {};\n'))
 if 'addrGxStat' not in open(root + '/arm/jit.h').read():
     edit('arm/jit.h', ('    uint32_t addrDtcmReg = 0,', '    int offIme = 0;\n    uint32_t addrGxStat = 0;\n    uint32_t addrDtcmReg = 0,'))
+# Older cores also lack the DSi's headphone pin, reset request and SD/MMC write-back, which the harness uses
+if not os.path.exists(root + '/io/dsi_gpio.h'):
+    edit('core.h', ('#include "io/spi.h"\n', '#include "io/spi.h"\n\nstruct DsiGpio { static inline std::atomic<bool> headphonesIn{false}; };\n'))
+if 'void flush();' not in open(root + '/memory/sd_mmc.h').read():
+    edit('memory/sd_mmc.h', ('    void writeBlock();\n', '    void writeBlock();\n    void flush() {}\n'))
+if 'restartRequested' not in open(root + '/core.h').read():
+    edit('core.h', ('    Atomic32<bool> running;\n', '    Atomic32<bool> running;\n    std::atomic<bool> restartRequested{false};\n'))
 edit('arm/jit.cpp', ('#include <cstdlib>', '#include <algorithm>\n#include <vector>\n#include <cstdlib>'))
 edit('defines.h', ('__asm__ volatile("dcbz 0, %0" :: "r"(data) : "memory");', ''))
 edit('gpu/gpu.cpp',
