@@ -196,6 +196,47 @@ int main(int argc, char **argv) {
     frame(4);
     EQ(rh(SD_IRQ_STATUS) & 0x10, 0x10);
 
+    // A multi-block write as Flipnote Studio's backup does it: the first block goes into the 32-bit FIFO before the
+    // command, and NDMA, already enabled, sends the rest block by block once the command asks for more
+    for (int blocks : { 1, 2, 4 }) {
+        snprintf(tag, sizeof tag, "write %d", blocks);
+        boot("sd64m.img");
+        const uint32_t SRC = 0x2300000, ADDR = 0x40000 + blocks * 0x10000;
+        for (int i = 0; i < blocks * 128; i++) w(SRC + i * 4, 0x11110000 * (i / 128 + 1) + i);
+        cmd(0, 16, 0x200);
+        wh(0x4004900, 0x0402); wh(0x4004904, 0x200); wh(0x40048D8, 0x2); wh(0x400480A, blocks);
+        for (int i = 0; i < 128; i++) w(0x400490C, r(SRC + i * 4));
+        if (blocks > 1) {
+            w(0x4004104, SRC + 0x200); w(0x4004108, 0x400490C); w(0x400410C, (blocks - 1) * 128); w(0x4004110, 128);
+            w(0x4004114, 1); w(0x400411C, 0xC8000880); // Enabled with an interrupt, mode 8 (SD/MMC), fixed destination
+        }
+        cmd(0, 25, ADDR);
+        frame(2);
+        EQ(rh(SD_IRQ_STATUS) & 0x4, 0x4); // Data end
+        EQ(r(0x400411C) >> 31, 0); // NDMA finished
+
+        // Reading the blocks back gives the new data, and so does the file
+        wh(0x4004900, 0x0002); wh(0x40048D8, 0x0); wh(SD_DATA16_BLKLEN, 0x200); wh(0x400480A, blocks);
+        cmd(0, 18, ADDR);
+        int badRead = 0;
+        for (int i = 0; i < blocks * 128; i++) {
+            if (i % 128 == 0) frame(1);
+            uint32_t v = rh(SD_DATA16_FIFO); v |= rh(SD_DATA16_FIFO) << 16;
+            badRead += v != 0x11110000 * (i / 128 + 1) + i;
+        }
+        EQ(badRead, 0);
+
+        FILE *img = fopen("sd64m.img", "rb"); fseek(img, ADDR, SEEK_SET);
+        int bad = 0;
+        for (int i = 0; i < blocks * 128; i++) {
+            uint8_t b[4]; fread(b, 1, 4, img);
+            bad += (b[0] | b[1] << 8 | b[2] << 16 | uint32_t(b[3]) << 24) != 0x11110000 * (i / 128 + 1) + i;
+        }
+        uint8_t after[4]; fread(after, 1, 4, img); fclose(img);
+        EQ(bad, 0);
+        EQ(after[0] | after[1] | after[2] | after[3], 0); // Nothing past the last block
+    }
+
     // With no SD image the slot is empty, its commands time out, and the NAND and Wi-Fi chip still answer
     strcpy(tag, "no card");
     boot("missing.img");

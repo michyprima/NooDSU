@@ -172,21 +172,23 @@ void SdMmc::sendInterrupt(int bit) {
 }
 
 void SdMmc::startWrite() {
-    // Change to write state and trigger an initial DRQ
+    // Change to write state
     cardStatus = (cardStatus & ~0x1E00) | (0x6 << 9);
-    core->ndma[1].setDrq(drqType());
 
-    // Write a block right away if the FIFO is full, or trigger a FIFO empty interrupt
+    // Write a block right away if the FIFO is full, which NDMA started before the command can do; otherwise trigger a
+    // DRQ for the first block, and a FIFO empty interrupt
     if (sdDataCtl & BIT(1)) { // 32-bit
         if ((dataFifo32.size() << 2) >= sdData32Blklen)
-            scheduleWrite();
-        else if (dataFifo32.empty() && (sdData32Irq & BIT(12)))
+            return scheduleWrite();
+        core->ndma[1].setDrq(drqType());
+        if (dataFifo32.empty() && (sdData32Irq & BIT(12)))
             core->interpreter[1].sendInterrupt(irqBit());
     }
     else { // 16-bit
         if ((dataFifo16.size() << 1) >= sdData16Blklen)
-            scheduleWrite();
-        else if (dataFifo16.empty())
+            return scheduleWrite();
+        core->ndma[1].setDrq(drqType());
+        if (dataFifo16.empty())
             sendInterrupt(25);
     }
 }
