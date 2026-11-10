@@ -149,3 +149,12 @@ checks passed: what an empty slot reads at each ROM access time, `EXMEMCNT` givi
 Pak, Memory Expansion Pak, Guitar Grip, Easy Piano, paddle, solar sensor), and the GPIO pins of Boktai and WarioWare: Twisted
 carts in DS and GBA mode, with small GBA ROMs it makes. The DS ROM only gives the solar sensor's header its logo, and GBA mode
 needs `gba_bios.bin` in the folder. The expected values come from GBATEK, DeSmuME and melonDS, not a real DS.
+
+## Display FIFO
+
+`fifo.sh <DS ROM> <system files folder>` checks the main memory display FIFO, on the Mac with the interpreter, and prints how
+many checks passed: what writes of each size to `DISP_MMEM_FIFO` do, engine A showing it in display mode 3 with master
+brightness, display capture taking it as source B alone and blended, DMA timing 4 filling it in different ways and being
+stopped at V-blank, the ring repeating when nothing fills it, and DSi NDMA mode 9. The display checks run in DS mode, DS mode
+with the 2D threads and fast 2D, and DSi mode, so the folder needs a NAND. Any small ROM will do, since it isn't run. The
+expected values come from GBATEK and melonDS, not a real DS; `tests/hardware`'s FIFO test is for that.
