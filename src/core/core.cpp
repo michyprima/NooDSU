@@ -134,7 +134,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
         gpu3DRenderer(this), hleArm7(this), hleBios { HleBios(this, 0, HleBios::swiTable9), HleBios(this, 1, HleBios::
         swiTable7), HleBios(this, 1, HleBios::swiTableGba) }, i2c(this), input(this), interpreter { Interpreter(
         this, 0), Interpreter(this, 1) }, ipc(this), jit(this, 0), jit7(this, 1), memory(this), ndma { Ndma(this, 0), Ndma(this, 1) }, rtc(this),
-        saveStates(this), sdMmc(this, false), sdio(this, true), slot2(this), dsiWifi(this), spi(this), spu(this), timers { Timers(this, 0), Timers(this, 1) }, wifi(this) {
+        saveStates(this), sdMmc(this, false), sdio(this, true), slot2(this), dsiWifi(this), dsiMic(this), spi(this), spu(this), timers { Timers(this, 0), Timers(this, 1) }, wifi(this) {
     // Set DSi mode now and ignore changes to it later
     dsiMode = Settings::dsiMode;
     updateRun();
@@ -189,6 +189,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
     tasks[SDIO_WRITE_BLOCK] = std::bind(&SdMmc::writeBlock, &sdio);
     tasks[CARD_POWER_OFF] = std::bind(&Memory::cardPowerOff, &memory);
     tasks[RTC_TICK] = std::bind(&Rtc::tick, &rtc);
+    tasks[MIC_UPDATE] = std::bind(&DsiMic::update, &dsiMic);
 
     // Schedule initial tasks for NDS mode
     schedule(RESET_CYCLES, 0x7FFFFFFF);
@@ -383,6 +384,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
             memory.write<uint8_t>(1, 0x4000300, 0x01); // POSTFLG (ARM7)
             memory.write<uint16_t>(0, 0x4000304, 0x0001); // POWCNT1
             memory.write<uint16_t>(1, 0x4000504, 0x0200); // SOUNDBIAS
+            if (dsiMode) memory.write<uint16_t>(1, 0x4004700, 0x8008); // SNDEXCNT, as the DSi menu leaves it
 
             cartridgeNds.directBoot();
 
@@ -479,6 +481,7 @@ void Core::resetCycles() {
     cartridgeNds.resetCycles();
     spu.resetCycles();
     spi.resetCycles();
+    dsiMic.resetCycles();
     globalCycles -= globalCycles;
     schedule(RESET_CYCLES, 0x7FFFFFFF);
 }

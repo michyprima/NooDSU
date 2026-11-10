@@ -47,6 +47,7 @@
 #include "io/aes.h"
 #include "io/div_sqrt.h"
 #include "io/dsi_wifi.h"
+#include "io/dsi_mic.h"
 #include "io/i2c.h"
 #include "io/input.h"
 #include "io/ipc.h"
@@ -113,6 +114,7 @@ enum SchedTask {
     SDIO_WRITE_BLOCK,
     CARD_POWER_OFF,
     RTC_TICK,
+    MIC_UPDATE,
     MAX_TASKS
 };
 
@@ -209,6 +211,7 @@ public:
     SdMmc sdio;
     Slot2 slot2;
     DsiWifi dsiWifi;
+    DsiMic dsiMic;
     Spi spi;
     Spu spu;
     Timers timers[2];

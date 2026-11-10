@@ -59,6 +59,7 @@ public:
     static void setNickname(const std::u16string &name) { nickname = name; }
     void sendMicData(const int16_t *samples, size_t count, size_t rate);
     void setMicBlow(bool blow) { micBlow.store(blow); }
+    int16_t readMic(uint32_t cycles);
     void resetCycles();
 
     uint16_t readSpiCnt() { return spiCnt; }

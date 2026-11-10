@@ -158,3 +158,11 @@ brightness, display capture taking it as source B alone and blended, DMA timing 
 stopped at V-blank, the ring repeating when nothing fills it, and DSi NDMA mode 9. The display checks run in DS mode, DS mode
 with the 2D threads and fast 2D, and DSi mode, so the folder needs a NAND. Any small ROM will do, since it isn't run. The
 expected values come from GBATEK and melonDS, not a real DS; `tests/hardware`'s FIFO test is for that.
+
+## DSi microphone
+
+`mic.sh <DS ROM> <system files folder>` checks the DSi's microphone FIFO (`MIC_CNT`, `MIC_DATA`) and `SNDEXCNT`, on the Mac
+with the interpreter, and prints how many checks passed: register bits, nothing arriving unless both enable bits are set,
+every rate and data format through NDMA mode 0xC, the order of samples in each word, the status bits as the FIFO fills to
+an overrun, clearing it, the interrupt modes, NDMA starting late and stopping, and save states. Any small ROM will do, since
+it isn't run. It runs in DSi mode, so the folder needs a NAND. The expected values come from GBATEK, not a real DSi.

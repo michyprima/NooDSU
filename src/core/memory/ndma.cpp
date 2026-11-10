@@ -248,7 +248,7 @@ void Ndma::writeCnt(int i, uint32_t mask, uint32_t value) {
     if (!arm7 && mode == 0xA && core->gpu3D.fifoHalfEmpty()) trigger(mode);
 
     // Log started channel information and catch modes that have nothing to trigger them
-    bool noSource = arm7 ? (mode == 0x5 || mode == 0x7 || (mode >= 0xC && mode < 0x10)) :
+    bool noSource = arm7 ? (mode == 0x5 || mode == 0x7 || (mode >= 0xD && mode < 0x10)) :
         (mode == 0x5 || (mode >= 0xB && mode < 0x10));
     if (noSource)
         LOG_CRIT("ARM%d NDMA channel %d started in unimplemented mode: 0x%X\n", arm7 ? 7 : 9, i, mode);

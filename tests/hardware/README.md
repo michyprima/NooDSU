@@ -149,13 +149,56 @@ A real DSi in DSi mode settled it, and NooDS U now matches 15 of its 16 scenes:
   while the display reads, which NooDS U does all at once. Two pixels of `COUNT2` also came out 16 pixels older on the DSi,
   which looks like bus timing.
 
+## The DSi microphone test
+
+`build/noodsu-mic.nds` is a sixth ROM, for a DSi in DSi mode. It settles what GBATEK leaves open about the DSi's microphone
+FIFO (`MIC_CNT`, `MIC_DATA`) and `SNDEXCNT`: which register bits stick, what the four data formats do, when the first sample
+arrives and whether the sample clock runs freely, when each status bit and the interrupt come, what reads of each size take
+from the FIFO and what an empty FIFO reads, what turning it off and on or clearing it keeps, how NDMA mode 0xC fetches blocks
+of 1 to 16 words, and what the samples look like with the microphone muted and unmuted in the touchscreen controller.
+
+Only the ARM7 has the microphone, so the ARM9 asks it for one test at a time, which runs with interrupts off and timers 0 and
+1 counting cycles. Most tests are timelines: the time of every change of the FIFO's empty, half, full and overrun bits and of
+IF2 bit 14, while nothing reads the FIFO, then what reading it gives. SNDEXCNT and the touchscreen controller are put back as
+they were afterwards. Hold the DSi still and quiet, or talk, either works; the samples are shown but not compared.
+
+It saves `noodsu-mictest.bin` like the other ROMs. To see what it found, and how that compares with NooDS U:
+
+```
+tests/hardware/mic.py noodsu-mictest.bin [NooDS U's]
+```
+
+NooDS U's comes from a RAM dump, `tests/jit/game.sh tests/hardware/build/noodsu-mic.nds <system files folder> 600 --modes interp
+dsi ram=mic.bin`, which `mic.py` reads too. Timeline events are `cycles(samples of 1024 cycles):status`, with `E`, `H`, `F`, `O`
+for empty, half full, full and overrun, and `I` for IF2 bit 14. If it hangs, the third line says which test. What each result
+word means is in the comments in `mic_tests.c`.
+
+A real DSi settled most of it, and NooDS U now does the same:
+
+- The sample clock runs freely, so the first sample comes 0 to 1 frames after turning the microphone on, plus however long
+  the format takes to fill a word. Each frame has a left slot and a right slot half a 32.73kHz or 47.61kHz frame later, even
+  when the rate is divided. Format 0 takes both, starting from a left slot, format 1 only the right, 2 only the left, and 3
+  none, as calico's names for the bits say. In mono a word needs 2 samples before the FIFO stops reading as empty.
+- IRQ modes 1 and 3 fire when the FIFO becomes half full, and again only after it drops below that; mode 2 fires when it
+  overruns, not when it becomes full.
+- NDMA is asked for a block when the FIFO becomes half full, and not again until the FIFO has been empty, so blocks of 8 or
+  16 words carry on and smaller ones stop after the first. A channel turned on after the FIFO is already half full never starts.
+- Reads of any size, at either half of `MIC_DATA`, take a whole word. Turning the microphone off keeps the FIFO and an
+  overrun, and clearing only works if it was off before the write.
+
+- In stereo the right slot repeats the left slot's sample, so both halves of each word are the same; in mono the older
+  sample is in the low half.
+- An empty FIFO reads the last word read, again and again, even after it's cleared.
+- Muting the microphone in the touchscreen controller doesn't zero the samples; they drift slowly, like an input settling.
+  The first run read FFFF for every sample, since calico's touchscreen controller calls do nothing without the SPI lock.
+
 ## Building it
 
 ```
 tests/hardware/build.sh [results from NooDS U]
 ```
 
-It builds all five ROMs, and needs devkitPro's `nds-dev`. The results are NooDS U's for the instruction test's CPUs, as 2 x
+It builds all six ROMs, and needs devkitPro's `nds-dev`. The results are NooDS U's for the instruction test's CPUs, as 2 x
 110 x 12 little-endian words, which go in a table of the same size either way, so the code doesn't move. Build once without
 them, run that in NooDS U to get them, and build again. On the Mac, `tests/jit/game.sh` gets them:
 

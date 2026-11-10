@@ -61,3 +61,12 @@ echo "Built $out/noodsu-rdlines.nds"
 "$dkp/tools/bin/ndstool" -c "$out/noodsu-fifo.nds" -7 "$out/rdlines7.elf" -9 "$out/fifo9.elf" \
     -b "$dkp/calico/share/nds-icon.bmp" "NooDS U FIFO test;Display FIFO on a real DS;" > /dev/null
 echo "Built $out/noodsu-fifo.nds"
+
+# The DSi microphone test, a ROM of its own for a DSi in DSi mode
+"$tools-gcc" $common -march=armv5te -mtune=arm946e-s -DARM9 -specs="$dkp/calico/share/ds9.specs" \
+    "$here/screen.c" "$here/mic9.c" -lfat -lnds9 -lcalico_ds9 -o "$out/mic9.elf"
+"$tools-gcc" $common -march=armv4t -mtune=arm7tdmi -DARM7 -specs="$dkp/calico/share/ds7.specs" \
+    "$here/mic_tests.c" "$here/mic7.c" -lnds7 -lcalico_ds7 -o "$out/mic7.elf"
+"$dkp/tools/bin/ndstool" -c "$out/noodsu-mic.nds" -7 "$out/mic7.elf" -9 "$out/mic9.elf" \
+    -b "$dkp/calico/share/nds-icon.bmp" "NooDS U mic test;DSi microphone on a real DSi;" > /dev/null
+echo "Built $out/noodsu-mic.nds"

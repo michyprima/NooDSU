@@ -1671,6 +1671,9 @@ template <typename T> T Memory::ioRead7(uint32_t address) {
                 DEF_IO32(0x400440C, data = core->aes.readRdfifo()) // AES_RDFIFO
                 DEF_IO08(0x4004500, data = core->i2c.readData()) // I2C_DATA
                 DEF_IO08(0x4004501, data = core->i2c.readCnt()) // I2C_CNT
+                DEF_IO16(0x4004600, data = core->dsiMic.readMicCnt()) // MIC_CNT
+                DEF_IO32(0x4004604, data = core->dsiMic.readMicData()) // MIC_DATA
+                DEF_IO16(0x4004700, data = core->dsiMic.readSndExCnt()) // SNDEXCNT
                 DEF_IO16(0x4004800, data = core->sdMmc.readCmd()) // SD_CMD
                 DEF_IO16(0x4004802, data = core->sdMmc.readPortSelect()) // SD_PORT_SELECT
                 DEF_IO32(0x4004804, data = core->sdMmc.readCmdParam()) // SD_CMD_PARAM
@@ -2513,6 +2516,8 @@ template <typename T> void Memory::ioWrite7(uint32_t address, T value) {
                 DEF_IO32(0x40044FC, core->aes.writeKeyy(3, 3, IOWR_PARAMS)) // AES_KEYY3.3
                 DEF_IO08(0x4004500, core->i2c.writeData(IOWR_PARAMS8)) // I2C_DATA
                 DEF_IO08(0x4004501, core->i2c.writeCnt(IOWR_PARAMS8)) // I2C_CNT
+                DEF_IO16(0x4004600, core->dsiMic.writeMicCnt(IOWR_PARAMS)) // MIC_CNT
+                DEF_IO16(0x4004700, core->dsiMic.writeSndExCnt(IOWR_PARAMS)) // SNDEXCNT
                 DEF_IO16(0x4004800, core->sdMmc.writeCmd(IOWR_PARAMS)) // SD_CMD
                 DEF_IO16(0x4004802, core->sdMmc.writePortSelect(IOWR_PARAMS)) // SD_PORT_SELECT
                 DEF_IO32(0x4004804, core->sdMmc.writeCmdParam(IOWR_PARAMS)) // SD_CMD_PARAM

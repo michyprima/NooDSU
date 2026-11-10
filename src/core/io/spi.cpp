@@ -414,6 +414,39 @@ void Spi::sendMicData(const int16_t *samples, size_t count, size_t rate) {
     mutex.unlock();
 }
 
+int16_t Spi::readMic(uint32_t cycles) {
+    // Make noise while blowing is held
+    if (micBlow.load()) {
+        micNoise ^= micNoise << 13;
+        micNoise ^= micNoise >> 17;
+        micNoise ^= micNoise << 5;
+        return micNoise;
+    }
+
+    // Get the microphone sample for a time, which can be a little in the past
+    int16_t value = 0;
+    mutex.lock();
+    if (micStep) {
+        // Move past the samples that played since the last read
+        if (int32_t(cycles - micCycles) > 0) {
+            uint32_t played = (cycles - micCycles) / micStep;
+            micRead += played;
+            micCycles += played * micStep;
+        }
+
+        // Stay a few frames behind the newest samples, skipping ahead if reads fell behind, and
+        // wait for more if they ran out, like when reading stopped or the emulator ran fast
+        if (int32_t(micWrite - micRead) > int32_t(micRate / 10))
+            micRead = micWrite - micRate / 30;
+        if (int32_t(micWrite - micRead) <= 0)
+            micRead = micWrite, micCycles = cycles;
+        else
+            value = micBuffer[micRead & (MIC_SIZE - 1)];
+    }
+    mutex.unlock();
+    return value;
+}
+
 void Spi::resetCycles() {
     // Adjust the microphone's sample time for the global reset
     micCycles -= core->globalCycles;
@@ -537,34 +570,8 @@ void Spi::writeSpiData(uint8_t value) {
 
             case 6: // AUX input
                 if (writeCount & 1) {
-                    // Load the sample for the current time, or noise while blowing is held
-                    // The sample is converted to an unsigned 12-bit value
-                    int16_t value = 0;
-                    if (micBlow.load()) {
-                        micNoise ^= micNoise << 13;
-                        micNoise ^= micNoise >> 17;
-                        micNoise ^= micNoise << 5;
-                        value = micNoise;
-                    }
-                    else {
-                        mutex.lock();
-                        if (micStep) {
-                            // Move past the samples that played since the last read
-                            uint32_t played = (core->globalCycles - micCycles) / micStep;
-                            micRead += played;
-                            micCycles += played * micStep;
-
-                            // Stay a few frames behind the newest samples, skipping ahead if reads fell behind, and
-                            // wait for more if they ran out, like when reading stopped or the emulator ran fast
-                            if (int32_t(micWrite - micRead) > int32_t(micRate / 10))
-                                micRead = micWrite - micRate / 30;
-                            if (int32_t(micWrite - micRead) <= 0)
-                                micRead = micWrite, micCycles = core->globalCycles;
-                            else
-                                value = micBuffer[micRead & (MIC_SIZE - 1)];
-                        }
-                        mutex.unlock();
-                    }
+                    // Load the sample for the current time, converted to an unsigned 12-bit value
+                    int16_t value = readMic(core->globalCycles);
                     micSample = (value >> 4) + 0x800;
 
                     // Send the most significant 7 bits of the sample first
