@@ -84,5 +84,7 @@ private:
     void scrambleKey(uint32_t *key, const uint32_t *x, const uint32_t *y);
     void expandKey(const uint32_t *key);
     void initFifo();
+    void processBlock(uint8_t mode, const uint32_t *src);
+    void finishMac(uint8_t mode);
     void triggerFifo();
 };

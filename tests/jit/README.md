@@ -198,6 +198,7 @@ mode, so the folder needs a NAND. The expected values come from GBATEK, not a re
 checks passed: which I2C devices answer (the MCU and the two Aptina sensors, not the alternate cameras some software looks
 for), the sensors reading 0xFF while CAM_MCNT holds them in reset, their chip ID and MCU variables, the sequencer's preview
 and capture modes, a 256x192 preview picture copied by NDMA as the DSi Camera does it, mirrored and not, the conversion to
-RGB555, trimming with CAM_SOFS and CAM_EOFS, overruns, standby and save states. The pictures come from DsiCamera::sendFrame,
+RGB555, trimming with CAM_SOFS and CAM_EOFS, overruns, standby and save states, and the AES-CCM job with only associated data
+that signs a photo finishing with its interrupt and MAC. The pictures come from DsiCamera::sendFrame,
 as the GamePad's camera sends them on the console. Any small ROM will do, since it isn't run. It runs in DSi mode, so the
 folder needs a NAND. The expected values come from GBATEK and melonDS, not a real DSi.

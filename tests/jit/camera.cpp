@@ -203,6 +203,23 @@ int main(int argc, char **argv) {
     camWrite(0x7A, 0x0018, 0x0001);
     EQ(DsiCamera::streaming.load(), 0);
 
+    // Signing a photo is an AES-CCM job with only associated data and no payload, which has to finish once that data
+    // runs out: the busy bit clears, the ARM7 gets the AES interrupt (IF2 bit 12), and the MAC waits in the read FIFO
+    strcpy(tag, "aes mac only");
+    for (int blocks : { 1, 3 }) {
+        auto w7 = [](uint32_t a, uint32_t v) { c->memory.write<uint32_t>(1, a, v, false); };
+        auto r7 = [](uint32_t a) { return c->memory.read<uint32_t>(1, a, false); };
+        c->interpreter[1].irf &= ~BITL(44);
+        w7(0x4004404, blocks); // No payload blocks, and this many of associated data
+        w7(0x4004400, 0xC0076C00 | (1 << 28)); // Start CCM encryption with the interrupt, a 16-byte MAC, empty FIFOs
+        EQ(r7(0x4004400) >> 31, 1);
+        for (int i = 0; i < blocks * 4; i++) w7(0x4004408, 0x12345678 * (i + 1));
+        frame(1);
+        EQ(r7(0x4004400) >> 31, 0);
+        EQ((c->interpreter[1].irf >> 44) & 1, 1);
+        EQ((r7(0x4004400) >> 5) & 0x1F, 4);
+    }
+
     // Everything survives a save state
     strcpy(tag, "state");
     startSensor(0x78, true);

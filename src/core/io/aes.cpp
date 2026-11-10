@@ -240,13 +240,15 @@ void Aes::update() {
     // Process FIFO blocks when active and available
     while ((aesCnt & BIT(31)) && writeFifo.size() >= 4 && readFifo.size() <= 12) {
         // Receive an input block from the write FIFO
-        uint32_t src[4], dst[4];
+        uint32_t src[4];
         for (int i = 0; i < 4; i++) {
             src[i] = writeFifo.front();
             writeFifo.pop_front();
         }
 
-        // Process a CCM extra block and send it to the read FIFO if enabled
+        // Process a CCM extra block and send it to the read FIFO if enabled; with no payload blocks, the last one
+        // finishes the set, which is how the DSi Camera signs a photo
+        uint8_t mode = (aesCnt >> 28) & 0x3;
         if (curExtra) {
             for (int i = 0; i < 4; i++)
                 cbc[i] ^= src[i];
@@ -254,82 +256,19 @@ void Aes::update() {
             if (aesCnt & BIT(19))
                 for (int i = 0; i < 4; i++)
                     readFifo.push_back(src[i]);
-            curExtra--;
-            continue;
+            if (--curExtra > 0 || curBlock > 0) continue;
         }
-
-        // Handle the block based on the selected mode
-        uint8_t mode = (aesCnt >> 28) & 0x3;
-        switch (mode) {
-        case 0: // CCM decrypt
-            for (int i = 0, c = 1; i < 4; i++)
-                ctr[i] += c, c &= (ctr[i] == 0);
-            cryptBlock(ctr, dst);
-            for (int i = 0; i < 4; i++)
-                cbc[i] ^= (dst[i] ^= src[i]);
-            cryptBlock(cbc, cbc);
-            break;
-
-        case 1: // CCM encrypt
-            for (int i = 0, c = 1; i < 4; i++)
-                ctr[i] += c, c &= (ctr[i] == 0);
-            cryptBlock(ctr, dst);
-            for (int i = 0; i < 4; i++)
-                cbc[i] ^= src[i], dst[i] ^= src[i];
-            cryptBlock(cbc, cbc);
-            break;
-
-        default: // CTR
-            cryptBlock(ctr, dst);
-            for (int i = 0, c = 1; i < 4; i++) {
-                ctr[i] += c;
-                c &= (ctr[i] == 0);
-                dst[i] ^= src[i];
-            }
-            break;
+        else {
+            processBlock(mode, src);
+            if (--curBlock > 0) continue;
         }
-
-        // Send an output block to the read FIFO
-        for (int i = 0; i < 4; i++)
-            readFifo.push_back(dst[i]);
 
         // Disable the FIFO once all blocks are processed and trigger an interrupt if enabled
-        if (--curBlock > 0) continue;
         aesCnt &= ~BIT(31);
         if (aesCnt & BIT(30))
             core->interpreter[1].sendInterrupt(44);
         LOG_INFO("AES FIFO finished processing\n");
-
-        // Calculate a CCM MAC for applicable modes
-        if (mode > 1) continue;
-        ctr[0] &= ~0xFFFFFF;
-        cryptBlock(ctr, ctr);
-        for (int i = 0; i < 4; i++)
-            cbc[i] ^= ctr[i];
-
-        // Create a mask based on the MAC length
-        uint32_t mask[4] = {};
-        uint8_t len = std::max(4U, ((aesCnt >> 15) & 0xE) + 2);
-        for (int i = 0; i < len; i += 2)
-            mask[i / 4] |= 0xFFFF << ((i << 3) & 0x10);
-
-        // Handle final verification steps for CCM modes
-        if (mode == 1) { // Encrypt
-            // Append the MAC to the output data (possibly overflowing the FIFO, but that's fine)
-            for (int i = 0; i < 4; i++)
-                readFifo.push_back(cbc[i] & mask[i]);
-        }
-        else if (~aesCnt & BIT(20)) {
-            // Catch unhandled verification using the write FIFO
-            LOG_CRIT("Unhandled AES-CCM MAC verification source used: FIFO\n");
-        }
-        else { // Decrypt
-            // Verify decryption by comparing the MAC with one provided via registers
-            bool fail = false;
-            for (int i = 0; i < 4; i++)
-                if ((fail = (cbc[i] ^ aesMac[i]) & mask[i])) break;
-            aesCnt |= (!fail << 21);
-        }
+        if (mode < 2) finishMac(mode);
     }
 
     // Update the AES FIFO sizes
@@ -347,6 +286,75 @@ void Aes::update() {
         core->ndma[1].setDrq(0xB);
     else
         core->ndma[1].clearDrq(0xB);
+}
+
+void Aes::processBlock(uint8_t mode, const uint32_t *src) {
+    // Handle a payload block based on the selected mode
+    uint32_t dst[4];
+    switch (mode) {
+    case 0: // CCM decrypt
+        for (int i = 0, c = 1; i < 4; i++)
+            ctr[i] += c, c &= (ctr[i] == 0);
+        cryptBlock(ctr, dst);
+        for (int i = 0; i < 4; i++)
+            cbc[i] ^= (dst[i] ^= src[i]);
+        cryptBlock(cbc, cbc);
+        break;
+
+    case 1: // CCM encrypt
+        for (int i = 0, c = 1; i < 4; i++)
+            ctr[i] += c, c &= (ctr[i] == 0);
+        cryptBlock(ctr, dst);
+        for (int i = 0; i < 4; i++)
+            cbc[i] ^= src[i], dst[i] ^= src[i];
+        cryptBlock(cbc, cbc);
+        break;
+
+    default: // CTR
+        cryptBlock(ctr, dst);
+        for (int i = 0, c = 1; i < 4; i++) {
+            ctr[i] += c;
+            c &= (ctr[i] == 0);
+            dst[i] ^= src[i];
+        }
+        break;
+    }
+
+    // Send an output block to the read FIFO
+    for (int i = 0; i < 4; i++)
+        readFifo.push_back(dst[i]);
+}
+
+void Aes::finishMac(uint8_t mode) {
+    // Calculate a CCM MAC once all blocks are processed
+    ctr[0] &= ~0xFFFFFF;
+    cryptBlock(ctr, ctr);
+    for (int i = 0; i < 4; i++)
+        cbc[i] ^= ctr[i];
+
+    // Create a mask based on the MAC length
+    uint32_t mask[4] = {};
+    uint8_t len = std::max(4U, ((aesCnt >> 15) & 0xE) + 2);
+    for (int i = 0; i < len; i += 2)
+        mask[i / 4] |= 0xFFFF << ((i << 3) & 0x10);
+
+    // Handle final verification steps for CCM modes
+    if (mode == 1) { // Encrypt
+        // Append the MAC to the output data (possibly overflowing the FIFO, but that's fine)
+        for (int i = 0; i < 4; i++)
+            readFifo.push_back(cbc[i] & mask[i]);
+    }
+    else if (~aesCnt & BIT(20)) {
+        // Catch unhandled verification using the write FIFO
+        LOG_CRIT("Unhandled AES-CCM MAC verification source used: FIFO\n");
+    }
+    else { // Decrypt
+        // Verify decryption by comparing the MAC with one provided via registers
+        bool fail = false;
+        for (int i = 0; i < 4; i++)
+            if ((fail = (cbc[i] ^ aesMac[i]) & mask[i])) break;
+        aesCnt |= (!fail << 21);
+    }
 }
 
 uint32_t Aes::readRdfifo() {
