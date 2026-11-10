@@ -134,7 +134,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
         gpu3DRenderer(this), hleArm7(this), hleBios { HleBios(this, 0, HleBios::swiTable9), HleBios(this, 1, HleBios::
         swiTable7), HleBios(this, 1, HleBios::swiTableGba) }, i2c(this), input(this), interpreter { Interpreter(
         this, 0), Interpreter(this, 1) }, ipc(this), jit(this, 0), jit7(this, 1), memory(this), ndma { Ndma(this, 0), Ndma(this, 1) }, rtc(this),
-        saveStates(this), sdMmc(this, false), sdio(this, true), slot2(this), dsiWifi(this), dsiMic(this), dsiGpio(this), spi(this), spu(this), timers { Timers(this, 0), Timers(this, 1) }, wifi(this) {
+        saveStates(this), sdMmc(this, false), sdio(this, true), slot2(this), dsiWifi(this), dsiMic(this), dsiGpio(this), dsiCamera(this), spi(this), spu(this), timers { Timers(this, 0), Timers(this, 1) }, wifi(this) {
     // Set DSi mode now and ignore changes to it later
     dsiMode = Settings::dsiMode;
     updateRun();
@@ -192,6 +192,8 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
     tasks[MIC_UPDATE] = std::bind(&DsiMic::update, &dsiMic);
     tasks[SDMMC_CARD_DETECT] = std::bind(&SdMmc::detectCard, &sdMmc);
     tasks[SDMMC_FLUSH] = std::bind(&SdMmc::flush, &sdMmc);
+    tasks[CAM_FRAME] = std::bind(&DsiCamera::frameStart, &dsiCamera);
+    tasks[CAM_LINE] = std::bind(&DsiCamera::transferLine, &dsiCamera);
 
     // Schedule initial tasks for NDS mode
     schedule(RESET_CYCLES, 0x7FFFFFFF);
@@ -321,6 +323,9 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
             memory.write<uint32_t>(1, 0x3FFC654 + i, memory.read<uint32_t>(1, 0xC6D0 + i));
         for (int i = 0; i < 0x1048; i += 4)
             memory.write<uint32_t>(1, 0x3FFD69C + i, memory.read<uint32_t>(1, 0xD718 + i));
+
+        // Start the cameras' frames
+        dsiCamera.start();
 
         // Initialize SD/MMC and fill in the info struct
         uint32_t *mmcCid = sdMmc.init();

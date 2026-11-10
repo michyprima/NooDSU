@@ -49,6 +49,7 @@
 #include "io/dsi_wifi.h"
 #include "io/dsi_mic.h"
 #include "io/dsi_gpio.h"
+#include "io/dsi_camera.h"
 #include "io/i2c.h"
 #include "io/input.h"
 #include "io/ipc.h"
@@ -118,6 +119,8 @@ enum SchedTask {
     MIC_UPDATE,
     SDMMC_CARD_DETECT,
     SDMMC_FLUSH,
+    CAM_FRAME,
+    CAM_LINE,
     MAX_TASKS
 };
 
@@ -216,6 +219,7 @@ public:
     DsiWifi dsiWifi;
     DsiMic dsiMic;
     DsiGpio dsiGpio;
+    DsiCamera dsiCamera;
     Spi spi;
     Spu spu;
     Timers timers[2];

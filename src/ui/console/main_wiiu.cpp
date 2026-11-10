@@ -51,6 +51,7 @@
 #include <padscore/wpad.h>
 #include <proc_ui/procui.h>
 #include <sysapp/launch.h>
+#include <camera/camera.h>
 #include <vpad/input.h>
 #include <whb/sdcard.h>
 #include <whb/gfx.h>
@@ -80,6 +81,9 @@ GX2Texture *gpTexture, *gpLastTexture;
 int tvWidth, tvHeight;
 int bufOffset;
 bool firstScreen;
+
+void updateCamera();
+void closeCamera();
 
 VPADStatus vpad;
 VPADTouchData touch;
@@ -190,6 +194,7 @@ void releaseForeground() {
     bool resume = ConsoleUI::running;
     ConsoleUI::stopCore();
     ConsoleUI::closeMic();
+    closeCamera();
 
     // Let the main thread release the foreground, and wait until it's back
     std::unique_lock<std::mutex> lock(procMutex);
@@ -847,8 +852,9 @@ void scanInput() {
     if (!gamepad) gamepadBattery = -1;
     else if (vpadError == VPAD_READ_SUCCESS) gamepadBattery = vpad.battery;
 
-    // Let the DSi see headphones plugged into the GamePad
+    // Let the DSi see headphones plugged into the GamePad, and its camera when one of the DSi's is on
     if (vpadError == VPAD_READ_SUCCESS) DsiGpio::headphonesIn.store(vpad.usingHeadphones);
+    updateCamera();
     if (gamepad == ScreenLayout::splitDisplays) {
         gamepadFrames = 0;
     }
@@ -1143,6 +1149,100 @@ void ConsoleUI::closeMic() {
     micHandle = -1;
 }
 
+// The GamePad's camera, which shows the DSi's cameras the player while one of them is on
+CAMHandle camHandle = -1;
+void *camWork = nullptr;
+void *camBuffers[2] = {};
+CAMSurface camSurfaces[2];
+uint32_t camFrame[DsiCamera::WIDTH * DsiCamera::HEIGHT / 2];
+int camRetry = 0; // Frames until opening it is tried again after failing
+
+void cameraEvent(CAMEventData *event) {
+    // Convert a decoded NV12 picture to the YUV422 the DSi's sensors send, two pixels a word, and queue its surface again
+    if (event->eventType != CAMERA_DECODE_DONE) return;
+    const uint8_t *y = (const uint8_t*)event->decode.surfaceBuffer;
+    const uint8_t *uv = y + CAMERA_Y_BUFFER_SIZE;
+    if (!event->decode.failed) {
+        for (int row = 0; row < CAMERA_HEIGHT; row++) {
+            const uint8_t *ys = &y[row * CAMERA_PITCH], *uvs = &uv[(row / 2) * CAMERA_PITCH];
+            uint32_t *out = &camFrame[row * CAMERA_WIDTH / 2];
+            for (int x = 0; x < CAMERA_WIDTH; x += 2)
+                out[x / 2] = ys[x] | (uvs[x] << 8) | (ys[x + 1] << 16) | (uint32_t(uvs[x + 1]) << 24);
+        }
+        DsiCamera::sendFrame(camFrame);
+    }
+    for (int i = 0; i < 2; i++)
+        if (camBuffers[i] == event->decode.surfaceBuffer)
+            CAMSubmitTargetSurface(camHandle, &camSurfaces[i]);
+}
+
+void closeCamera() {
+    // Stop the camera if it's open and free its memory
+    if (camHandle >= 0) {
+        CAMClose(camHandle);
+        CAMExit(camHandle);
+        camHandle = -1;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (camBuffers[i]) MEMFreeToDefaultHeap(camBuffers[i]);
+        camBuffers[i] = nullptr;
+    }
+    if (camWork) MEMFreeToDefaultHeap(camWork);
+    camWork = nullptr;
+}
+
+void updateCamera() {
+    // Follow whether the DSi wants pictures, opening the camera when it does and trying again every second on failure
+    bool wanted = DsiCamera::streaming.load();
+    if (!wanted) {
+        closeCamera();
+        camRetry = 0;
+        return;
+    }
+    if (camHandle >= 0) return;
+    if (camRetry > 0) {
+        camRetry--;
+        return;
+    }
+    camRetry = 60;
+
+    // Set up 15 pictures a second, which is what the DSi's cameras give, without showing them on the GamePad
+    CAMSetupInfo setup = {};
+    setup.streamInfo.type = CAMERA_STREAM_TYPE_1;
+    setup.streamInfo.width = CAMERA_WIDTH;
+    setup.streamInfo.height = CAMERA_HEIGHT;
+    int32_t size = CAMGetMemReq(&setup.streamInfo);
+    if (size <= 0 || !(camWork = MEMAllocFromDefaultHeapEx(size, 0x100))) return closeCamera();
+    setup.workMem.size = size;
+    setup.workMem.pMem = camWork;
+    setup.eventHandler = cameraEvent;
+    setup.mode.forceDrc = CAMERA_FORCE_DRC_OFF;
+    setup.mode.fps = CAMERA_FPS_15;
+    setup.threadAffinity = OS_THREAD_ATTRIB_AFFINITY_CPU0;
+    CAMError error = CAMERA_ERROR_OK;
+    camHandle = CAMInit(0, &setup, &error);
+    if (camHandle < 0 || error != CAMERA_ERROR_OK) {
+        camHandle = -1;
+        return closeCamera();
+    }
+
+    // Give it two surfaces to decode into, taking turns
+    for (int i = 0; i < 2; i++) {
+        if (!(camBuffers[i] = MEMAllocFromDefaultHeapEx(CAMERA_YUV_BUFFER_SIZE, CAMERA_YUV_BUFFER_ALIGNMENT)))
+            return closeCamera();
+        camSurfaces[i] = {};
+        camSurfaces[i].surfaceSize = CAMERA_YUV_BUFFER_SIZE;
+        camSurfaces[i].surfaceBuffer = camBuffers[i];
+        camSurfaces[i].height = CAMERA_HEIGHT;
+        camSurfaces[i].width = CAMERA_WIDTH;
+        camSurfaces[i].pitch = CAMERA_PITCH;
+        camSurfaces[i].alignment = CAMERA_YUV_BUFFER_ALIGNMENT;
+    }
+    if (CAMOpen(camHandle) != CAMERA_ERROR_OK) return closeCamera();
+    for (int i = 0; i < 2; i++)
+        CAMSubmitTargetSurface(camHandle, &camSurfaces[i]);
+}
+
 void outputAudio(void *data, uint8_t *buffer, int length) {
     // Refill the audio buffer as a callback
     ConsoleUI::fillAudioBuffer((uint32_t*)buffer, length / sizeof(uint32_t), 32768);
@@ -1277,6 +1377,7 @@ int runUi(int argc, void *argv) {
     // Run the emulator until it exits, then close the game while the app still has the foreground
     ConsoleUI::mainLoop(nullptr, &gpLayout);
     ConsoleUI::closeMic();
+    closeCamera();
     ConsoleUI::closeCore();
     return 0;
 }

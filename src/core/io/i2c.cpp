@@ -86,29 +86,33 @@ void I2c::writeCnt(uint8_t value) {
     if (value & BIT(6))
         core->interpreter[1].sendInterrupt(45);
 
-    // Forward I2C reads to the addressed device
+    // Forward I2C reads to the addressed device; nothing drives the bus for a missing one, so it reads 0xFF
     if (value & BIT(5)) { // Direction
-        switch (devAddr) {
-            case 0x4B: i2cData = readMcu(); return;
+        switch (devAddr & 0xFE) {
+            case 0x4A: i2cData = readMcu(); return;
+            case 0x78: case 0x7A: i2cData = core->dsiCamera.i2cRead(value & BIT(0)); return;
 
         default:
             // Catch reads from unknown devices
             LOG_WARN("Unknown I2C read from device 0x%X\n", devAddr);
-            i2cData = 0;
+            i2cData = 0xFF;
             return;
         }
     }
 
-    // Set the device address on first write
-    i2cCnt |= BIT(4); // Acknowledge
+    // Set the device address on first write, acknowledged only by devices that are there, which is how the DSi finds
+    // its cameras
     if (++writeCount == 1) {
         devAddr = i2cData;
+        uint8_t device = devAddr & 0xFE;
+        if (device == 0x4A || core->dsiCamera.i2cSelect(device)) i2cCnt |= BIT(4); // Acknowledge
         return;
     }
 
     // Forward I2C writes to the addressed device
-    switch (devAddr) {
-        case 0x4A: return writeMcu(i2cData);
+    switch (devAddr & 0xFE) {
+        case 0x4A: i2cCnt |= BIT(4); return writeMcu(i2cData);
+        case 0x78: case 0x7A: i2cCnt |= BIT(4); return core->dsiCamera.i2cWrite(i2cData, value & BIT(0));
 
     default:
         // Catch writes to unknown devices

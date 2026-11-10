@@ -1426,6 +1426,11 @@ template <typename T> T Memory::ioRead9(uint32_t address) {
                 DEF_IO32(0x4004168, data = core->ndma[0].readBcnt(3)) // NDMA3BCNT (ARM9)
                 DEF_IO32(0x400416C, data = core->ndma[0].readFdata(3)) // NDMA3FDATA (ARM9)
                 DEF_IO32(0x4004170, data = core->ndma[0].readCnt(3)) // NDMA3CNT (ARM9)
+                DEF_IO16(0x4004200, data = core->dsiCamera.readMcnt()) // CAM_MCNT
+                DEF_IO16(0x4004202, data = core->dsiCamera.readCnt()) // CAM_CNT
+                DEF_IO32(0x4004204, data = core->dsiCamera.readData()) // CAM_DAT
+                DEF_IO32(0x4004210, data = core->dsiCamera.readSofs()) // CAM_SOFS
+                DEF_IO32(0x4004214, data = core->dsiCamera.readEofs()) // CAM_EOFS
             }
         }
 
@@ -2181,6 +2186,10 @@ template <typename T> void Memory::ioWrite9(uint32_t address, T value) {
                 DEF_IO32(0x4004168, core->ndma[0].writeBcnt(3, IOWR_PARAMS)) // NDMA3BCNT (ARM9)
                 DEF_IO32(0x400416C, core->ndma[0].writeFdata(3, IOWR_PARAMS)) // NDMA3FDATA (ARM9)
                 DEF_IO32(0x4004170, core->ndma[0].writeCnt(3, IOWR_PARAMS)) // NDMA3CNT (ARM9)
+                DEF_IO16(0x4004200, core->dsiCamera.writeMcnt(IOWR_PARAMS)) // CAM_MCNT
+                DEF_IO16(0x4004202, core->dsiCamera.writeCnt(IOWR_PARAMS)) // CAM_CNT
+                DEF_IO32(0x4004210, core->dsiCamera.writeSofs(IOWR_PARAMS)) // CAM_SOFS
+                DEF_IO32(0x4004214, core->dsiCamera.writeEofs(IOWR_PARAMS)) // CAM_EOFS
             }
         }
 
