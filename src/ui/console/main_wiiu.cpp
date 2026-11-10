@@ -168,7 +168,10 @@ uint32_t ConsoleUI::defaultKeys[] {
     VPAD_BUTTON_UP | VPAD_STICK_R_EMULATION_UP | VPAD_STICK_L_EMULATION_UP,
     VPAD_BUTTON_DOWN | VPAD_STICK_R_EMULATION_DOWN | VPAD_STICK_L_EMULATION_DOWN,
     VPAD_BUTTON_ZR, VPAD_BUTTON_ZL, VPAD_BUTTON_X, VPAD_BUTTON_Y,
-    VPAD_BUTTON_L | VPAD_BUTTON_R, 0, 0, 0, VPAD_BUTTON_STICK_L, VPAD_BUTTON_STICK_R
+    VPAD_BUTTON_L | VPAD_BUTTON_R, 0, 0, 0, VPAD_BUTTON_STICK_L, VPAD_BUTTON_STICK_R,
+    0, 0, // Sunlight
+    VPAD_BUTTON_LEFT, VPAD_BUTTON_UP, VPAD_BUTTON_RIGHT, VPAD_BUTTON_DOWN, // Guitar Grip, round the d-pad
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 // Easy Piano
 };
 
 const uint32_t ConsoleUI::pointerKeys = VPAD_STICK_R_EMULATION_UP | VPAD_STICK_R_EMULATION_DOWN |
@@ -895,6 +898,26 @@ int ConsoleUI::getGamepadBattery() {
     // Return the GamePad's battery byte, or -1 if it isn't connected
     scanInput();
     return gamepadBattery;
+}
+
+void ConsoleUI::setRumble(bool on) {
+    // Rumble the GamePad and any Pro Controllers, only telling them when it changes
+    // The GamePad plays a pattern instead of staying on, so it gets it again every half second while rumbling continues
+    static bool rumbling = false;
+    static int frames = 0;
+    if (on == rumbling && (!on || ++frames < 30)) return;
+    rumbling = on;
+    frames = 0;
+    if (on) {
+        static const uint8_t pattern[15] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+        VPADControlMotor(VPAD_CHAN_0, pattern, 120);
+    }
+    else {
+        VPADStopMotor(VPAD_CHAN_0);
+    }
+    for (int i = 0; i < 4; i++)
+        WPADControlMotor((WPADChan)i, on);
 }
 
 MenuTouch ConsoleUI::getInputTouch() {

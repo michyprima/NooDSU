@@ -58,6 +58,8 @@ public:
     static int gpuAntiAlias;
     static int gpuOverlap;
     static int wifi; // Whether games can connect to the internet through an emulated access point
+    static int slot2Device; // The accessory in the GBA slot when no GBA ROM is loaded, from Slot2Device
+    static int sunlight; // How much light the solar sensor of Boktai carts sees, from 0 to 10
 
     // The threaded settings only choose for the software renderer, since the GPU renderer's setup relies on the threads
     static bool threads2D() { return threaded2D || hardware3D; }

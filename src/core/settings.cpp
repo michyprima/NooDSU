@@ -46,6 +46,8 @@ int Settings::syncToDisplay = 1;
 int Settings::gpuAntiAlias = 0;
 int Settings::gpuOverlap = 1;
 int Settings::wifi = 0;
+int Settings::slot2Device = 0;
+int Settings::sunlight = 5;
 
 std::string Settings::gbaBiosPath = "gba_bios.bin";
 std::string Settings::ndsBios9Path = "bios9.bin";
@@ -85,6 +87,8 @@ std::vector<Setting> Settings::settings = {
     Setting("gpuAntiAlias", &gpuAntiAlias, false),
     Setting("gpuOverlap", &gpuOverlap, false),
     Setting("wifi", &wifi, false),
+    Setting("slot2Device", &slot2Device, false),
+    Setting("sunlight", &sunlight, false),
     Setting("gbaBiosPath", &gbaBiosPath, true),
     Setting("ndsBios9Path", &ndsBios9Path, true),
     Setting("ndsBios7Path", &ndsBios7Path, true),

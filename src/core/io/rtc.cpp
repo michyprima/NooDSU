@@ -466,6 +466,9 @@ void Rtc::writeGpData(uint16_t mask, uint16_t value) {
         bool sio = (gpDirection & BIT(1)) ? (value & BIT(1)) : sioCur;
         bool sck = (gpDirection & BIT(0)) ? (value & BIT(0)) : sckCur;
         updateRtc(cs, sck, sio);
+
+        // Drive a solar sensor or rumble motor on the same pins
+        core->slot2.writeGpioPins(value & gpDirection, gpDirection);
     }
 }
 
@@ -501,5 +504,5 @@ uint16_t Rtc::readGpData() {
     bool cs = (gpDirection & BIT(2)) ? 0 : csCur;
     bool sio = (gpDirection & BIT(1)) ? 0 : sioCur;
     bool sck = (gpDirection & BIT(0)) ? 0 : sckCur;
-    return (cs << 2) | (sio << 1) | (sck << 0);
+    return (cs << 2) | (sio << 1) | (sck << 0) | core->slot2.readGpioPins(gpDirection);
 }

@@ -59,6 +59,7 @@
 #include "memory/memory.h"
 #include "memory/ndma.h"
 #include "memory/sd_mmc.h"
+#include "memory/slot2.h"
 
 enum CoreError {
     ERROR_NDS_BIOS = 1,
@@ -206,6 +207,7 @@ public:
     SaveStates saveStates;
     SdMmc sdMmc;
     SdMmc sdio;
+    Slot2 slot2;
     DsiWifi dsiWifi;
     Spi spi;
     Spu spu;

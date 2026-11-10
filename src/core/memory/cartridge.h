@@ -181,6 +181,7 @@ public:
     void resetCycles();
 
     uint32_t getChipId() { return chipId; }
+    const uint8_t *getLogo() { return rom ? &rom[0xC0] : nullptr; } // The Nintendo logo in the header
     uint16_t readAuxSpiCnt(bool cpu) { return auxSpiCnt[cpu]; }
     uint8_t readAuxSpiData(bool cpu) { return auxSpiData[cpu]; }
     uint32_t readRomCtrl(bool cpu);

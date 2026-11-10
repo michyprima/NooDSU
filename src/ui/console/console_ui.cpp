@@ -319,8 +319,16 @@ void ConsoleUI::initialize(int width, int height, std::string root, std::string 
         Setting("keyFastToggle", &keyBinds[INPUT_FAST_TOGG], false),
         Setting("keyScreenSwap", &keyBinds[INPUT_SCRN_SWAP], false),
         Setting("keyMicBlow", &keyBinds[INPUT_MIC_BLOW], false),
-        Setting("keyPointerTouch", &keyBinds[INPUT_POINTER_TOUCH], false)
+        Setting("keyPointerTouch", &keyBinds[INPUT_POINTER_TOUCH], false),
+        Setting("keySunUp", &keyBinds[INPUT_SUN_UP], false),
+        Setting("keySunDown", &keyBinds[INPUT_SUN_DOWN], false),
+        Setting("keyGuitarGreen", &keyBinds[INPUT_GUITAR_GREEN], false),
+        Setting("keyGuitarRed", &keyBinds[INPUT_GUITAR_RED], false),
+        Setting("keyGuitarYellow", &keyBinds[INPUT_GUITAR_YELLOW], false),
+        Setting("keyGuitarBlue", &keyBinds[INPUT_GUITAR_BLUE], false)
     };
+    for (int i = 0; i < 13; i++)
+        platformSettings.push_back(Setting("keyPiano" + std::to_string(i), &keyBinds[INPUT_PIANO_C + i], false));
 
     // Add the platform settings
     ScreenLayout::addSettings();
@@ -696,9 +704,13 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
         uint32_t pressed = getInputPress();
         uint32_t held = getInputHeld();
 
+        // Give the GBA slot's accessory its input
+        updateSlot2(pressed, held);
+
         // Move and draw the right stick's pointer, which takes the stick and its touch key from the game while it's on
+        // The paddle controller has the stick instead
         bool pointerTouch = false;
-        if (stickPointer && !gbaMode) {
+        if (stickPointer && !gbaMode && core->slot2.getDevice() != SLOT2_PADDLE) {
             pointerTouch = updatePointer(held, touchLayout);
             pressed &= ~(pointerKeys | keyBinds[INPUT_POINTER_TOUCH]);
             held &= ~(pointerKeys | keyBinds[INPUT_POINTER_TOUCH]);
@@ -834,6 +846,53 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
     hiResData = nullptr;
     screenFrame = framebuffer;
     lastFrame = nullptr;
+}
+
+void ConsoleUI::updateSlot2(uint32_t &pressed, uint32_t &held) {
+    // Change the sunlight Boktai carts see with its hotkeys
+    if (pressed & keyBinds[INPUT_SUN_UP]) Settings::sunlight = std::min(10, Settings::sunlight + 1);
+    if (pressed & keyBinds[INPUT_SUN_DOWN]) Settings::sunlight = std::max(0, Settings::sunlight - 1);
+
+    // Rumble while the Rumble Pak or a GBA cart's motor does
+    setRumble(core->slot2.takeRumble());
+
+    // Send the accessory's buttons, which are taken from the game while it's in, or turn the paddle with the right stick
+    uint32_t taken = 0;
+    switch (core->slot2.getDevice()) {
+    case SLOT2_GUITAR: {
+        uint8_t keys = 0;
+        for (int i = 0; i < 4; i++) {
+            if (held & keyBinds[INPUT_GUITAR_GREEN + i]) keys |= BIT(i);
+            taken |= keyBinds[INPUT_GUITAR_GREEN + i];
+        }
+        core->slot2.setGuitarKeys(keys);
+        break;
+    }
+
+    case SLOT2_PIANO: {
+        uint16_t keys = 0;
+        for (int i = 0; i < 13; i++) {
+            if (held & keyBinds[INPUT_PIANO_C + i]) keys |= BIT(i);
+            taken |= keyBinds[INPUT_PIANO_C + i];
+        }
+        core->slot2.setPianoKeys(keys);
+        break;
+    }
+
+    case SLOT2_PADDLE: {
+        // Turn faster the further the stick is pushed past a dead zone, clockwise to the right
+        float x, y;
+        getInputStick(x, y);
+        if (fabsf(x) > 0.15f) {
+            float push = (std::min(fabsf(x), 1.0f) - 0.15f) / 0.85f;
+            core->slot2.turnPaddle((x > 0 ? 1 : -1) * int(1 + 31 * push * push));
+        }
+        taken = pointerKeys;
+        break;
+    }
+    }
+    pressed &= ~taken;
+    held &= ~taken;
 }
 
 bool ConsoleUI::updatePointer(uint32_t held, ScreenLayout *gamepad) {
@@ -1549,6 +1608,11 @@ void ConsoleUI::settingsMenu() {
         "Italian", "Spanish" };
     const std::vector<std::string> mic = { "Off", "GamePad" };
     const std::vector<std::string> pointer = { "Off", "On (Hide After 15s)", "On (Hide After 30s)", "On (Always)" };
+    const std::vector<std::string> accessory = { "None", "Rumble Pak", "Memory Expansion Pak", "Guitar Grip",
+        "Easy Piano", "Paddle Controller", "Solar Sensor (Boktai)" };
+    const std::vector<std::string> sunlight = { "0 (Dark)", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10 (Bright)" };
+    if (Settings::slot2Device >= (int)accessory.size()) Settings::slot2Device = 0;
+    Settings::sunlight = std::min(10, std::max(0, Settings::sunlight));
     if (Settings::gpuAntiAlias >= (int)antiAlias.size()) Settings::gpuAntiAlias = 0;
 
     // The Mii name is shown for the nickname when it isn't set
@@ -1609,6 +1673,11 @@ void ConsoleUI::settingsMenu() {
         add("Aspect Ratio", ScreenLayout::aspectRatio, aspect);
         add("Integer Scale", ScreenLayout::integerScale, toggle);
         add("GBA Crop", ScreenLayout::gbaCrop, toggle);
+
+        // The accessory is put in when a game starts, so changing it takes a restart
+        header("GBA Slot");
+        add("Accessory", Settings::slot2Device, accessory);
+        add("Sunlight", Settings::sunlight, sunlight);
 
         header("Experimental");
         add("Direct Boot", Settings::directBoot, directBoot);
@@ -1714,68 +1783,63 @@ void ConsoleUI::aboutMenu() {
 }
 
 void ConsoleUI::controlsMenu() {
+    // Define names for the bindable inputs
+    const char *names[INPUT_MAX] = {
+        "A Button", "B Button", "Select Button", "Start Button",
+        "Right Button", "Left Button", "Up Button", "Down Button",
+        "R Button", "L Button", "X Button", "Y Button", "Menu Button",
+        "Fast Forward Hold", "Fast Forward Toggle", "Screen Swap Toggle", "Blow into Mic", "Pointer Touch",
+        "Sunlight Up", "Sunlight Down", "Green Fret", "Red Fret", "Yellow Fret", "Blue Fret",
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B", "High C"
+    };
+
+    // List the inputs under headers, which are -1
+    std::vector<int> rows = { -1 };
+    for (int i = INPUT_A; i <= INPUT_Y; i++) rows.push_back(i);
+    rows.push_back(-1);
+    for (int i = INPUT_MENU; i <= INPUT_SUN_DOWN; i++) rows.push_back(i);
+    rows.push_back(-1);
+    for (int i = INPUT_GUITAR_GREEN; i <= INPUT_GUITAR_BLUE; i++) rows.push_back(i);
+    rows.push_back(-1);
+    for (int i = INPUT_PIANO_C; i <= INPUT_PIANO_HIGH_C; i++) rows.push_back(i);
+    const char *headers[] = { "Buttons", "Hotkeys", "Guitar Grip", "Easy Piano" };
+
     int index = 0;
     while (true) {
-        // Define names for the bindable inputs
-        const char *names[] = {
-            "A Button", "B Button", "Select Button", "Start Button",
-            "Right Button", "Left Button", "Up Button", "Down Button",
-            "R Button", "L Button", "X Button", "Y Button", "Menu Button",
-            "Fast Forward Hold", "Fast Forward Toggle", "Screen Swap Toggle", "Blow into Mic", "Pointer Touch"
-        };
-
-        // Build strings for the input bindings
-        std::string bindings[INPUT_MAX];
-        for (int i = 0; i < INPUT_MAX; i++) {
-            // Add the input name with a comma (up to 8 entries)
-            for (int j = 0, k = -1; j < 32 && k < 8; j++) {
-                if (!(keyBinds[i] & (1 << j))) continue;
-                if (bindings[i] != "") bindings[i] += ", ";
-                bindings[i] += (++k < 8) ? keyNames[j] : "...";
+        // Create a list of inputs and current bindings
+        std::vector<MenuItem> controls;
+        for (size_t r = 0, h = 0; r < rows.size(); r++) {
+            if (rows[r] < 0) {
+                controls.push_back(MenuItem(headers[h++], true));
+                continue;
             }
 
-            // Replace empty strings with the word none
-            if (bindings[i] == "")
-                bindings[i] = "None";
+            // Add the input names with commas (up to 8 entries), or the word none
+            std::string binding;
+            for (int j = 0, k = -1; j < 32 && k < 8; j++) {
+                if (!(keyBinds[rows[r]] & (1 << j))) continue;
+                if (binding != "") binding += ", ";
+                binding += (++k < 8) ? keyNames[j] : "...";
+            }
+            controls.push_back(MenuItem(names[rows[r]], binding == "" ? "None" : binding));
         }
-
-        // Create a list of inputs and current bindings
-        std::vector<MenuItem> controls = {
-            MenuItem("Buttons", true),
-            MenuItem(names[INPUT_A], bindings[INPUT_A]),
-            MenuItem(names[INPUT_B], bindings[INPUT_B]),
-            MenuItem(names[INPUT_SELECT], bindings[INPUT_SELECT]),
-            MenuItem(names[INPUT_START], bindings[INPUT_START]),
-            MenuItem(names[INPUT_RIGHT], bindings[INPUT_RIGHT]),
-            MenuItem(names[INPUT_LEFT], bindings[INPUT_LEFT]),
-            MenuItem(names[INPUT_UP], bindings[INPUT_UP]),
-            MenuItem(names[INPUT_DOWN], bindings[INPUT_DOWN]),
-            MenuItem(names[INPUT_R], bindings[INPUT_R]),
-            MenuItem(names[INPUT_L], bindings[INPUT_L]),
-            MenuItem(names[INPUT_X], bindings[INPUT_X]),
-            MenuItem(names[INPUT_Y], bindings[INPUT_Y]),
-            MenuItem("Hotkeys", true),
-            MenuItem(names[INPUT_MENU], bindings[INPUT_MENU]),
-            MenuItem(names[INPUT_FAST_HOLD], bindings[INPUT_FAST_HOLD]),
-            MenuItem(names[INPUT_FAST_TOGG], bindings[INPUT_FAST_TOGG]),
-            MenuItem(names[INPUT_SCRN_SWAP], bindings[INPUT_SCRN_SWAP]),
-            MenuItem(names[INPUT_MIC_BLOW], bindings[INPUT_MIC_BLOW]),
-            MenuItem(names[INPUT_POINTER_TOUCH], bindings[INPUT_POINTER_TOUCH])
-        };
 
         // Create the controls menu
         uint32_t pressed = menu("Controls", controls, index, "Clear");
-        int i = index - ((index > 13) ? 2 : 1);
+        int i = rows[index];
 
         // Handle menu input
-        if (pressed & defaultKeys[INPUT_A]) {
+        if (pressed & defaultKeys[INPUT_B]) {
+            // Close the controls menu
+            return;
+        }
+        else if (i < 0) {
+            continue;
+        }
+        else if (pressed & defaultKeys[INPUT_A]) {
             // Show a binding message and bind the pressed input
             keyBinds[i] |= message(std::string("Remap ") + names[i],
                "Press an input to add it as a binding.", 2);
-        }
-        else if (pressed & defaultKeys[INPUT_B]) {
-            // Close the controls menu
-            return;
         }
         else if (pressed & defaultKeys[INPUT_X]) {
             // Clear an input binding
@@ -2472,6 +2536,9 @@ void ConsoleUI::stopNetwork() {
 }
 
 void ConsoleUI::stopCore() {
+    // Don't keep rumbling while stopped
+    setRumble(false);
+
     // Tell the threads to stop if running
     if (running) {
         std::lock_guard<std::mutex> guard(mutex);

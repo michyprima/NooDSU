@@ -134,7 +134,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
         gpu3DRenderer(this), hleArm7(this), hleBios { HleBios(this, 0, HleBios::swiTable9), HleBios(this, 1, HleBios::
         swiTable7), HleBios(this, 1, HleBios::swiTableGba) }, i2c(this), input(this), interpreter { Interpreter(
         this, 0), Interpreter(this, 1) }, ipc(this), jit(this, 0), jit7(this, 1), memory(this), ndma { Ndma(this, 0), Ndma(this, 1) }, rtc(this),
-        saveStates(this), sdMmc(this, false), sdio(this, true), dsiWifi(this), spi(this), spu(this), timers { Timers(this, 0), Timers(this, 1) }, wifi(this) {
+        saveStates(this), sdMmc(this, false), sdio(this, true), slot2(this), dsiWifi(this), spi(this), spu(this), timers { Timers(this, 0), Timers(this, 1) }, wifi(this) {
     // Set DSi mode now and ignore changes to it later
     dsiMode = Settings::dsiMode;
     updateRun();
@@ -402,6 +402,9 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
             spi.directBoot();
         }
     }
+
+    // Fill the GBA slot with an accessory, or look for extras on the GBA ROM's cart
+    slot2.init();
 
     // Initialize HLE ARM7 if enabled in DS mode
     if (!gbaMode && Settings::arm7Hle) {

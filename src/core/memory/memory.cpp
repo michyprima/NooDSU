@@ -372,8 +372,10 @@ void Memory::updateMap9(uint32_t start, uint32_t end, bool tcm) {
             break;
         }
 
-        case 0x8000000: case 0x9000000: // GBA ROM
-            read = core->cartridgeGba.getRom(address);
+        case 0x8000000: case 0x9000000: // GBA slot ROM, or expansion RAM, if the ARM9 has the slot
+            if (exMemCnt & BIT(7)) break;
+            if (!(read = write = core->slot2.getRam(address)))
+                read = core->slot2.getRom(address);
             break;
 
         case 0xFF000000: // ARM9 BIOS
@@ -528,8 +530,10 @@ void Memory::updateMap7(uint32_t start, uint32_t end) {
                 break;
             }
 
-            case 0x8000000: case 0x9000000: // GBA ROM
-                read = core->cartridgeGba.getRom(address);
+            case 0x8000000: case 0x9000000: // GBA slot ROM, or expansion RAM, if the ARM7 has the slot
+                if (!(exMemCnt & BIT(7))) break;
+                if (!(read = write = core->slot2.getRam(address)))
+                    read = core->slot2.getRom(address);
                 break;
             }
         }
@@ -924,11 +928,11 @@ template <typename T> T Memory::readFallback(bool arm7, uint32_t address) {
             data = &oam[address & 0x7FF];
             break;
 
-        case 0x8000000: case 0x9000000: // GBA ROM (empty)
-            return (T)0xFFFFFFFF;
+        case 0x8000000: case 0x9000000: // GBA slot ROM
+            return core->slot2.romRead<T>(false, address);
 
-        case 0xA000000: // GBA SRAM
-            return core->cartridgeGba.sramRead(address + 0x4000000);
+        case 0xA000000: // GBA slot SRAM
+            return core->slot2.sramRead<T>(false, address);
         }
     }
     else if (core->gbaMode) { // GBA
@@ -979,11 +983,11 @@ template <typename T> T Memory::readFallback(bool arm7, uint32_t address) {
             return mapping->read<T>(address & 0x1FFFF);
         }
 
-        case 0x8000000: case 0x9000000: // GBA ROM (empty)
-            return (T)0xFFFFFFFF;
+        case 0x8000000: case 0x9000000: // GBA slot ROM
+            return core->slot2.romRead<T>(true, address);
 
-        case 0xA000000: // GBA SRAM
-            return core->cartridgeGba.sramRead(address + 0x4000000);
+        case 0xA000000: // GBA slot SRAM
+            return core->slot2.sramRead<T>(true, address);
         }
     }
 
@@ -1149,8 +1153,12 @@ template <typename T> void Memory::writeFallback(bool arm7, uint32_t address, T 
             data = &oam[address & 0x7FF];
             break;
 
-        case 0xA000000: // GBA SRAM
-            core->cartridgeGba.sramWrite(address + 0x4000000, value);
+        case 0x8000000: case 0x9000000: // GBA slot ROM
+            core->slot2.romWrite<T>(false, address, value);
+            return;
+
+        case 0xA000000: // GBA slot SRAM
+            core->slot2.sramWrite<T>(false, address, value);
             return;
         }
     }
@@ -1199,8 +1207,12 @@ template <typename T> void Memory::writeFallback(bool arm7, uint32_t address, T 
             return;
         }
 
-        case 0xA000000: // GBA SRAM
-            core->cartridgeGba.sramWrite(address + 0x4000000, value);
+        case 0x8000000: case 0x9000000: // GBA slot ROM
+            core->slot2.romWrite<T>(true, address, value);
+            return;
+
+        case 0xA000000: // GBA slot SRAM
+            core->slot2.sramWrite<T>(true, address, value);
             return;
         }
     }
@@ -2702,7 +2714,14 @@ void Memory::writeWramCnt(uint8_t value) {
 void Memory::writeExMemCnt(uint16_t mask, uint16_t value) {
     // Write to the ARM9's external memory control, which says which CPU has each card slot; bit 13 always reads as set
     mask &= 0xC8FF;
+    uint16_t old = exMemCnt;
     exMemCnt = (exMemCnt & ~mask) | (value & mask);
+
+    // Map the GBA slot for the CPU that has it now; the other one reads zeros from it
+    if ((old ^ exMemCnt) & BIT(7)) {
+        updateMap9(0x8000000, 0xB000000);
+        updateMap7(0x8000000, 0xB000000);
+    }
 }
 
 void Memory::writeExMemStat(uint16_t mask, uint16_t value) {

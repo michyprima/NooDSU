@@ -119,6 +119,7 @@ bool SaveStates::saveState() {
     core->timers[0].saveState(file);
     core->timers[1].saveState(file);
     core->wifi.saveState(file);
+    core->slot2.saveState(file);
     fclose(file);
     return true;
 }
@@ -169,6 +170,7 @@ bool SaveStates::loadState() {
     core->timers[0].loadState(file);
     core->timers[1].loadState(file);
     core->wifi.loadState(file);
+    core->slot2.loadState(file);
     fclose(file);
 
     // Pick which CPUs run again now that their halt states are loaded; the core picked it before loading them, from

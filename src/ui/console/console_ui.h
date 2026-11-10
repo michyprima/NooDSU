@@ -49,6 +49,14 @@ enum MenuInputs {
     INPUT_SCRN_SWAP,
     INPUT_MIC_BLOW,
     INPUT_POINTER_TOUCH,
+    INPUT_SUN_UP,
+    INPUT_SUN_DOWN,
+    INPUT_GUITAR_GREEN,
+    INPUT_GUITAR_RED,
+    INPUT_GUITAR_YELLOW,
+    INPUT_GUITAR_BLUE,
+    INPUT_PIANO_C, // Followed by the other 12 keys up to high C
+    INPUT_PIANO_HIGH_C = INPUT_PIANO_C + 12,
     INPUT_MAX
 };
 
@@ -134,6 +142,7 @@ public:
     static uint32_t getInputHeld();
     static MenuTouch getInputTouch();
     static int getGamepadBattery(); // -1 if it isn't connected
+    static void setRumble(bool on);
     static void getInputStick(float &x, float &y);
     static size_t getMicSamples(int16_t *out, size_t max);
     static void closeMic();
@@ -184,6 +193,7 @@ private:
     static float pointerX, pointerY;
     static std::chrono::steady_clock::time_point pointerHide;
     static bool updatePointer(uint32_t held, ScreenLayout *gamepad);
+    static void updateSlot2(uint32_t &pressed, uint32_t &held);
 
     static std::thread *coreThread;
     static WorkerThread *saveThread;
