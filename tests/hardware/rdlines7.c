@@ -1,4 +1,4 @@
-// The ARM7's side of the 3D timing test: only libnds's usual services, which give the ARM9 the SD card
+// The ARM7's side of the 3D timing and display FIFO tests: only libnds's usual services, which give the ARM9 the SD card
 #include <nds.h>
 
 int main(void) {

@@ -113,13 +113,35 @@ and it cost time on nearly every frame; the revert can be reverted to bring it b
 captures as PPM files. NooDS U's comes from a RAM dump, `tests/jit/game.sh tests/hardware/build/noodsu-rdlines.nds <system
 files folder> 1200 --modes interp ram=rdlines.bin`, adding `dsi` for DSi mode.
 
+## The display FIFO test
+
+`build/noodsu-fifo.nds` is a fifth ROM, for a DS or a DSi in either mode. It settles what GBATEK leaves open about the main
+memory display FIFO: what the display and display capture take from it when DMA fills it 4, 8 or 2 words at a time, in
+halfwords, all at once, or not at all, what CPU writes of each size do, whether DMA timing 4 and NDMA mode 9 fire when nothing
+uses the FIFO or when started mid-frame, which lines they fire on and how often, and whether V-blank stops them.
+
+Each scene in `fifo.h` starts in a V-blank and runs for 2 frames with interrupts off. Most capture the FIFO with display
+capture's source B in the first frame, which shows exactly what it gave each pixel; the rest record VCOUNT with a second DMA
+on the same trigger. The top screen shows the FIFO in display mode 3, and the bottom one lists the scenes as they finish. The
+NDMA scenes only run in DSi mode.
+
+It saves `noodsu-fifotest.bin` like the other ROMs; in DS mode on a DSi, that may only work through a flashcart. To see what
+it found, and how that compares with NooDS U:
+
+```
+tests/hardware/fifo.py noodsu-fifotest.bin [NooDS U's] [--images folder]
+```
+
+NooDS U's comes from a RAM dump, `tests/jit/game.sh tests/hardware/build/noodsu-fifo.nds <system files folder> 400 --modes
+interp ram=fifo.bin`, adding `dsi` for DSi mode. `--images` writes each capture as a PPM file.
+
 ## Building it
 
 ```
 tests/hardware/build.sh [results from NooDS U]
 ```
 
-It builds all four ROMs, and needs devkitPro's `nds-dev`. The results are NooDS U's for the instruction test's CPUs, as 2 x
+It builds all five ROMs, and needs devkitPro's `nds-dev`. The results are NooDS U's for the instruction test's CPUs, as 2 x
 110 x 12 little-endian words, which go in a table of the same size either way, so the code doesn't move. Build once without
 them, run that in NooDS U to get them, and build again. On the Mac, `tests/jit/game.sh` gets them:
 

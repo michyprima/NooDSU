@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds the test ROM with libnds. With a results file from running it in NooDS U, the ROM shows what differs from that
+# Builds the test ROMs with libnds. With a results file from running it in NooDS U, the ROM shows what differs from that
 # Usage: build.sh [results file]
 set -e
 here=$(cd "$(dirname "$0")"; pwd); results=$1
@@ -54,3 +54,10 @@ echo "Built $out/noodsu-ndma.nds"
 "$dkp/tools/bin/ndstool" -c "$out/noodsu-rdlines.nds" -7 "$out/rdlines7.elf" -9 "$out/rdlines9.elf" \
     -b "$dkp/calico/share/nds-icon.bmp" "NooDS U 3D timing test;3D render timing on a real DS;" > /dev/null
 echo "Built $out/noodsu-rdlines.nds"
+
+# The display FIFO test, a ROM of its own for a DS or a DSi in either mode, with the 3D timing test's ARM7
+"$tools-gcc" $common -march=armv5te -mtune=arm946e-s -DARM9 -specs="$dkp/calico/share/ds9.specs" \
+    "$here/screen.c" "$here/fifo9.c" -lfat -lnds9 -lcalico_ds9 -o "$out/fifo9.elf"
+"$dkp/tools/bin/ndstool" -c "$out/noodsu-fifo.nds" -7 "$out/rdlines7.elf" -9 "$out/fifo9.elf" \
+    -b "$dkp/calico/share/nds-icon.bmp" "NooDS U FIFO test;Display FIFO on a real DS;" > /dev/null
+echo "Built $out/noodsu-fifo.nds"
