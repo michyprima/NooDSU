@@ -132,12 +132,6 @@ void Gpu3D::saveState(FILE *file) {
     fwrite(posResult, 4, sizeof(posResult) / 4, file);
     fwrite(vecResult, 2, sizeof(vecResult) / 2, file);
     fwrite(&gxFifoCount, sizeof(gxFifoCount), 1, file);
-    fwrite(&timingUsed, sizeof(timingUsed), 1, file);
-    fwrite(&swapsSinceOn, sizeof(swapsSinceOn), 1, file);
-    fwrite(&rdLines, sizeof(rdLines), 1, file);
-    fwrite(&rdLinesNext, sizeof(rdLinesNext), 1, file);
-    fwrite(underflowLines, 4, sizeof(underflowLines) / 4, file);
-    fwrite(&underflowAny, sizeof(underflowAny), 1, file);
     SaveStates::writeFifo(fifo, file);
 }
 
@@ -202,15 +196,7 @@ void Gpu3D::loadState(FILE *file) {
     fread(posResult, 4, sizeof(posResult) / 4, file);
     fread(vecResult, 2, sizeof(vecResult) / 2, file);
     fread(&gxFifoCount, sizeof(gxFifoCount), 1, file);
-    fread(&timingUsed, sizeof(timingUsed), 1, file);
-    fread(&swapsSinceOn, sizeof(swapsSinceOn), 1, file);
-    fread(&rdLines, sizeof(rdLines), 1, file);
-    fread(&rdLinesNext, sizeof(rdLinesNext), 1, file);
-    fread(underflowLines, 4, sizeof(underflowLines) / 4, file);
-    fread(&underflowAny, sizeof(underflowAny), 1, file);
     SaveStates::readFifo(fifo, file);
-
-    timingPending = false;
 
     // Reset vertex and polygon buffers
     verticesIn = vertices1;
@@ -392,12 +378,6 @@ void Gpu3D::runWorker() {
         execute(command, params);
         if (changesExecStat(command)) stat++;
         head += count + 1;
-
-        // Render timing is waited for on its own, so say when it's done
-        if (command == TIMING_JOB) {
-            queueHead.store(head);
-            published = head;
-        }
 
         // Also publish progress regularly, so the emulator thread can reuse space if the queue fills up
         if (head - published >= 0x400) {
@@ -624,7 +604,6 @@ void Gpu3D::execute(uint8_t command, uint32_t *params) {
         case 0x70: boxTestCmd(params); break; // BOX_TEST
         case 0x71: posTestCmd(params); break; // POS_TEST
         case 0x72: vecTestCmd(params[0]); break; // VEC_TEST
-        case TIMING_JOB: updateRenderTiming(); break; // Not a real command
 
     default:
         LOG_CRIT("Unknown GXFIFO command: 0x%X\n", command);
@@ -786,10 +765,6 @@ void Gpu3D::swapBuffers() {
     polygonCountOut = polygonCountIn;
     polygonCountIn = 0;
 
-    // Rendering only starts with the second swap after it's powered on
-    if (swapsSinceOn < 2) swapsSinceOn++;
-    requestRenderTiming();
-
     // Invalidate the 3D so a new frame is drawn
     core->gpu.invalidate3D();
 
@@ -802,165 +777,6 @@ void Gpu3D::swapBuffers() {
         state = GX_IDLE;
         if (fifo.size() == 0) gxStat &= ~BIT(27); // Commands not executing
     }
-}
-
-uint8_t Gpu3D::readRdLinesCount() {
-    // Read the RDLINES_COUNT register
-    noteTimingRead();
-    return rdLines;
-}
-
-void Gpu3D::noteTimingRead() {
-    // Work out the render timing from now on, since the game looks at it
-    if (timingUsed) return;
-    timingUsed = true;
-    updateRenderTiming();
-}
-
-void Gpu3D::latchRdLines() {
-    // At V-blank, RDLINES_COUNT takes the value for the frame just displayed, while rendering is powered
-    waitTiming();
-    if (core->gpu.readPowCnt1() & BIT(2))
-        rdLines = rdLinesNext;
-}
-
-void Gpu3D::powerRendering(bool on) {
-    // Turning rendering on reads as 63 until it has rendered a frame, which needs two swaps
-    waitTiming();
-    if (on) {
-        swapsSinceOn = 0;
-        rdLinesNext = 63;
-    }
-    underflowAny = false;
-}
-
-void Gpu3D::requestRenderTiming() {
-    // Work out the timing of the polygons just swapped in on the worker if there is one, while it would otherwise wait
-    // for the next frame's commands; it isn't needed until the next frame starts being displayed
-    if (!worker || !timingUsed || swapsSinceOn < 2) return updateRenderTiming();
-    queueCommand(TIMING_JOB, nullptr, 0);
-    timingEnd = queueEnd;
-    timingPending = true;
-    publishQueue(true);
-}
-
-void Gpu3D::waitTiming() {
-    // Wait for the worker to finish working out the timing
-    if (!timingPending) return;
-    SpinWait spin;
-    while ((int32_t)(queueHead.load() - timingEnd) < 0)
-        spin.pause();
-    timingPending = false;
-}
-
-void Gpu3D::setUnderflow() {
-    core->gpu3DRenderer.setUnderflow();
-}
-
-void Gpu3D::updateRenderTiming() {
-    // Model how far rendering the shown polygons runs behind the display, measured against a real DS and DSi with
-    // tests/hardware's 3D timing test. The renderer draws lines in pairs into a buffer the display reads from, and a
-    // pair takes the longer of its two lines, at least 500 units: each line costs 4 if any polygon is on the pair, 12
-    // for each polygon on it plus 1 per pixel past the first 4 of its span, and 4 for each polygon ending on it.
-    // Lines are read every 1065 units; a pair that can't finish in time is cut short, and sets the underflow flag
-    // two lines before its first. Rendering stalls with 49 lines waiting, and RDLINES_COUNT is the fewest waiting,
-    // minus 2. The constants are melonDS's (Jaklyy's unmerged timing model), with the buffer size, the minus 2, the
-    // flag line and the first read fitted to the measurements, which they match exactly
-    memset(underflowLines, 0, sizeof(underflowLines));
-    underflowAny = false;
-    if (swapsSinceOn < 2) {
-        rdLinesNext = 63;
-        return;
-    }
-    if (!timingUsed) {
-        rdLinesNext = 46;
-        return;
-    }
-
-    // Add up the cost of each line, with the vertices scaled back down if the 3D is drawn at a higher resolution
-    int cost[193] = {}, left[192], right[192];
-    bool covered[193] = {};
-    int shift = Settings::highRes3D;
-    for (int i = 0; i < polygonCountOut; i++) {
-        _Polygon &p = polygonsOut[i];
-        Vertex *v = &verticesOut[p.vertices];
-        int top = INT32_MAX, bot = INT32_MIN;
-        for (int j = 0; j < p.size; j++) {
-            top = std::min<int>(top, v[j].y >> shift);
-            bot = std::max<int>(bot, v[j].y >> shift);
-        }
-        if (top > 191) continue;
-        if (bot != top && bot < 192) {
-            cost[bot] += 4;
-            covered[bot] = true;
-        }
-
-        // A span's width is where its edges cross the line, at the top of the line, stepping along each edge
-        int first = std::max(top, 0), last = (bot == top) ? top + 1 : std::min(bot, 192);
-        for (int y = first; y < last; y++) {
-            left[y] = INT32_MAX;
-            right[y] = INT32_MIN;
-        }
-        for (int j = 0; j < p.size; j++) {
-            int x1 = v[j].x >> shift, y1 = v[j].y >> shift;
-            int x2 = v[(j + 1) % p.size].x >> shift, y2 = v[(j + 1) % p.size].y >> shift;
-            if (y1 == y2) {
-                if (y1 < first || y1 >= last) continue;
-                left[y1] = std::min(left[y1], std::min(x1, x2));
-                right[y1] = std::max(right[y1], std::max(x1, x2));
-                continue;
-            }
-            if (y1 > y2) {
-                std::swap(x1, x2);
-                std::swap(y1, y2);
-            }
-            int start = std::max(y1, first), end = std::min(y2, last);
-            // X is in 16.16 fixed point, which fits 32 bits for 9-bit coordinates
-            int32_t step = ((x2 - x1) * 65536) / (y2 - y1);
-            int32_t x = (int32_t)(((int64_t)x1 << 16) + (int64_t)step * (start - y1));
-            for (int y = start; y < end; y++, x += step) {
-                left[y] = std::min(left[y], x >> 16);
-                right[y] = std::max(right[y], x >> 16);
-            }
-        }
-        for (int y = first; y < last; y++) {
-            cost[y] += 12 + std::max(0, (right[y] > left[y] ? right[y] - left[y] : 0) - 4);
-            covered[y] = true;
-        }
-    }
-
-    // Render the pairs against the display reading lines out
-    const int lineTime = 1065, firstRead = 52325, cutoff = 565 + 500;
-    auto readTime = [&](int line) { return firstRead + line * lineTime; };
-    int time = 0, waiting = 0, counted = 0, nextRead = 0, nextCount = 0, fewest = 63;
-    for (int y = 0; y < 192; y += 2) {
-        int timeout = y ? readTime(y - 1) - cutoff : readTime(2) - cutoff - 4;
-        int first = (covered[y] || covered[y + 1]) ? 4 : 0;
-        int even = first + cost[y], odd = first + cost[y + 1];
-        if (time + even > timeout) even = std::max(timeout - time, 0);
-        if (time + odd > timeout) odd = std::max(timeout - time, 0);
-        time += std::max(std::max(even, odd), 500);
-        time += std::min(std::max(timeout - time, 0), 12);
-        if (y && timeout <= time) {
-            underflowLines[(y - 2) >> 5] |= BIT((y - 2) & 31);
-            underflowAny = true;
-        }
-
-        // Lines are read on time, or once the buffer is full; RDLINES_COUNT counts them a little earlier
-        waiting += y ? 2 : 1;
-        counted += y ? 2 : 1;
-        while (nextRead < 192 && (waiting >= 49 || time >= readTime(nextRead))) {
-            time = std::max(time, readTime(nextRead));
-            waiting--;
-            nextRead++;
-        }
-        while (nextCount < 192 && time >= readTime(nextCount) - 39 - !(nextCount & 1)) {
-            counted--;
-            nextCount++;
-            fewest = std::min(fewest, counted);
-        }
-    }
-    rdLinesNext = (fewest == 63) ? 46 : std::max(fewest - 2, 0);
 }
 
 void Gpu3D::addVertex() {

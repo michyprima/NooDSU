@@ -105,6 +105,10 @@ what it found, and how that compares with NooDS U:
 tests/hardware/rdlines.py noodsu-rdlinestest.bin [NooDS U's] [--lines] [--images folder]
 ```
 
+`rdlines-realds.bin` is what a real DS saved; a DSi gave the same in both modes. A model of the render timing that matched
+all of it was added in 44edc7a and taken out again in a revert, since no game tested read RDLINES_COUNT or relied on bit 12,
+and it cost time on nearly every frame; the revert can be reverted to bring it back.
+
 `--lines` says, for each run of lines in a capture, which quad shows and how far right it reaches, and `--images` writes the
 captures as PPM files. NooDS U's comes from a RAM dump, `tests/jit/game.sh tests/hardware/build/noodsu-rdlines.nds <system
 files folder> 1200 --modes interp ram=rdlines.bin`, adding `dsi` for DSi mode.

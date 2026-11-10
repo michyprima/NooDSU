@@ -68,7 +68,6 @@ public:
 
     uint16_t readDisp3DCnt() { return disp3DCnt | (ramOverflow.load() << 13); }
     void setRamOverflow() { ramOverflow.store(1); }
-    void setUnderflow() { disp3DCnt |= BIT(12); }
 
     // For hardware renderers, which get the frame's state and textures here and write scanlines back
     static Gpu3DHardware *hardware;

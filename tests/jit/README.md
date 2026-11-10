@@ -142,12 +142,6 @@ interpreter, and prints how many checks passed. The ROM is only read from, by th
 least 1.5MB; any game will do. It runs in DSi mode, so the folder needs a NAND. See `tests/hardware` for the ROM that showed how a
 real DSi behaves.
 
-## 3D render timing
-
-`rdlines.sh <system files folder>` runs `tests/hardware`'s 3D timing ROM on the Mac with the interpreter, and compares
-RDLINES_COUNT and DISP3DCNT bit 12 for each of its scenes with what a real DS saved, `tests/hardware/rdlines-realds.bin`. A
-DSi gave the same results in both modes. It builds the ROM first if it isn't built, which needs devkitPro's `nds-dev`.
-
 ## GBA slot
 
 `slot2.sh <DS ROM> <system files folder>` checks the GBA slot in DS mode, on the Mac with the interpreter, and prints how many

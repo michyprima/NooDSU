@@ -485,9 +485,6 @@ void Gpu::gbaScanline308() {
 
 void Gpu::scanline256() {
     if (vCount < 192) {
-        // Set DISP3DCNT bit 12 at H-blank of lines where rendering ran dry
-        core->gpu3D.checkUnderflow(vCount);
-
         if (thread && !fastFrame) {
             // Finish each engine's scanline, drawing it here if its thread hasn't started it, or waiting for it
             // Engine B comes first, since its thread shares a core and is more likely to be behind
@@ -610,8 +607,7 @@ void Gpu::scanline355() {
             core->ndma[i].trigger(0x6);
         }
 
-        // Report how the frame just displayed rendered, then swap the buffers of the 3D engine if needed
-        core->gpu3D.latchRdLines();
+        // Swap the buffers of the 3D engine if needed
         if (core->gpu3D.shouldSwap()) {
             EP_START(swap);
             core->gpu3D.swapBuffers();
@@ -1100,8 +1096,5 @@ void Gpu::writeDispCapCnt(uint32_t mask, uint32_t value) {
 void Gpu::writePowCnt1(uint16_t mask, uint16_t value) {
     // Write to the POWCNT1 register
     mask &= 0x820F;
-    uint16_t old = powCnt1;
     powCnt1 = (powCnt1 & ~mask) | (value & mask);
-    if ((old ^ powCnt1) & BIT(2))
-        core->gpu3D.powerRendering(powCnt1 & BIT(2));
 }

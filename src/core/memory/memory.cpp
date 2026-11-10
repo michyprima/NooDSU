@@ -1247,7 +1247,7 @@ template <typename T> T Memory::ioRead9(uint32_t address) {
             DEF_IO16(0x400004A, data = core->gpu2D[0].readWinOut()) // WINOUT (engine A)
             DEF_IO16(0x4000050, data = core->gpu2D[0].readBldCnt()) // BLDCNT (engine A)
             DEF_IO16(0x4000052, data = core->gpu2D[0].readBldAlpha()) // BLDALPHA (engine A)
-            DEF_IO16(0x4000060, core->gpu3D.noteTimingRead(); data = core->gpu3DRenderer.readDisp3DCnt()) // DISP3DCNT
+            DEF_IO16(0x4000060, data = core->gpu3DRenderer.readDisp3DCnt()) // DISP3DCNT
             DEF_IO32(0x4000064, data = core->gpu.readDispCapCnt()) // DISPCAPCNT
             DEF_IO16(0x400006C, data = core->gpu2D[0].readMasterBright()) // MASTER_BRIGHT (engine A)
             DEF_IO32(0x40000B0, data = core->dma[0].readDmaSad(0)) // DMA0SAD (ARM9)
@@ -1310,7 +1310,7 @@ template <typename T> T Memory::ioRead9(uint32_t address) {
             DEF_IO32(0x40002BC, data = core->divSqrt.readSqrtParamH()) // SQRTPARAM_H
             DEF_IO08(0x4000300, data = core->interpreter[0].readPostFlg()) // POSTFLG (ARM9)
             DEF_IO16(0x4000304, data = core->gpu.readPowCnt1()) // POWCNT1
-            DEF_IO08(0x4000320, data = core->gpu3D.readRdLinesCount()) // RDLINES_COUNT
+            DEF_IO08(0x4000320, data = 46) // RDLINES_COUNT
             DEF_IO32(0x4000600, data = core->gpu3D.readGxStat()) // GXSTAT
             DEF_IO32(0x4000604, data = core->gpu3D.readRamCount()) // RAM_COUNT
             DEF_IO32(0x4000620, data = core->gpu3D.readPosResult(0)) // POS_RESULT
