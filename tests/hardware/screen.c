@@ -17,11 +17,28 @@ static const unsigned char font[][5] = {
     {0x63,0x14,8,0x14,0x63},{7,8,0x70,8,7},{0x61,0x51,0x49,0x45,0x43},
 };
 
+volatile unsigned short *screenBase = (volatile unsigned short*)0x06800000;
+
 void screenInit(void) {
     // Show VRAM A as a framebuffer on the main screen
     *(volatile unsigned*)0x04000304 = 0x8003;
     *(volatile unsigned char*)0x04000240 = 0x80;
     *(volatile unsigned*)0x04000000 = 0x00020000;
+    for (int i = 0; i < 256 * 192; i++) SCREEN[i] = BLACK;
+}
+
+void screenInitSub(void) {
+    // Show VRAM C as a 16-bit bitmap on the sub engine, leaving the main engine for something else
+    *(volatile unsigned char*)0x04000242 = 0x84;
+    *(volatile unsigned*)0x04001000 = 0x00010405;
+    *(volatile unsigned short*)0x0400100C = 0x4084;
+    *(volatile unsigned short*)0x04001020 = 0x100;
+    *(volatile unsigned short*)0x04001022 = 0;
+    *(volatile unsigned short*)0x04001024 = 0;
+    *(volatile unsigned short*)0x04001026 = 0x100;
+    *(volatile unsigned*)0x04001028 = 0;
+    *(volatile unsigned*)0x0400102C = 0;
+    screenBase = (volatile unsigned short*)0x06200000;
     for (int i = 0; i < 256 * 192; i++) SCREEN[i] = BLACK;
 }
 

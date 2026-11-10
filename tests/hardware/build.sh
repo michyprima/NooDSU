@@ -45,3 +45,12 @@ echo "Built $out/noodsu-wram.nds"
 "$dkp/tools/bin/ndstool" -c "$out/noodsu-ndma.nds" -7 "$out/ndma7.elf" -9 "$out/ndma9.elf" \
     -b "$dkp/calico/share/nds-icon.bmp" "NooDS U NDMA test;NDMA on a real DSi;" > /dev/null
 echo "Built $out/noodsu-ndma.nds"
+
+# The 3D timing test, a ROM of its own for a DS or a DSi in either mode
+"$tools-gcc" $common -march=armv5te -mtune=arm946e-s -DARM9 -specs="$dkp/calico/share/ds9.specs" \
+    "$here/screen.c" "$here/rdlines9.c" -lfat -lnds9 -lcalico_ds9 -o "$out/rdlines9.elf"
+"$tools-gcc" $common -march=armv4t -mtune=arm7tdmi -DARM7 -specs="$dkp/calico/share/ds7.specs" \
+    "$here/rdlines7.c" -lnds7 -lcalico_ds7 -o "$out/rdlines7.elf"
+"$dkp/tools/bin/ndstool" -c "$out/noodsu-rdlines.nds" -7 "$out/rdlines7.elf" -9 "$out/rdlines9.elf" \
+    -b "$dkp/calico/share/nds-icon.bmp" "NooDS U 3D timing test;3D render timing on a real DS;" > /dev/null
+echo "Built $out/noodsu-rdlines.nds"

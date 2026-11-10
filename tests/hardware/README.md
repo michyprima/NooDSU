@@ -87,13 +87,35 @@ NooDS U's comes from a RAM dump, `tests/jit/game.sh tests/hardware/build/noodsu-
 dsi ram=ndma.bin`, which `ndma.py` reads too. If it hangs, the third line says which test on which CPU. What each result word
 means is in the comments in `ndma_tests.c`.
 
+## The 3D timing test
+
+`build/noodsu-rdlines.nds` is a fourth ROM, for a DS or a DSi in either mode. It settles how long the 3D engine takes to
+render, through the two things it reports: RDLINES_COUNT, the fewest lines its 48-line buffer held during a frame, and
+DISP3DCNT bit 12, set when the buffer ran dry. Nothing else documents the costs; melonDS's unmerged model guesses them.
+
+Each scene in `rdlines.h` draws a number of flat quads of a given width and height. It's swapped in after an empty scene and
+watched line by line for 6 frames, recording every change of RDLINES_COUNT and every time bit 12 is set, which is then
+acknowledged. Four overloaded scenes are captured with display capture too, to show what the DS draws when it runs behind.
+The 3D is on the top screen and the results on the bottom one, as the steady RDLINES_COUNT with `F` if bit 12 was set.
+
+It saves `noodsu-rdlinestest.bin` like the other ROMs; in DS mode on a DSi, that may only work through a flashcart. To see
+what it found, and how that compares with NooDS U:
+
+```
+tests/hardware/rdlines.py noodsu-rdlinestest.bin [NooDS U's] [--lines] [--images folder]
+```
+
+`--lines` says, for each run of lines in a capture, which quad shows and how far right it reaches, and `--images` writes the
+captures as PPM files. NooDS U's comes from a RAM dump, `tests/jit/game.sh tests/hardware/build/noodsu-rdlines.nds <system
+files folder> 1200 --modes interp ram=rdlines.bin`, adding `dsi` for DSi mode.
+
 ## Building it
 
 ```
 tests/hardware/build.sh [results from NooDS U]
 ```
 
-It builds both ROMs, and needs devkitPro's `nds-dev`. The results are NooDS U's for the instruction test's CPUs, as 2 x
+It builds all four ROMs, and needs devkitPro's `nds-dev`. The results are NooDS U's for the instruction test's CPUs, as 2 x
 110 x 12 little-endian words, which go in a table of the same size either way, so the code doesn't move. Build once without
 them, run that in NooDS U to get them, and build again. On the Mac, `tests/jit/game.sh` gets them:
 
