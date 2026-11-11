@@ -572,7 +572,7 @@ int main(int argc, char **argv) {
         else if (arg.rfind("shots=", 0) == 0) shots = atoi(arg.c_str() + 6); // Save the screens every N frames, with ppm's name
         else if (arg.rfind("headphones=", 0) == 0) headphones = atoi(arg.c_str() + 11); // Plug them in at frame N
         else if (arg.rfind("sd=", 0) == 0) sdImage = arg.substr(3); // An SD card image for DSi mode, none by default
-        else if (arg == "dsplle") Settings::dspHle = 0; // Run Nintendo's DSP programs in Teakra too
+        else if (arg == "dsplle") DsiDsp::lowLevel = true; // Run Nintendo's DSP programs in Teakra too
         else if (arg.rfind("mictone=", 0) == 0) micTone = atoi(arg.c_str() + 8); // A sine in the microphone, at 32 kHz
         else if (arg.rfind("state=", 0) == 0) { // Save a state before one frame and load it before another
             stateSave = atoi(arg.c_str() + 6);

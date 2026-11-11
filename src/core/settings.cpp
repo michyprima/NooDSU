@@ -37,7 +37,6 @@ int Settings::statesFolder = 1;
 int Settings::cheatsFolder = 1;
 int Settings::screenFilter = 2;
 int Settings::dsiMode = 0;
-int Settings::dspHle = 1;
 int Settings::arm7Hle = 0;
 int Settings::jit = 1;
 int Settings::fastTiming = 1;
@@ -79,7 +78,6 @@ std::vector<Setting> Settings::settings = {
     Setting("cheatsFolder", &cheatsFolder, false),
     Setting("screenFilter", &screenFilter, false),
     Setting("dsiMode", &dsiMode, false),
-    Setting("dspHle", &dspHle, false),
     Setting("arm7Hle", &arm7Hle, false),
     Setting("jit", &jit, false),
     Setting("fastTiming", &fastTiming, false),

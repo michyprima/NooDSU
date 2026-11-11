@@ -20,7 +20,6 @@
 #include <stdexcept>
 
 #include "../core.h"
-#include "../settings.h"
 #include "../teakra/teakra.h"
 #include "dsi_dsp_hle.h"
 
@@ -152,10 +151,12 @@ void DsiDsp::semaphoreIrq() {
     core->interpreter[0].sendInterrupt(24);
 }
 
+bool DsiDsp::lowLevel = false;
+
 void DsiDsp::startUcode() {
     // Do the loaded program in high level if it's one of Nintendo's, otherwise Teakra runs it
     stopUcode();
-    if (!Settings::dspHle) return;
+    if (lowLevel) return;
     updatePages();
     ucode = DspUcode::create(core, this, pages);
     if (ucode) ucode->start();

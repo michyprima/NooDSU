@@ -31,6 +31,8 @@ namespace Teakra { class Teakra; }
 // high level instead (dsi_dsp_hle)
 class DsiDsp {
 public:
+    static bool lowLevel; // Run Nintendo's programs in Teakra too, for comparing in the test harness
+
     DsiDsp(Core *core): core(core) {}
     ~DsiDsp();
     void saveState(FILE *file);
