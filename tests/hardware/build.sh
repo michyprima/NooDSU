@@ -79,3 +79,12 @@ echo "Built $out/noodsu-mic.nds"
 "$dkp/tools/bin/ndstool" -c "$out/noodsu-speed.nds" -7 "$out/speed7.elf" -9 "$out/speed9.elf" \
     -b "$dkp/calico/share/nds-icon.bmp" "NooDS U speed test;CPU speed on a real DS;" > /dev/null
 echo "Built $out/noodsu-speed.nds"
+
+# The stereo test, a ROM of its own for a DS or a DSi in either mode
+"$tools-gcc" $common -march=armv5te -mtune=arm946e-s -DARM9 -specs="$dkp/calico/share/ds9.specs" \
+    "$here/screen.c" "$here/stereo9.c" -lfat -lnds9 -lcalico_ds9 -o "$out/stereo9.elf"
+"$tools-gcc" $common -march=armv4t -mtune=arm7tdmi -DARM7 -specs="$dkp/calico/share/ds7.specs" \
+    "$here/stereo7.c" -lnds7 -lcalico_ds7 -o "$out/stereo7.elf"
+"$dkp/tools/bin/ndstool" -c "$out/noodsu-stereo.nds" -7 "$out/stereo7.elf" -9 "$out/stereo9.elf" \
+    -b "$dkp/calico/share/nds-icon.bmp" "NooDS U stereo test;Left and right by ear;" > /dev/null
+echo "Built $out/noodsu-stereo.nds"

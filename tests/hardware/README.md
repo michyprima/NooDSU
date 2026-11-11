@@ -259,3 +259,15 @@ exception record a return address in the BIOS's handler, which differs between t
 Things that would need a way back from jumping somewhere unknown: `MUL`, `LDRH` or `LDRD` with the PC as the destination, `LDM`
 with an empty list, and writeback to the PC. Also most of CP15, cycle counts, undefined encodings, and ARMv5 instructions on the
 ARM7.
+
+## The stereo test
+
+`build/noodsu-stereo.nds` tells left from right by ear, on a DS or a DSi in either mode and in NooDS U. A low tone
+plays from the left speaker only, then a high one from the right only, a second each, over and over; holding A plays
+both. If the low tone comes from the right, left and right are swapped somewhere after the DS's mixer.
+
+The ARM7 sets the sound registers itself, since libnds's sound driver doesn't get through its start-up in NooDS U yet:
+it turns the screens white and never answers the ARM9. That also means nothing turns a real console's speaker amplifier
+on beyond what it starts with, so on real hardware this ROM may stay silent. On the Mac, `tests/jit/game.sh
+tests/hardware/build/noodsu-stereo.nds <system files folder> 420 wav=stereo.wav` saves what the DS's mixer made, which
+has the low tone on the left.
