@@ -32,7 +32,7 @@ namespace ScreenFrame {
 
     struct Screen {
         float x, y, width, height;
-        bool bottom; // Whether this is the bottom screen, which has the buttons beside it instead of the speakers
+        bool bottom; // Whether this is the bottom screen, which has nothing beside it
     };
 
     // The hinge's lights in each color they can be lit in, all drawn unlit in the frame itself

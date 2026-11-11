@@ -364,57 +364,10 @@ namespace ScreenFrame {
         canvas.roundedOutline(x - 9 * u, y - 9 * u, 18 * u, 18 * u, 3 * u, std::max(1.0f, u), shade(base, -0.16f));
     }
 
-    static void drawPlus(Canvas &canvas, float x, float y, float reach, float arm, float radius, Color top, Color bottom) {
-        auto shader = [=](float, float py) { return lerp(top, bottom, clamp01((py - (y - reach)) / (reach * 2))); };
-        canvas.fill(x - reach - 1, y - reach - 1, x + reach + 1, y + reach + 1, [=](float px, float py) {
-            float a = Canvas::roundedDistance(px, py, x - arm, y - reach, arm * 2, reach * 2, radius);
-            float b = Canvas::roundedDistance(px, py, x - reach, y - arm, reach * 2, arm * 2, radius);
-            return clamp01(0.5f - std::min(a, b));
-        }, shader);
-    }
-
-    static void drawDpad(Canvas &canvas, const Palette &palette, float x, float y, float u) {
-        // Draw a raised cross in the shell's color, with a thin seam around it and a mark on each arm
-        Color base = rgb(palette.color), ink = rgb(palette.ink), seam = shade(base, -0.42f);
-        float reach = 40 * u, arm = 13.5f * u;
-        drawPlus(canvas, x, y + 2.4f * u, reach + 1.6f * u, arm + 1.6f * u, 4 * u, seam, seam);
-        drawPlus(canvas, x, y, reach, arm, 3.5f * u, shade(base, 0.09f), shade(base, -0.06f));
-        static const int dirs[][2] = { { 0, -1 }, { 0, 1 }, { -1, 0 }, { 1, 0 } };
-        for (auto &d : dirs)
-            canvas.line(x + d[0] * 21 * u, y + d[1] * 21 * u, x + d[0] * 32 * u, y + d[1] * 32 * u, 1.8f * u, ink);
-    }
-
-    static void drawRoundButton(Canvas &canvas, Color base, float x, float y, float radius, float u) {
-        canvas.circle(x, y + 2.2f * u, radius + 0.8f * u, shade(base, -0.42f));
-        Color top = shade(base, 0.1f), bottom = shade(base, -0.07f);
-        canvas.circle(x, y, radius, [=](float, float py) {
-            return lerp(top, bottom, clamp01((py - (y - radius)) / (radius * 2)));
-        });
-    }
-
-    static void drawFaceButtons(Canvas &canvas, const Palette &palette, float x, float y, float u) {
-        static const struct { const char *name; int x, y; } buttons[] =
-            { { "X", 0, -1 }, { "Y", -1, 0 }, { "A", 1, 0 }, { "B", 0, 1 } };
-        for (auto &b : buttons) {
-            drawRoundButton(canvas, rgb(palette.color), x + b.x * 38 * u, y + b.y * 38 * u, 18.5f * u, u);
-            canvas.text(b.name, x + b.x * 38 * u, y + b.y * 38 * u + 0.5f * u, 17 * u, rgb(palette.ink));
-        }
-    }
-
     static void drawPowerIcon(Canvas &canvas, float x, float y, float radius, float thickness, Color color) {
         const float PI = 3.1415927f;
         canvas.arc(x, y, radius, -PI * 0.28f, PI * 1.56f, thickness, color);
         canvas.line(x, y - radius * 1.25f, x, y - radius * 0.2f, thickness, color);
-    }
-
-    static void drawPowerButton(Canvas &canvas, const Palette &palette, float x, float y, float u) {
-        canvas.circle(x, y + 1.6f * u, 10.5f * u, shade(rgb(palette.color), -0.42f));
-        Color top = { 0xD9, 0xDA, 0xDC }, bottom = { 0xA4, 0xA6, 0xA9 };
-        canvas.circle(x, y, 10 * u, [=](float, float py) {
-            return lerp(top, bottom, clamp01((py - (y - 10 * u)) / (20 * u)));
-        });
-        drawPowerIcon(canvas, x, y + 0.5f * u, 4.2f * u, 1.3f * u, Color{ 0x7C, 0x7E, 0x82 });
-        canvas.text("POWER", x - 16 * u, y, 10 * u, rgb(palette.ink), 1);
     }
 
     static void drawStatusIcons(Canvas &canvas, Color ink, float x, float y, float u, float gap) {
@@ -484,9 +437,11 @@ namespace ScreenFrame {
         if (patches) std::fill(patches, patches + LIGHT_COUNT, LightPatch());
         if (hasHinge) drawHinge(canvas, palette, hinge, t, s, hingeLeft, hingeRight, lights, patches);
 
-        // Draw what's beside each screen, leaving out any side without room for it
+        // Draw what's beside the top screen, leaving out any side without room for it
+        // The bottom screen is left plain, since buttons drawn beside it can't be pressed
         for (int i = 0; i < count; i++) {
             const Screen &screen = screens[i];
+            if (screen.bottom) continue;
             float y0 = 0, y1 = height;
             if (hasHinge) {
                 if (screen.y + screen.height / 2 < hinge) y1 = hinge - t;
@@ -496,39 +451,16 @@ namespace ScreenFrame {
             float leftStart = screen.x - leftRoom, rightStart = screen.x + screen.width;
             float leftU = std::min(leftRoom / 160, span / 288), rightU = std::min(rightRoom / 160, span / 288);
             bool left = (leftRoom >= 60 * s), right = (rightRoom >= 60 * s);
-            if (!screen.bottom) {
-                float slot = screen.y + screen.height * 0.78f;
-                if (left) {
-                    drawSpeaker(canvas, leftStart + leftRoom / 2, slot, leftU);
-                    drawPad(canvas, base, leftStart + leftRoom / 2, y0 + 30 * leftU, leftU);
-                    if (hasHinge) drawStatusIcons(canvas, ink, hingeLeft * 0.28f, y1 - 13 * leftU, leftU,
-                        lightGap(hingeLeft));
-                }
-                if (right) {
-                    drawSpeaker(canvas, rightStart + rightRoom / 2, slot, rightU);
-                    drawPad(canvas, base, rightStart + rightRoom / 2, y0 + 30 * rightU, rightU);
-                }
+            float slot = screen.y + screen.height * 0.78f;
+            if (left) {
+                drawSpeaker(canvas, leftStart + leftRoom / 2, slot, leftU);
+                drawPad(canvas, base, leftStart + leftRoom / 2, y0 + 30 * leftU, leftU);
+                if (hasHinge) drawStatusIcons(canvas, ink, hingeLeft * 0.28f, y1 - 13 * leftU, leftU,
+                    lightGap(hingeLeft));
             }
-            else {
-                // Keep the small buttons and their labels readable on small displays, as far as they fit beside the screen
-                auto small = [](float u, float room) { return std::max(u, std::min(1.15f, room / 93)); };
-                if (left) {
-                    drawDpad(canvas, palette, leftStart + leftRoom / 2, y0 + span * 0.38f, leftU);
-                    drawPowerButton(canvas, palette, leftStart + leftRoom * 0.74f, y0 + span * 0.86f, small(leftU, leftRoom));
-                }
-                if (right) {
-                    drawFaceButtons(canvas, palette, rightStart + rightRoom / 2, y0 + span * 0.3f, rightU);
-                    // Line up the small buttons' left edges with the Y button's, and the lower one's bottom with the power button's
-                    static const struct { const char *name; float up; } buttons[] = { { "START", 0.1f }, { "SELECT", 0 } };
-                    float u = small(rightU, rightRoom);
-                    float x = rightStart + rightRoom / 2 - (38 + 18.5f) * rightU + 8 * u;
-                    float lowest = y0 + span * 0.86f + 10 * small(leftU, leftRoom) - 8 * u;
-                    for (auto &b : buttons) {
-                        float y = lowest - span * b.up;
-                        drawRoundButton(canvas, base, x, y, 8 * u, u);
-                        canvas.text(b.name, x + 13 * u, y, 10 * u, ink, -1);
-                    }
-                }
+            if (right) {
+                drawSpeaker(canvas, rightStart + rightRoom / 2, slot, rightU);
+                drawPad(canvas, base, rightStart + rightRoom / 2, y0 + 30 * rightU, rightU);
             }
         }
 
