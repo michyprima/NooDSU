@@ -31,6 +31,7 @@ public:
 
     uint8_t readData() { return i2cData; }
     uint8_t readCnt() { return i2cCnt; }
+    uint8_t volume() { return mcuVolume; }
 
     void writeData(uint8_t value);
     void writeCnt(uint8_t value);
@@ -44,7 +45,8 @@ private:
 
     uint8_t i2cData = 0;
     uint8_t i2cCnt = 0;
+    uint8_t mcuVolume = 0x1F; // MCU register 0x40, the volume level from 0 to 31
 
     uint8_t readMcu();
-    void writeMcu(uint8_t value);
+    void writeMcu(uint8_t value, bool last);
 };

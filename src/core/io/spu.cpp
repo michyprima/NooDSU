@@ -818,6 +818,14 @@ void Spu::mixSample() {
             sampleLeft = (sampleLeft * ratio + dsp[0] * (8 - ratio)) >> 3;
             sampleRight = (sampleRight * ratio + dsp[1] * (8 - ratio)) >> 3;
         }
+
+        // The amplifier after it follows the MCU's volume level, scaled evenly from silent at 0 to full at 31 as
+        // melonDS's volume sync does
+        int volume = core->i2c.volume();
+        if (volume != 0x1F) {
+            sampleLeft = sampleLeft * volume / 0x1F;
+            sampleRight = sampleRight * volume / 0x1F;
+        }
     }
     pushSample(sampleLeft, sampleRight);
 }

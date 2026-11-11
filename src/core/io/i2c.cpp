@@ -27,6 +27,7 @@ void I2c::saveState(FILE *file) {
     fwrite(&regAddr, sizeof(regAddr), 1, file);
     fwrite(&i2cData, sizeof(i2cData), 1, file);
     fwrite(&i2cCnt, sizeof(i2cCnt), 1, file);
+    fwrite(&mcuVolume, sizeof(mcuVolume), 1, file);
 }
 
 void I2c::loadState(FILE *file) {
@@ -37,12 +38,14 @@ void I2c::loadState(FILE *file) {
     fread(&regAddr, sizeof(regAddr), 1, file);
     fread(&i2cData, sizeof(i2cData), 1, file);
     fread(&i2cCnt, sizeof(i2cCnt), 1, file);
+    fread(&mcuVolume, sizeof(mcuVolume), 1, file);
 }
 
 uint8_t I2c::readMcu() {
     // Read from an MCU register and increment the address
     switch (regAddr++) {
         case 0x20: return 0xF; // Battery (full)
+        case 0x40: return mcuVolume;
 
     default:
         // Catch reads from unknown MCU registers
@@ -51,17 +54,24 @@ uint8_t I2c::readMcu() {
     }
 }
 
-void I2c::writeMcu(uint8_t value) {
+void I2c::writeMcu(uint8_t value, bool last) {
     // Set the 8-bit MCU address on second write
     if (writeCount == 2) {
         regAddr = value;
         return;
     }
 
+    // The byte sent with the stop isn't written, like in melonDS; DSi Sound sends the volume again that way
+    if (last) return;
+
     // Write to an MCU register and increment the address
     switch (regAddr++) {
     case 0x11: // Reset, which the DSi's software uses to leave for the menu
         if (value & BIT(0)) core->restartRequested.store(true);
+        return;
+
+    case 0x40: // Volume, which software like DSi Sound's slider sets as well as the volume buttons
+        mcuVolume = value & 0x1F;
         return;
 
     default:
@@ -111,7 +121,7 @@ void I2c::writeCnt(uint8_t value) {
 
     // Forward I2C writes to the addressed device
     switch (devAddr & 0xFE) {
-        case 0x4A: i2cCnt |= BIT(4); return writeMcu(i2cData);
+        case 0x4A: i2cCnt |= BIT(4); return writeMcu(i2cData, value & BIT(0));
         case 0x78: case 0x7A: i2cCnt |= BIT(4); return core->dsiCamera.i2cWrite(i2cData, value & BIT(0));
 
     default:
