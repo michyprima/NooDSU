@@ -35,6 +35,10 @@ SPSR and any memory it can touch go into a hash, so two runs can be compared cas
 - **Memory:** main RAM and the TCMs, which the JIT reaches directly, and palette RAM on the ARM9, which it doesn't. The ARM7 uses main
   RAM and its own WRAM.
 - **Running:** code changing, blocks entered partway, long runs, timer interrupts during ARM and THUMB loops, and waking from a halt.
+- **Flags nothing reads:** with fast timing the JIT leaves out flags that are set again before anything reads them, and only
+  keeps the carry between the words of a longer addition or subtraction. Runs that set flags twice, carry and borrow chains,
+  a division step, flags kept through logic and shifts, read by conditions, and around a store, in ARM and THUMB, are there
+  for the fast timing run to reach that on the console.
 
 Handlers aren't left out, so it also compares what stays with the interpreter in each run. Comparing against the interpreter finds where the
 JIT differs from it, not where they're both wrong; running the ROM on a real DS finds those, see below.
@@ -95,7 +99,8 @@ tests/rom/multiply.py noodsu-results.bin [output.csv]
 Run the ROM on the Mac with the interpreter and `RomTest::detail` set, which adds the `S` lines, then:
 
 ```
-tests/rom/expected.py romtest.txt tests/rom/build/cases.h tests/rom/build/expected.bin
+JIT_TEST_CFLAGS=-DROM_TEST tests/jit/game.sh tests/rom/build/noodsu-instructions.nds <system files> 60000 --modes interp romtest=romtest.txt
+tests/rom/expected.py <the run-interp folder that prints>/romtest.txt tests/rom/build/cases.h tests/rom/build/expected.bin
 tests/rom/build.sh <the same ROM> tests/rom/build/expected.bin
 ```
 

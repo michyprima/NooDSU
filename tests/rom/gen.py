@@ -265,6 +265,26 @@ case('long run with flags', *[f'adds r{i % 8}, r{(i + 1) % 8}, r{(i + 2) % 8}' f
 case('run of conditions', 'cmp r1, r2', *[f'{CONDS[i % 14]} r0, r0, #1'.replace(CONDS[i % 14], 'add' + CONDS[i % 14]) for i in range(28)])
 case('T long run', *[f'adds r{i % 7}, r{(i + 1) % 7}, r{(i + 2) % 7}' for i in range(40)], thumb=True)
 
+# Runs where the JIT, with fast timing, leaves out flags that nothing reads before they're set again, or only keeps the carry
+case('flags set twice', 'adds r0, r1, r2', 'subs r3, r1, r2', 'ands r4, r1, r2', 'cmp r2, r1', 'movs r5, r1, LSR #3', 'adds r6, r1, #1')
+case('carry through three words', 'adds r0, r1, r2', 'adcs r3, r4, r5', 'adcs r6, r7, r1', 'adc r0, r2, r3')
+case('borrow through three words', 'subs r0, r1, r2', 'sbcs r3, r4, r5', 'rscs r6, r7, r1', 'sbc r0, r2, r3')
+case('carry then a compare', 'cmp r1, r2', 'adc r0, r1, r2', 'cmn r2, r3', 'sbc r4, r1, r2', 'cmp r3, r1')
+case('carry kept by logic', 'adds r0, r1, r2', 'ands r3, r1, r2', 'orrs r4, r1, r2', 'adc r5, r1, r2', 'adds r6, r1, r1')
+case('carry through shifts', 'adds r0, r1, r2', 'movs r3, r1, LSR #1', 'adc r4, r1, r2', 'movs r5, r1, RRX', 'movs r6, r2, LSL r3', 'adc r7, r1, r2', 'cmp r1, r2')
+case('overflow kept by logic', 'adds r0, r1, r2', 'movs r3, r1, LSL #1', 'tst r1, r2', 'addvs r4, r4, #1', 'adds r5, r1, r2', 'movs r6, r1, LSL #1')
+case('flags read by conditions', 'adds r0, r1, r2', 'moveq r3, #1', 'subs r4, r1, r2', 'addcs r5, r5, #1', 'cmp r1, r2')
+case('multiply flags set twice', 'muls r0, r1, r2', 'umulls r3, r4, r1, r2', 'adc r5, r1, r2', 'muls r6, r1, r2', 'cmp r1, r2')
+case('flags before a store', 'adds r0, r1, r2', f'ldr r3, ={MAIN} + 0x80', 'str r0, [r3]', 'subs r4, r1, r2', 'ldr r5, [r3]', 'cmp r5, r1')
+case('division step', 'adds r0, r0, r0', 'adcs r1, r1, r1', 'adcs r7, r7, r7', 'subs r0, r0, r2', 'sbcs r1, r1, r3', 'sbcs r7, r7, #0',
+    'adds r4, r4, r4', 'adc r5, r5, r5', 'cmp r7, #0')
+case('T flags set twice', 'adds r0, r1, r2', 'lsls r3, r1, #3', 'subs r4, r1, r2', 'movs r5, #7', 'eors r5, r1', 'cmp r2, r1', 'negs r6, r1',
+    'adds r0, #1', thumb=True)
+case('T carry through words', 'adds r0, r1, r2', 'adcs r3, r4', 'sbcs r5, r6', 'adcs r0, r1', thumb=True)
+case('T carry kept by logic', 'adds r0, r1, r2', 'ands r3, r1', 'muls r4, r1', 'movs r5, #1', 'adcs r6, r1', 'lsrs r0, r1, #1', 'adcs r2, r0',
+    'lsls r3, r4', 'sbcs r5, r1', thumb=True)
+case('T flags before a store', 'adds r0, r1, r2', f'ldr r3, ={MAIN} + 0x80', 'str r0, [r3]', 'subs r4, r1, r2', 'ldr r5, [r3]', 'cmp r5, r1', thumb=True)
+
 # What's timed: a unit repeated 8 times in a loop of a fixed count, with setup before and anything between repeats after
 D = f'ldr r1, ={MAIN} + 0x80'
 for text in ('mov r0, r1', 'mov r0, #1', 'add r0, r1, #1', 'add r0, r1, r2', 'add r0, r1, r2, LSL #3', 'add r0, r1, r2, LSL r3', 'eor r0, r1, r2, ROR #5',

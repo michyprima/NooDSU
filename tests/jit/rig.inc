@@ -9,3 +9,5 @@ int rigKind(uint32_t op, bool thumb, bool arm7) {
 }
 bool rigMayJump(uint32_t op, bool thumb) { return mayJump(op, thumb); }
 bool rigKindJumps(int kind) { return nativeJumps(kind); }
+int rigPoison = 0; // 1 clears the flags nothing reads after each instruction in a run, 2 sets them
+uint64_t rigFlagStats[2]; // Flag-setting instructions generated without flags, and with only the carry

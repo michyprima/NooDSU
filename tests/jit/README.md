@@ -22,13 +22,14 @@ time and checks that each is noticed; add one there when adding a kind of test.
 | `thumb` | All 65,536 THUMB encodings on both CPUs, in System, IRQ and FIQ modes, with memory mapped, unmapped and mixed |
 | `arm` | Every position of the interpreter's ARM table with all 16 conditions and random registers and offsets, on both CPUs |
 | `forms` | ARM instructions with exact encodings, which random bits rarely make: `BX`, `BLX`, `CLZ`, `MRS`, `SWP`, multiplies, and every transfer addressing mode |
-| `flags` | Flag-setting ARM and THUMB instructions over every pair of edge values and starting carry |
+| `flags` | Flag-setting ARM and THUMB instructions over every pair of edge values and starting carry, multiplies included, then each again followed by an instruction that makes the JIT leave out all of its flags, all but the carry, N and Z, or all but V |
 | `conditions` | Every condition with every flag value, on each way through a condition |
 | `lists` | `PUSH`, `POP`, `LDM` and `STM` with lists crossing into pages that take the slow path |
 | `returns` | ALU instructions with flags that write the program counter, returning to every kind of saved mode on both CPUs, which of them generated code leaves to the interpreter, and code after a return using the new mode's banked registers, with the JIT's real table of them |
 | `math` | Every access to the math registers at `0x4000280` to `0x40002BF` against the real ones, for what generated code reaches directly and what it leaves to C++, then random runs of accesses against the same run done only in C++, and the same for `IME`, `IE` and `IF` |
+| `liveness` | Which flags generated code works out, since with fast timing it leaves out the ones nothing reads before they're set again: every run of three from a set of instructions that set, keep and read each flag in every way the JIT tells apart, in ARM and THUMB on both CPUs, then longer random runs, entered in the middle sometimes, loads whose offset is rotated through the carry, and what the JIT works out for a few blocks, directly. Each run is done three times: with the flags the JIT leaves out as they were, then forced to 0, then to 1 from where it stops keeping them, so that a flag left out by mistake has the wrong value in at least one, whatever it was before |
 | `blocks` | Random ARM and THUMB blocks with batching on: entered at the start or the middle, ending at a page end, stopping at every check, partway, at a deadline from an event or the other CPU, or from an event a C++ call made due, and with code changing during a store. Every stop must show exactly the state after an instruction, flags included |
-| `links` | Blocks jumping to each other directly and through the dispatcher, changing CPU mode, as they're compiled, dropped and compiled again |
+| `links` | Blocks jumping to each other directly and through the dispatcher, changing CPU mode, as they're compiled, dropped and compiled again. These and the random blocks take turns at the three ways with left-out flags too |
 | `reference` | The interpreter's handlers against Unicorn's ARM946, an independent model of the same CPU: all THUMB encodings and sampled ARM ones, with banked registers, SPSRs and memory compared. The ARM7 is only compared on what it has in common with the ARM946 |
 
 ## What this doesn't cover
@@ -43,8 +44,9 @@ time and checks that each is noticed; add one there when adding a kind of test.
   DMA and interrupts aren't involved. Real writes over compiled code, and what the ARM7 does during a stop, aren't either.
 - **Long-running behavior.** These are single instructions and short blocks, not a game; `game.sh` below runs whole games.
 
-The JIT self-test on the console (`./build-wiiu-debug.sh jittest`) covers most of this, but turns batching off, so playing games
-on the console is still needed for that.
+The JIT self-test on the console (`./build-wiiu-debug.sh jittest`) covers most of this, but turns batching off, so it doesn't
+reach batches or the flags left out inside them. On the console those are reached by `tests/rom`'s ROM in its fast timing
+run, which has cases for them, and by playing games.
 
 ## Whole games
 
@@ -59,7 +61,8 @@ tests/jit/game.sh <ROM, or - for none> <folder with the system files> <frames> [
 
 The folder needs `bios9.bin`, `bios7.bin` and `firmware.bin`, plus `bios9i.bin`, `bios7i.bin`, `firmwarei.bin` and `nand.bin`
 for DSi mode. Each way of running is given by `--modes`: `interp` without the JIT, `portable` with the JIT's portable executor,
-and `native` with generated code. Each prints a line per frame with a hash of the screens, the cycle counts and both CPUs'
+and `native` with generated code, and `clear` and `set` with generated code that has the flags the JIT leaves out forced to 0
+or to 1, as the `liveness` suite does. Each prints a line per frame with a hash of the screens, the cycle counts and both CPUs'
 program counters, then hashes of RAM and WRAM, and every way is compared with the first. Options are:
 
 - `fast` for fast timing, `dsi` for DSi mode, and `firmware` to start a ROM from the firmware's menu instead of directly
@@ -72,8 +75,14 @@ program counters, then hashes of RAM and WRAM, and every way is compared with th
 - `threads` to run with the 2D threads drawing behind the emulator, as fast 2D does on the console; their timing varies, so
   runs with it aren't expected to match each other
 - `vramstress` to run only a test of VRAM reads from another thread during VRAM bank changes, which ignores the frame count
-  and exits as soon as it's done, or crashes if a read can follow a mapping that's only partly there. Planted bug 56 removes
-  what stops that, so `--mutate 56` with this option should crash; `mutate.sh` doesn't run it, since it runs the cases above. Planted bug 57 breaks ADPCM sound for both the interpreter and generated code, so check it by comparing an `audio` run against one without it
+  and exits as soon as it's done, or crashes if a read can follow a mapping that's only partly there. Planted bug 74 removes
+  what stops that, so `--mutate 74` with this option should crash; `mutate.sh` doesn't run it, since it runs the cases above. Planted bug 75 breaks ADPCM sound for both the interpreter and generated code, so check it by comparing an `audio` run against one without it
+- `romtest=file` to run `tests/rom`'s ROM, saving its results there and stopping when it's done; it needs the registers the
+  ROM talks to, so build with `JIT_TEST_CFLAGS=-DROM_TEST`. The frames differ from run to run, since the ROM times itself
+  with the real clock, so compare the `C` and `S` lines of the files instead
+- `exact` to count the PowerPC instructions generated code runs one by one. The count is otherwise taken from the size of
+  each piece of code entered, which is quick but misses how much of it ran, so it's only good for comparing like with like;
+  this is many times slower
 - `trace=N` to also print both CPUs' registers at the start of every scanline from frame N
 - `ppm=file` to save the last frame, `ram=file` to save main RAM at the end, and `results=file` to save what
   `tests/hardware`'s ROM recorded, for its build
@@ -124,6 +133,10 @@ in billions, with the same frames; Pokemon's main RAM differed, probably from th
 
 Fast timing lets generated code count cycles in batches, so its runs differ from the interpreter's by design; it can still be
 run alone to see that a game works. With exact timing, any difference is a bug.
+
+Fast timing is also what lets generated code leave out flags, since they can only go unread between the instructions of a
+batch. `--modes "native clear set"` with `fast` checks that on a whole game: all three should match frame for frame and in
+memory, and each run says how many flag-setting instructions it generated without their flags, or with only the carry.
 
 The emulator works on the core's own state while generated code runs. The block cache and the memory maps are areas whose
 reads go to the core, with the 64-bit pointers in them turned into the emulator's 32-bit addresses. The interpreter and the

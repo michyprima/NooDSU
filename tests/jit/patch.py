@@ -54,6 +54,21 @@ text = re.sub(r'static_assert\(sizeof\(JitCacheEntry\) == 16[^\n]*\n', '', text)
 text = text.replace('e.call((void*)&Jit::interleaveCall);', 'e.call((void*)(uintptr_t)0x3F2000);')
 text = text.replace('    emitStubs(e);\n    codeStart =', '    rigOverride(*this);\n    emitStubs(e);\n    codeStart =')
 text = text.replace('#include "../core.h"', '#define private public\n#include "../core.h"\n#undef private\nvoid rigOverride(Jit &jit);', 1)
+
+# Flags the JIT works out that nothing reads can be forced to 0 or to 1 where it stops keeping them, so a flag that's
+# wrongly left out shows as a wrong value whatever the old one was; the test also counts what's left out
+text = text.replace('void rigOverride(Jit &jit);', 'void rigOverride(Jit &jit);\nextern int rigPoison;\nextern uint64_t rigFlagStats[2];', 1)
+# Older cores, which bench.sh compares with, work out every flag
+if 'liveFlags' in text:
+    old = '    flagsLive = liveFlags[i];\n'
+    assert old in text, old
+    text = text.replace(old, old + '    if (rigPoison && i > 0 && liveFlags[i - 1] != FLAG_ALL) {\n        e.lwz(6, offCpsr, R_ARM);\n'
+        '        e.oris(6, 6, (FLAG_ALL & ~liveFlags[i - 1]) << 12);\n        if (rigPoison == 1) e.xoris(6, 6, (FLAG_ALL & ~liveFlags[i - 1]) << 12);\n'
+        '        e.stw(6, offCpsr, R_ARM);\n    }\n')
+    old = '    if (!need) s = false;\n'
+    assert old in text, old
+    text = text.replace(old, '    if (s && !need) rigFlagStats[0]++;\n    else if (!logical && need == FLAG_C) rigFlagStats[1]++;\n' + old)
+
 if game:
     # Each handler gets its own address so the game run knows which to call, and code goes to the emulator when it's
     # flushed and runs there
@@ -135,19 +150,37 @@ MUTATIONS = [
     ('e.rlwimi(7, 9, 0, 24, 24);\n', ''), # 48: Writing IE changes bit 7
     ('e.rlwinm_(9, 9, 7, 31, 31);', 'e.rlwinm_(9, 9, 6, 31, 31);'), # 49: Clearing IF checks the wrong FIFO condition
     ('e.lwz(8, offIrf + 4, R_ARM);', 'e.lwz(8, offIrf, R_ARM);'), # 50: Reading IF gets the high word
+    ('    if ((op >> 28) != 0xE) reads = FLAG_ALL;\n', ''), # 51: A condition doesn't count as reading flags
+    ('writes = always = logical ? (FLAG_N | FLAG_Z) : FLAG_ALL;', 'writes = always = FLAG_ALL;'), # 52: Logical operations count as setting C and V
+    ('if ((opc >= 5 && opc <= 7) || rrx) reads |= FLAG_C;', 'if (rrx) reads |= FLAG_C;'), # 53: ADC, SBC and RSC don't count as reading the carry
+    ('if ((opc >= 5 && opc <= 7) || rrx) reads |= FLAG_C;', 'if (opc >= 5 && opc <= 7) reads |= FLAG_C;'), # 54: RRX doesn't count as reading the carry
+    ('if (logical && byRegister) writes |= FLAG_C;', 'if (logical && byRegister) writes = always = FLAG_N | FLAG_Z | FLAG_C;'), # 55: A shift by a register counts as always setting the carry
+    ('else if (logical && (op & ((op & BIT(25)) ? 0xF00 : 0xFE0))) writes', 'else if (logical) writes'), # 56: A logical operation without a shift counts as setting the carry
+    ('if (op & BIT(20)) writes = always = FLAG_N | FLAG_Z;\n    }\n    else if (kind == NK_MISC)', 'if (op & BIT(20)) writes = always = FLAG_ALL;\n    }\n    else if (kind == NK_MISC)'), # 57: A multiply counts as setting every flag
+    ('if (!(op & BIT(4))) reads = FLAG_ALL; // MRS', ''), # 58: MRS doesn't count as reading flags
+    ('if ((op & BIT(25)) && (op & 0xFF0) == 0x060) reads = FLAG_C;', ''), # 59: A load with an offset rotated through the carry doesn't count as reading it
+    ('            live = FLAG_ALL;\n            continue;', '            continue;'), # 60: Flags don't count as read by what's outside a run
+    ('flagsLive = liveFlags[i];', 'flagsLive = liveFlags[i ? i - 1 : 0];'), # 61: An instruction goes by the flags read after the one before it
+    ('int need = s ? (writes & flagsLive) : 0;', 'int need = s ? (writes & flagsLive & ~FLAG_V) : 0;'), # 62: Arithmetic that's only needed for V sets no flags
+    ('else if (need == FLAG_C) {', 'else if ((need & FLAG_C) && !(need & FLAG_N)) {'), # 63: Arithmetic needed for C and V only sets C
+    ('e.rlwimi(6, 9, 29, 2, 2);', 'e.rlwimi(6, 9, 28, 3, 3);'), # 64: The carry on its own goes to V
+    ('e.adde(9, 9, 9); // The host\'s carry in the low bit, whatever was there', 'e.add(9, 9, 9);'), # 65: The carry on its own is always clear
+    ('bool setFlags = flags && (flagsLive & (FLAG_N | FLAG_Z));', 'bool setFlags = flags && !(flagsLive & (FLAG_N | FLAG_Z));'), # 66: A multiply sets flags only when nothing reads them
+    ('e.li(3, flags ? 4 : 2);', 'e.li(3, setFlags ? 4 : 2);'), # 67: A multiply whose flags aren't read is quicker on the ARM9
+    ('e.li(3, flags ? 5 : 3);', 'e.li(3, setFlags ? 5 : 3);'), # 68: A long multiply whose flags aren't read is quicker on the ARM9
 ]
 # Bugs in the interpreter, which only the reference suite can see if the JIT has no native code for them
 INTERPRETER_MUTATIONS = [
-    ('arm/interpreter_alu.cpp', 'cpsr = (cpsr & ~0xF0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&', 'cpsr = (cpsr & ~0xC0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&'), # 51: RSCS can't clear C or V
-    ('arm/interpreter_alu.cpp', ' | ((*op0 <= 0) << 29) |\n        ((op2 & *op0 & BIT(31)) >> 3);', ' | ((*op0 <= 0) << 29);'), # 52: NEG always clears V
-    ('arm/interpreter_transfer.cpp', 'int Interpreter::ldmiaU(uint32_t opcode) { // LDMIA Rn, <Rlist>^\n    // User block load, post-increment without writeback; normal registers if branching\n    uint8_t m = bitCount[opcode & 0xFF] + bitCount[(opcode >> 8) & 0xFF];\n    uint32_t op0 = *registers[(opcode >> 16) & 0xF];\n    uint32_t **regs = &registers[(~opcode & BIT(15)) >> 11];', 'int Interpreter::ldmiaU(uint32_t opcode) { // LDMIA Rn, <Rlist>^\n    // User block load, post-increment without writeback; normal registers if branching\n    uint8_t m = bitCount[opcode & 0xFF] + bitCount[(opcode >> 8) & 0xFF];\n    uint32_t op0 = *registers[(opcode >> 16) & 0xF];\n    uint32_t **regs = &registers[0];'), # 53: LDM with S doesn't use user registers
-    ('arm/interpreter_transfer.cpp', 'if ((opcode & BIT(16)) && (cpsr & 0x1F) != 0x10)\n        setCpsr', 'if (opcode & BIT(16))\n        setCpsr'), # 54: User mode MSR changes control bits
-    ('arm/interpreter_transfer.cpp', '    if (spsr) setCpsr(*spsr);\n    flushPipeline();', '    if (spsr) setCpsr(*spsr);\n    cpsr |= (*registers[15] & !arm7) << 5;\n    flushPipeline();'), # 55: LDM with S takes THUMB from the PC
+    ('arm/interpreter_alu.cpp', 'cpsr = (cpsr & ~0xF0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&', 'cpsr = (cpsr & ~0xC0000000) | (*op0 & BIT(31)) | ((*op0 == 0) << 30) | ((op2 >= *op0 &&'), # 69: RSCS can't clear C or V
+    ('arm/interpreter_alu.cpp', ' | ((*op0 <= 0) << 29) |\n        ((op2 & *op0 & BIT(31)) >> 3);', ' | ((*op0 <= 0) << 29);'), # 70: NEG always clears V
+    ('arm/interpreter_transfer.cpp', 'int Interpreter::ldmiaU(uint32_t opcode) { // LDMIA Rn, <Rlist>^\n    // User block load, post-increment without writeback; normal registers if branching\n    uint8_t m = bitCount[opcode & 0xFF] + bitCount[(opcode >> 8) & 0xFF];\n    uint32_t op0 = *registers[(opcode >> 16) & 0xF];\n    uint32_t **regs = &registers[(~opcode & BIT(15)) >> 11];', 'int Interpreter::ldmiaU(uint32_t opcode) { // LDMIA Rn, <Rlist>^\n    // User block load, post-increment without writeback; normal registers if branching\n    uint8_t m = bitCount[opcode & 0xFF] + bitCount[(opcode >> 8) & 0xFF];\n    uint32_t op0 = *registers[(opcode >> 16) & 0xF];\n    uint32_t **regs = &registers[0];'), # 71: LDM with S doesn't use user registers
+    ('arm/interpreter_transfer.cpp', 'if ((opcode & BIT(16)) && (cpsr & 0x1F) != 0x10)\n        setCpsr', 'if (opcode & BIT(16))\n        setCpsr'), # 72: User mode MSR changes control bits
+    ('arm/interpreter_transfer.cpp', '    if (spsr) setCpsr(*spsr);\n    flushPipeline();', '    if (spsr) setCpsr(*spsr);\n    cpsr |= (*registers[15] & !arm7) << 5;\n    flushPipeline();'), # 73: LDM with S takes THUMB from the PC
 ]
 # Bugs only a game.sh option can see, numbered after those and left out of mutate.sh, which runs the cases above
 GAME_MUTATIONS = [
-    ('memory/memory.cpp', '        if (uint8_t *mapping = *(uint8_t *volatile*)&mappings[m])\n            value |= readLsb<T>(&mapping[address]);', '        value |= readLsb<T>(&mappings[m][address]);'), # game 56: a VRAM read follows a missing pointer, for vramstress
-    ('io/spu.cpp', 'int32_t negate = (adpcmData >> 3) - 1;', 'int32_t negate = -int32_t(adpcmData >> 3);'), # game 57: ADPCM has its sign backwards, for audio; generated code and the interpreter share it, so compare with a run without it
+    ('memory/memory.cpp', '        if (uint8_t *mapping = *(uint8_t *volatile*)&mappings[m])\n            value |= readLsb<T>(&mapping[address]);', '        value |= readLsb<T>(&mappings[m][address]);'), # game 74: a VRAM read follows a missing pointer, for vramstress
+    ('io/spu.cpp', 'int32_t negate = (adpcmData >> 3) - 1;', 'int32_t negate = -int32_t(adpcmData >> 3);'), # game 75: ADPCM has its sign backwards, for audio; generated code and the interpreter share it, so compare with a run without it
 ]
 if mutation > len(MUTATIONS) + len(INTERPRETER_MUTATIONS):
     file, old, new = GAME_MUTATIONS[mutation - len(MUTATIONS) - len(INTERPRETER_MUTATIONS) - 1]

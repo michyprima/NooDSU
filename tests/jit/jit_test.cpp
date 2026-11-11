@@ -34,6 +34,8 @@ uint32_t rigArm(uint32_t op);
 int rigKind(uint32_t op, bool thumb, bool arm7);
 bool rigMayJump(uint32_t op, bool thumb);
 bool rigKindJumps(int kind);
+extern int rigPoison;
+extern uint64_t rigFlagStats[2];
 
 enum { NK_NONE, NK_ALU, NK_BRANCH, NK_TRANSFER, NK_BRANCH_REG, NK_HALF, NK_BLOCK, NK_BLOCK_PC, NK_SWAP, NK_MULTIPLY, NK_MISC,
     NK_COPROCESSOR, NK_MSR, NK_BLX, NK_TRANSFER_PC, NK_ALU_PC, NK_DSP, NK_THUMB_BRANCH = 100 };
@@ -913,6 +915,39 @@ static void testOneOp(const std::string &suite, int cpu, bool thumb, uint32_t op
     finishBlocks(cpu);
 }
 
+static void testSequence(const std::string &suite, int cpu, bool thumb, const std::vector<uint32_t> &seq, const State &s,
+        int memoryMode, int stopMode, size_t enterAt = 0) {
+    // A short block, run three times: with the flags the JIT leaves out as they were, then forced to 0, then to 1 from
+    // where it stops keeping them. A flag that's wrongly left out then has the wrong value in at least one of those,
+    // whatever its old value was, and shows in whatever reads it or in the state at the next stop
+    uint32_t address = codeAddress(thumb), step = thumb ? 2 : 4;
+    std::vector<uint32_t> ops = seq;
+    ops.push_back(terminator(thumb, address + seq.size() * step, 64));
+    for (int poison = 0; poison < 3; poison++) {
+        rigPoison = poison;
+        clearCode(address, 64);
+        putCode(address, ops.data(), ops.size(), thumb);
+        JitBlock *host = compileAt(cpu, address, thumb), *block = host;
+        if (host && enterAt > 0 && enterAt < host->instrs.size()) block = compileAt(cpu, address + enterAt * step, thumb);
+        if (block) {
+            Case c;
+            c.name = suite;
+            c.cpu = cpu;
+            c.in = s;
+            c.memoryMode = memoryMode;
+            c.stopMode = stopMode;
+            c.blocks = { block };
+            if (block != host) c.blocks.push_back(host);
+            c.fakeTarget = WINDOW + 0x3F008;
+            runCase(c);
+            count("suite:" + suite);
+        }
+        restoreRam();
+        finishBlocks(cpu);
+    }
+    rigPoison = 0;
+}
+
 // Suites
 
 static bool mine(uint64_t index) { return index % shards == uint64_t(shard); }
@@ -1035,6 +1070,12 @@ static void suiteFlagGrid() {
         ops.push_back({ false, 0xE0100070 | (opc << 21) | (1 << 16) | (0 << 12) | (3 << 8) | 2 }); // ROR by register
         ops.push_back({ false, 0xE0100060 | (opc << 21) | (1 << 16) | (0 << 12) | 2 }); // RRX
     }
+    for (uint32_t op: { 0xE0100291, 0xE0303291, 0xE0930291, 0xE0D30291, 0xE0B30291, 0xE0F30291 })
+        ops.push_back({ false, op }); // MULS, MLAS, UMULLS, SMULLS, UMLALS, SMLALS
+
+    // Each is also followed by something that makes the JIT leave out some of its flags: a compare, so none are needed;
+    // ADCS, so only the carry is; ANDS, so N and Z aren't; and a shift, so only V is
+    static const uint32_t after[2][4] = { { 0xE1550006, 0xE0B54006, 0xE0154006, 0xE1B04085 }, { 0x42B5, 0x416C, 0x402C, 0x006C } };
     uint64_t index = 0;
     for (auto &entry: ops) {
         for (int a = 0; a < size; a++) {
@@ -1051,6 +1092,9 @@ static void suiteFlagGrid() {
                         s.usr[9] = values[b];
                         s.cpsr = (s.cpsr & 0x0FFFFFFF) | (carry << 29) | (rnd(2) << 28) | (rnd(4) << 30);
                         testOneOp("flag grid", cpu, entry.first, entry.second, 0, MEMORY_MAPPED, &s);
+                        for (int next = 0; next < 4; next++)
+                            testSequence("flag grid, then another", cpu, entry.first, { entry.second, after[entry.first][next] }, s,
+                                MEMORY_MAPPED, STOP_NEVER);
                     }
                 }
             }
@@ -1285,6 +1329,7 @@ static void suiteBlocks() {
     for (uint64_t index = 0; index < total; index++) {
         if (!mine(index)) continue;
         rng.seed(index + 40000);
+        rigPoison = index % 3; // The flags the JIT leaves out as they were, cleared or set, see testSequence
         int cpu = rnd(4) == 0;
         bool thumb = rnd(2);
         uint32_t step = thumb ? 2 : 4;
@@ -1337,6 +1382,126 @@ static void suiteBlocks() {
         restoreRam();
         finishBlocks(cpu);
     }
+    rigPoison = 0;
+}
+
+// Instructions for the flag sequences, with fixed registers so that what one leaves is what another reads: R0 and R2 for
+// results that set flags, R4 for ones that read them, R6 for ones that do neither, R7 for a base and R8 or R3 for shifts
+static const uint32_t FLAG_ARM[] = {
+    0xE0900001, 0xE0500001, 0xE2700005, 0xE1500001, 0xE3700001, // ADDS, SUBS, RSBS, CMP, CMN: every flag
+    0xE0B22003, 0xE0D22003, 0xE0F22003, // ADCS, SBCS, RSCS: every flag, from the carry
+    0xE0100001, 0xE0300201, 0xE1B000A1, 0xE1B00041, // ANDS, EORS with LSL, MOVS with LSR and ASR #32: N and Z, or C too
+    0xE1B00061, 0xE1B00811, 0xE1900871, // MOVS with RRX, and by a register, which keeps the carry if it's 0
+    0xE3B0020F, 0xE3B00003, 0xE1100001, 0xE1300081, // MOVS of a rotated and a plain immediate, TST, TEQ with LSL
+    0xE0100391, 0xE0920391, 0xE0F20391, // MULS, UMULLS, SMLALS: N and Z
+    0x10900001, 0x21B00121, 0x01500001, 0x30D22003, // ADDSNE, MOVSCS, CMPEQ, SBCSCC: only sometimes
+    0xE0A44005, 0xE0C44005, 0xE2E44000, 0xE1A04065, 0xE10F4000, // ADC, SBC, RSC, MOV with RRX, MRS: readers
+    0x03A04001, 0x13A04002, 0x23A04003, 0x33A04004, 0x43A04005, 0x53A04006, 0x63A04007, // MOV on each condition
+    0x73A04008, 0x83A04009, 0x93A0400A, 0xA3A0400B, 0xB3A0400C, 0xC3A0400D, 0xD3A0400E,
+    0xE1A06001, 0xE2866001, 0xE5976000, 0xE16F6F11, // MOV, ADD, LDR, CLZ: no flags
+    0xE5876004, 0xE1C760D0, 0xE128F005, // STR, LDRD through a handler, MSR of the flags: not in a run
+    0x1A00000E, 0x2A00000E, 0x4A00000E, 0x6A00000E, 0x8A00000E, 0xAA00000E, 0xCA00000E, // Branches that can leave
+};
+static const uint32_t FLAG_THUMB[] = {
+    0x00C8, 0x0008, 0x0848, 0x1008, // LSLS #3 and #0, LSRS #1, ASRS #32
+    0x1840, 0x1A40, 0x1C48, 0x1FC8, 0x2005, 0x2803, 0x30C8, 0x3A01, // ADDS, SUBS, MOVS, CMP with registers and immediates
+    0x4008, 0x4048, 0x4098, 0x40D8, 0x4118, 0x414A, 0x418A, 0x41D8, // ANDS, EORS, LSLS, LSRS, ASRS, ADCS, SBCS, RORS
+    0x4208, 0x4248, 0x4288, 0x42C8, 0x4308, 0x4348, 0x4388, 0x43C8, // TST, NEGS, CMP, CMN, ORRS, MULS, BICS, MVNS
+    0x444E, 0x4548, 0x464E, 0x683E, 0x4E00, 0xAE00, // ADD, CMP and MOV with a high register, LDR, LDR from the PC, ADD from SP
+    0x607E, 0xB410, // STR, PUSH: not in a run
+    0xD010, 0xD110, 0xD210, 0xD310, 0xD410, 0xD610, 0xD810, 0xDA10, 0xDC10, // Branches that can leave
+};
+
+static State flagState(bool thumb) {
+    // Somewhere to load from and push to, and shift amounts around the ones that matter
+    static const uint32_t amounts[] = { 0, 0, 1, 5, 31, 32, 33, 64, 255, 256, 0x80000001 };
+    State s = randomState(thumb, 0);
+    s.usr[7] = (DATA_START + 0x1000 + rnd(0xE000)) & ~3u;
+    s.usr[13] = (DATA_START + 0x1000 + rnd(0xE000)) & ~3u;
+    s.usr[thumb ? 3 : 8] = amounts[rnd(sizeof(amounts) / sizeof(amounts[0]))];
+    return s;
+}
+
+static void suiteLiveness() {
+    // Which flags the JIT works out: every run of three of the instructions above, which between them set, keep and
+    // read each flag in every way the JIT tells apart, then longer random ones, entered in the middle sometimes
+    uint64_t index = 0;
+    for (int thumb = 0; thumb < 2; thumb++) {
+        const uint32_t *set = thumb ? FLAG_THUMB : FLAG_ARM;
+        size_t size = thumb ? sizeof(FLAG_THUMB) / sizeof(FLAG_THUMB[0]) : sizeof(FLAG_ARM) / sizeof(FLAG_ARM[0]);
+        for (size_t a = 0; a < size; a++) {
+            for (size_t b = 0; b < size; b++) {
+                for (size_t c = 0; c < size; c++) {
+                    if (!mine(index++)) continue;
+                    rng.seed(index + 70000);
+                    for (int cpu = 0; cpu < 2; cpu++)
+                        testSequence(thumb ? "thumb flag triples" : "arm flag triples", cpu, thumb, { set[a], set[b], set[c] },
+                            flagState(thumb), rnd(3), rnd(2) ? STOP_ALWAYS : STOP_NEVER);
+                }
+            }
+        }
+        for (uint64_t i = 0; i < 120000; i++) {
+            if (!mine(index++)) continue;
+            rng.seed(index + 70000);
+            std::vector<uint32_t> seq;
+            int length = 4 + rnd(5);
+            for (int k = 0; k < length; k++) seq.push_back(set[rnd(size)]);
+            int cpu = rnd(4) == 0;
+            testSequence(thumb ? "thumb flag runs" : "arm flag runs", cpu, thumb, seq, flagState(thumb), rnd(3),
+                rnd(2) ? STOP_ALWAYS : STOP_NEVER, rnd(3) ? 0 : 1 + rnd(length - 1));
+        }
+    }
+
+    // What the JIT works out for a few blocks, directly; MRS ends a block when one is compiled, so only this shows that
+    // it counts as reading the flags. Each is the flags read after every instruction but the branch that ends it
+    static const struct { std::vector<uint32_t> ops; std::vector<uint8_t> live; } known[] = {
+        { { 0xE0900001, 0xE0100001, 0xE0A44005, 0xE1500001, 0xEA000000 }, { 0x2, 0x2, 0x0, 0xF } }, // ADDS, ANDS, ADC, CMP
+        { { 0xE0900001, 0xE10F4000, 0xE1500001, 0xEA000000 }, { 0xF, 0x0, 0xF } }, // ADDS, MRS, CMP
+        { { 0xE0900001, 0xE1B00081, 0xEA000000 }, { 0x1, 0xF } }, // ADDS, MOVS with LSL
+        { { 0xE0900001, 0xE5876004, 0xE1500001, 0xEA000000 }, { 0xF, 0xF, 0xF } }, // ADDS, STR, CMP
+        { { 0xE0900001, 0x03A04001, 0xE1500001, 0xEA000000 }, { 0xF, 0x0, 0xF } }, // ADDS, MOVEQ, CMP
+    };
+    if (shard == 0) {
+        for (auto &entry: known) {
+            for (int cpu = 0; cpu < 2; cpu++) {
+                JitBlock *block = new JitBlock();
+                block->thumb = false;
+                for (uint32_t op: entry.ops) {
+                    JitInstr instr;
+                    instr.opcode = op;
+                    block->instrs.push_back(instr);
+                }
+                Jit &jit = jitOf(cpu);
+                jit.findLiveFlags(block);
+                now.name = "flags read after";
+                now.description = "block starting " + std::to_string(entry.ops[0]);
+                for (size_t i = 0; i < entry.live.size(); i++)
+                    if (jit.liveFlags[i] != entry.live[i]) fail("instruction %d has %X, want %X", int(i), jit.liveFlags[i], entry.live[i]);
+                count("suite:flags read after");
+                delete block;
+            }
+        }
+    }
+
+    // A load whose offset is rotated through the carry reads it too: with the carry known to be set or clear, the address
+    // is only in the test's memory if the load sees the right one
+    static const uint32_t loads[] = { 0xE7974065, 0xE7D74065, 0xE7B74065, 0xE7374065, 0xE6974065 }; // LDR, LDRB, writeback forms
+    for (int known = 0; known < 2; known++) {
+        for (uint32_t load: loads) {
+            for (int cpu = 0; cpu < 2; cpu++) {
+                if (!mine(index++)) continue;
+                rng.seed(index + 70000);
+                State s = flagState(false);
+                bool down = !(load & BIT(23)), post = !(load & BIT(24));
+                uint32_t offset = known ? 0x80000004 : 4;
+                s.usr[5] = 8;
+                if (!post) s.usr[7] = down ? (s.usr[7] + offset) : (s.usr[7] - offset);
+                // CMP R0,R0 always sets the carry, CMN R0,#0 always clears it, and the CMP after the load sets it again
+                testSequence("flag rotated loads", cpu, false, { known ? 0xE1500000 : 0xE3700000, load, 0xE1510001 }, s,
+                    MEMORY_MAPPED, STOP_NEVER);
+            }
+        }
+    }
 }
 
 static void suiteLinks() {
@@ -1345,6 +1510,7 @@ static void suiteLinks() {
     for (uint64_t index = 0; index < total; index++) {
         if (!mine(index)) continue;
         rng.seed(index + 60000);
+        rigPoison = index % 3;
         int cpu = rnd(4) == 0;
         bool thumb = rnd(2);
         uint32_t step = thumb ? 2 : 4;
@@ -1473,6 +1639,7 @@ static void suiteLinks() {
     for (uint64_t index = 0; index < 4000; index++) {
         if (!mine(index)) continue;
         rng.seed(index + 65000);
+        rigPoison = index % 3;
         uint32_t page = CODE_START + 0x1000 * rnd(12), addressA = page + 0x100, addressB = page + 0x180;
         clearCode(page, 0x1000);
         uint32_t blx = 0xFA000000 | (((addressB - (addressA + 8)) >> 2) & 0xFFFFFF);
@@ -1837,11 +2004,12 @@ static void testReference(uint32_t op, bool thumb, int cpu, uint32_t second = 0)
     }
 
     // The instruction, in both memories, which go back to the seed afterwards
-    // A NOP follows, since Unicorn runs a THUMB BL as one instruction if its second half is next
+    // A NOP follows, since Unicorn runs a THUMB BL as one instruction if its second half is next, and whatever else
+    // the window has there can be something it rejects, after which it runs past the one instruction it's asked for
     uint8_t *ramCode = ram + (address & 0x3FFFFF);
-    uint32_t nop = 0x46C0;
+    uint32_t nop = thumb ? 0x46C0 : 0xE1A00000;
     memcpy(ramCode, &op, step);
-    if (thumb) memcpy(ramCode + 2, &nop, 2);
+    memcpy(ramCode + step, &nop, step);
     if (pair) memcpy(ramCode + 2, &second, 2);
     uc_mem_write(ucArm, address, ramCode, step * 2);
     uc_ctl_remove_cache(ucArm, address, address + step * 2);
@@ -1865,6 +2033,18 @@ static void testReference(uint32_t op, bool thumb, int cpu, uint32_t second = 0)
         saveInterpreter(arm, got);
         newThumb = got.cpsr & BIT(5);
         gotNext = got.usr[15] - (newThumb ? 2 : 4);
+    }
+
+    // Where a jump lands gets NOPs as well, in both memories: Unicorn stops there, and after stopping in front of some of
+    // what the window holds, it has run past the one instruction it's asked for in every case that followed
+    uint32_t landing = gotNext & (newThumb ? ~1u : ~3u);
+    bool landed = gotNext != address + step && landing >= WINDOW && landing + 8 <= WINDOW + WINDOW_SIZE &&
+        (landing + 8 <= address || landing >= address + step * 2);
+    if (landed) {
+        uint32_t nops[2] = { newThumb ? 0x46C046C0 : 0xE1A00000, newThumb ? 0x46C046C0 : 0xE1A00000 };
+        memcpy(ram + (landing & 0x3FFFFF), nops, 8);
+        uc_mem_write(ucArm, landing, nops, 8);
+        uc_ctl_remove_cache(ucArm, landing, landing + 8);
     }
 
     // Unicorn
@@ -1935,6 +2115,7 @@ static void testReference(uint32_t op, bool thumb, int cpu, uint32_t second = 0)
         uc_mem_write(ucArm, WINDOW, seed, WINDOW_SIZE);
     else
         uc_mem_write(ucArm, address, seed + (address - WINDOW), step * 2);
+    if (landed) uc_mem_write(ucArm, landing, seed + (landing - WINDOW), 8);
     restoreRam();
 }
 
@@ -2390,6 +2571,7 @@ int main(int argc, char **argv) {
     for (int i = 5; i < argc; i++) wanted.insert(argv[i]);
     auto run = [&](const char *name, void (*suite)()) {
         if (wanted.empty() || wanted.count(name)) suite();
+        rigPoison = 0;
     };
     run("thumb", suiteThumbOps);
     run("arm", suiteArmOps);
@@ -2401,6 +2583,7 @@ int main(int argc, char **argv) {
     run("returns", suiteReturnsThenCode);
     run("math", suiteMath);
     run("math", suiteInterruptRegisters);
+    run("liveness", suiteLiveness);
     run("blocks", suiteBlocks);
     run("links", suiteLinks);
     run("reference", suiteReference);
@@ -2411,6 +2594,11 @@ int main(int argc, char **argv) {
         for (uint32_t x: ranNativeThumb[cpu]) printf("RAN\tTHUMB encodings with native code run, %s\t%X\n", name, x);
         for (uint32_t x: ranArm[cpu]) printf("RAN\tARM table positions by condition run, %s\t%X\n", name, x);
         for (uint32_t x: ranNativeArm[cpu]) printf("RAN\tARM table positions by condition with native code run, %s\t%X\n", name, x);
+    }
+    static const char *left[] = { "flags left out: all", "flags left out: all but the carry" };
+    for (int i = 0; i < 2; i++) {
+        counts[left[i]] += rigFlagStats[i];
+        if (!rigFlagStats[i] && (wanted.empty() || wanted.count("liveness"))) fails[std::string("no ") + left[i]]++;
     }
     for (auto &entry: counts) printf("COUNT\t%s\t%llu\n", entry.first.c_str(), (unsigned long long)entry.second);
     for (auto &entry: fails) printf("FAILS\t%s\t%llu\n", entry.first.c_str(), (unsigned long long)entry.second);

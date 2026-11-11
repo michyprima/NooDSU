@@ -22,6 +22,11 @@
 extern void (*rigSetup)(Jit &jit);
 extern uint64_t rigAudioHash;
 extern FILE *rigAudioFile;
+#ifdef ROM_TEST
+#include "rom_test.h"
+#endif
+extern int rigPoison;
+extern uint64_t rigFlagStats[2];
 
 // Addresses in the emulator; areas marked live are read through callbacks to the core's own state, and areas marked
 // copied are the core's values in the emulator's byte order, copied in when generated code is entered or a call from it
@@ -438,6 +443,11 @@ static void countBlock(uc_engine*, uint64_t, uint32_t size, void *arm7) {
     ppcOps[uintptr_t(arm7)] += size / 4;
 }
 
+static bool exactCount; // Count every instruction as it runs, since a block's size isn't how much of it ran
+static void countInstruction(uc_engine*, uint64_t, uint32_t, void *arm7) {
+    ppcOps[uintptr_t(arm7)]++;
+}
+
 static void startEngine(Engine &en, bool arm7) {
     en.arm7 = arm7;
     en.jit = arm7 ? &core->jit7 : &core->jit;
@@ -470,7 +480,8 @@ static void startEngine(Engine &en, bool arm7) {
     uc_hook_add(uc, &hook, UC_HOOK_CODE, (void*)hookCall, &en, FAKE_HANDLERS, FAKE_INTERLEAVE + 4);
 
     // Count the PowerPC instructions generated code runs, for comparing builds; a block left early still counts in full
-    uc_hook_add(uc, &blocks, UC_HOOK_BLOCK, (void*)countBlock, (void*)uintptr_t(arm7), CODE, CODE + CODE_SIZE - 1);
+    uc_hook_add(uc, &blocks, exactCount ? UC_HOOK_CODE : UC_HOOK_BLOCK, exactCount ? (void*)countInstruction : (void*)countBlock,
+        (void*)uintptr_t(arm7), CODE, CODE + CODE_SIZE - 1);
 }
 
 // Set by window.cpp when game.sh links it in for --window
@@ -516,15 +527,15 @@ static uint64_t hash(const void *data, size_t size, uint64_t h = 0xCBF29CE484222
 
 int main(int argc, char **argv) {
     if (argc < 5) {
-        printf("Usage: game <system files folder> <rom, or - for none> <interp|portable|native> <frames> [fast] [dsi] [firmware] [press=N] "
-            "[start=N] [touch=N] [trace=frame] [ppm=path] [shots=N] [sd=path] [headphones=N] [results=path] [ram=path] [audio] [wav=path] [keys=frame:key,...] [taps=frame:x:y,...] [wifi] [realtime] [live] [window] [input]\n");
+        printf("Usage: game <system files folder> <rom, or - for none> <interp|portable|native|clear|set> <frames> [fast] [dsi] [firmware] [press=N] "
+            "[start=N] [touch=N] [trace=frame] [ppm=path] [shots=N] [sd=path] [headphones=N] [results=path] [ram=path] [audio] [wav=path] [keys=frame:key,...] [taps=frame:x:y,...] [wifi] [realtime] [live] [window] [input] [exact] [romtest=path]\n");
         return 2;
     }
     std::string files = argv[1], mode = argv[3];
     int frames = atoi(argv[4]), shots = 0, headphones = -1, press = 0, startKey = 0, touch = 0, traceFrom = -1;
     bool fast = false, dsi = false, firmware = false, window = false, wifi = false, realtime = false, input = false;
     bool threads = false, stress = false, audio = false;
-    std::string ppm, results, ramFile, wav, sdImage;
+    std::string ppm, results, ramFile, wav, sdImage, romtest;
     std::vector<std::pair<int, int>> inputs; // Frame and key to press then, for 2 frames
     std::vector<std::array<int, 3>> taps; // Frame and bottom screen position to touch then, for 8 frames
     for (int i = 5; i < argc; i++) {
@@ -540,6 +551,7 @@ int main(int argc, char **argv) {
         else if (arg == "threads") threads = true; // 2D threads drawing behind the emulator, as the console does
         else if (arg == "audio") audio = true; // Mix the sound, and print a hash of it after the memory
         else if (arg == "vramstress") stress = true; // Only run the VRAM test, see vramStress
+        else if (arg == "exact") exactCount = true; // Count the PowerPC instructions one by one, which is much slower
         else if (arg.rfind("press=", 0) == 0) press = atoi(arg.c_str() + 6);
         else if (arg.rfind("start=", 0) == 0) startKey = atoi(arg.c_str() + 6);
         else if (arg.rfind("touch=", 0) == 0) touch = atoi(arg.c_str() + 6);
@@ -550,6 +562,7 @@ int main(int argc, char **argv) {
         else if (arg.rfind("sd=", 0) == 0) sdImage = arg.substr(3); // An SD card image for DSi mode, none by default
         else if (arg.rfind("results=", 0) == 0) results = arg.substr(8);
         else if (arg.rfind("ram=", 0) == 0) ramFile = arg.substr(4);
+        else if (arg.rfind("romtest=", 0) == 0) romtest = arg.substr(8); // Where tests/rom's ROM saves its results
         else if (arg.rfind("wav=", 0) == 0) { wav = arg.substr(4); audio = true; }
         else if (arg.rfind("keys=", 0) == 0) {
             // Comma-separated frame:key pairs, keys numbered as KEYINPUT bits, then 10 and 11 for X and Y
@@ -572,7 +585,12 @@ int main(int argc, char **argv) {
         }
         else fatal("unknown option %s", arg.c_str());
     }
-    if (mode != "interp" && mode != "portable" && mode != "native") fatal("unknown mode %s", mode.c_str());
+    if (mode != "interp" && mode != "portable" && mode != "native" && mode != "clear" && mode != "set")
+        fatal("unknown mode %s", mode.c_str());
+
+    // Generated code, with the flags that the JIT leaves out for nothing reading them forced to 0 or to 1; if any of
+    // them is read after all, one of the two runs differs from the plain one
+    rigPoison = (mode == "clear") ? 1 : (mode == "set") ? 2 : 0;
     if (window) {
         if (!windowOpen) fatal("the window needs game.sh's --window");
         if (input && !window) fatal("input needs the window");
@@ -611,6 +629,16 @@ int main(int argc, char **argv) {
     Settings::screenFilter = 0;
     Settings::wifi = wifi;
     Rtc::fixedTime = 1767225600; // 2026-01-01
+#ifdef ROM_TEST
+    // tests/rom's ROM writes its results through registers that only exist in this build, and says when it's done
+    if (!romtest.empty()) {
+        remove(romtest.c_str());
+        RomTest::path = romtest;
+        RomTest::detail = 1;
+    }
+#else
+    if (!romtest.empty()) fatal("romtest needs JIT_TEST_CFLAGS=-DROM_TEST");
+#endif
     try {
         core = new Core(std::string(argv[2]) == "-" ? "" : argv[2]);
     }
@@ -711,6 +739,13 @@ int main(int argc, char **argv) {
 
         // The DSi asking to be reset, as it does to go back to the menu, ends the run, since the harness can't start
         // a new core; the NAND is left as it was for the next run
+#ifdef ROM_TEST
+        if (RomTest::done) {
+            printf("the ROM finished at frame %d\n", i);
+            frames = i + 1;
+            break;
+        }
+#endif
         if (core->restartRequested.load()) {
             printf("restart requested at frame %d\n", i);
             frames = i + 1;
@@ -739,6 +774,9 @@ int main(int argc, char **argv) {
     fprintf(stderr, "%s: %d frames in %.1f s, %llu entries into generated code, %llu calls from it, %llu and %llu PowerPC "
         "instructions run for the ARM9 and ARM7\n", mode.c_str(), frames, seconds, (unsigned long long)enters,
         (unsigned long long)calls, (unsigned long long)ppcOps[0], (unsigned long long)ppcOps[1]);
+    if (mode != "interp" && mode != "portable")
+        fprintf(stderr, "%s: %llu flag-setting instructions were generated without their flags, and %llu with only the carry\n",
+            mode.c_str(), (unsigned long long)rigFlagStats[0], (unsigned long long)rigFlagStats[1]);
     if (!ramFile.empty()) {
         FILE *out = fopen(ramFile.c_str(), "wb");
         fwrite(mem.ram, 1, mem.ramSize, out);
