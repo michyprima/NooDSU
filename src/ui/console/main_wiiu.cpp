@@ -56,6 +56,9 @@
 #include <whb/sdcard.h>
 #include <whb/gfx.h>
 #include <SDL2/SDL.h>
+#ifdef AUDIO_CAPTURE
+#include <sndcore2/device.h>
+#endif
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -1243,6 +1246,26 @@ void updateCamera() {
         CAMSubmitTargetSurface(camHandle, &camSurfaces[i]);
 }
 
+#ifdef AUDIO_CAPTURE
+// What the mixer hands each of its callbacks: a pointer for every channel of every device, and how much is there
+struct FinalMix {
+    int32_t **data;
+    uint16_t channels, samples, devices, channelsOut;
+};
+
+void captureTvMix(void *mix) {
+    // Keep the TV's left and right as they're about to be played
+    FinalMix *m = (FinalMix*)mix;
+    if (m->channels >= 2) FrameLog::audioFinal(0, m->data[0], m->data[1], m->samples);
+}
+
+void captureDrcMix(void *mix) {
+    // The same for the first GamePad
+    FinalMix *m = (FinalMix*)mix;
+    if (m->channels >= 2) FrameLog::audioFinal(1, m->data[0], m->data[1], m->samples);
+}
+#endif
+
 void outputAudio(void *data, uint8_t *buffer, int length) {
     // Refill the audio buffer as a callback
     ConsoleUI::fillAudioBuffer((uint32_t*)buffer, length / sizeof(uint32_t), 32768);
@@ -1368,6 +1391,10 @@ int runUi(int argc, void *argv) {
     AudioSettings.userdata = nullptr;
     SDL_AudioDeviceID id = SDL_OpenAudioDevice(nullptr, 0, &AudioSettings, &ObtainedSettings, 0);
     SDL_PauseAudioDevice(id, 0);
+#ifdef AUDIO_CAPTURE
+    AXRegisterDeviceFinalMixCallback(AX_DEVICE_TYPE_TV, captureTvMix);
+    AXRegisterDeviceFinalMixCallback(AX_DEVICE_TYPE_DRC, captureDrcMix);
+#endif
 
     // Initialize the UI and open the file browser
     std::string base = WHBGetSdCardMountPath();

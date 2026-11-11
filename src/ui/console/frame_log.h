@@ -34,6 +34,7 @@ namespace FrameLog {
 #ifdef AUDIO_CAPTURE
     void audioProduced(uint32_t sample);
     void audioOutput(const uint32_t *samples, int count);
+    void audioFinal(int device, const int32_t *left, const int32_t *right, int count);
     void mark();
     bool shouldDeferWrite();
 #endif

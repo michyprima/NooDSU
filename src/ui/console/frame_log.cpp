@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <string>
+#include <coreinit/core.h>
 #include <coreinit/time.h>
 
 #include "frame_log.h"
@@ -33,7 +34,7 @@ namespace FrameLog {
     // for the UI, the time, and the ID of the new frame it got or 0; for audio, the time, the samples repeated so far
     // because the buffer ran dry, and how many samples the buffer had
     enum { TYPE_START = 1, TYPE_EMULATOR = 2, TYPE_UI = 3, TYPE_AUDIO = 4, TYPE_PRODUCED = 5, TYPE_OUTPUT = 6,
-        TYPE_MARK = 7, TYPE_WRITE = 8, TYPE_LOST = 9 };
+        TYPE_MARK = 7, TYPE_WRITE = 8, TYPE_LOST = 9, TYPE_FINAL = 10 };
     struct Entry {
         uint32_t type, time, value, polygons;
     };
@@ -62,7 +63,7 @@ namespace FrameLog {
     static Ring emulator, ui, audio;
 
 #ifdef AUDIO_CAPTURE
-    static Ring writer;
+    static Ring writer, mixer;
 
     // Each stream has one thread adding samples, and the writing thread reading them, with room for about 32 seconds
     struct SampleRing {
@@ -86,7 +87,7 @@ namespace FrameLog {
             }
         }
     };
-    static SampleRing produced, output;
+    static SampleRing produced, output, finals[2];
     static volatile uint32_t lastSlow = 0;
     static uint32_t lastWait = 0;
 
@@ -104,6 +105,21 @@ namespace FrameLog {
         audio.add({ TYPE_OUTPUT, OSGetSystemTick(), output.head, 0 });
     }
 
+    void audioFinal(int device, const int32_t *left, const int32_t *right, int count) {
+        // What the console's mixer is about to play on the TV (0) or the GamePad (1), after everything else has had
+        // its say, called by the mixer itself every 3 ms
+        SampleRing &ring = finals[device];
+        for (int i = 0; i < count; i++) {
+            int32_t l = std::max(-32768, std::min(32767, left[i])), r = std::max(-32768, std::min(32767, right[i]));
+            ring.samples[(ring.head + i) % SampleRing::SIZE] = (uint32_t(uint16_t(r)) << 16) | uint16_t(l);
+        }
+        __sync_synchronize();
+        ring.head = ring.head + count;
+
+        // When the mixer got to the TV's part of each of its frames, and on which core, to see if it's ever late
+        if (device == 0) mixer.add({ TYPE_FINAL, OSGetSystemTick(), ring.head, OSGetCoreId() });
+    }
+
     void mark() {
         ui.add({ TYPE_MARK, OSGetSystemTick(), 0, 0 });
     }
@@ -119,7 +135,8 @@ namespace FrameLog {
     bool shouldDeferWrite() {
         // Stay off the SD card for a second after a slow frame so writing doesn't slow scene changes down, unless the
         // samples are piling up
-        uint32_t pending = std::max(produced.head - produced.tail, output.head - output.tail);
+        uint32_t pending = std::max(std::max(produced.head - produced.tail, output.head - output.tail),
+            std::max(finals[0].head - finals[0].tail, finals[1].head - finals[1].tail));
         return OSGetSystemTick() - lastSlow < OSMillisecondsToTicks(1000) && pending < SampleRing::SIZE / 2;
     }
 #endif
@@ -164,9 +181,12 @@ namespace FrameLog {
         uint32_t writeStart = OSGetSystemTick();
         appendSamples(produced, base + "audio-produced.pcm", 0, !samplesStarted);
         appendSamples(output, base + "audio-output.pcm", 1, !samplesStarted);
+        appendSamples(finals[0], base + "audio-final-tv.pcm", 2, !samplesStarted);
+        appendSamples(finals[1], base + "audio-final-drc.pcm", 3, !samplesStarted);
         samplesStarted = true;
         writer.add({ TYPE_WRITE, writeStart, OSGetSystemTick(), 0 });
         writer.drain(file);
+        mixer.drain(file);
 #endif
         emulator.drain(file);
         ui.drain(file);
