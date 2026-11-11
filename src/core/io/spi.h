@@ -60,6 +60,7 @@ public:
     void sendMicData(const int16_t *samples, size_t count, size_t rate);
     void setMicBlow(bool blow) { micBlow.store(blow); }
     int16_t readMic(uint32_t cycles);
+    void setMicPga(uint8_t value);
     void resetCycles();
     void changeHeadset();
 
@@ -106,6 +107,8 @@ private:
     uint8_t tscGpi12 = 0; // Page 0 register 0x39, GPI2 being the headphone pin
     uint8_t tscGpi3 = 0; // Page 0 register 0x3A
     uint8_t tscHeadset = 0; // Page 0 register 0x43, headset detection
+    uint8_t tscMicPga = 0x2B; // Page 1 register 0x2F, the microphone amplifier's gain in half dBs
+    int32_t micGain = 0x1000; // How much louder that makes the microphone than the system's setting, 4096 for the same
     bool tscHeadsetChanged = false; // The sticky flag for headphones being plugged in or out
     bool tscPressed = false; // The pen state last reported, and whether X and Y are yet to report a change
     bool tscChangedX = false;

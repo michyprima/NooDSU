@@ -18,6 +18,7 @@
 */
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include "../core.h"
 #include "../file_lock.h"
@@ -47,6 +48,7 @@ void Spi::saveState(FILE *file) {
     fwrite(&tscGpi12, sizeof(tscGpi12), 1, file);
     fwrite(&tscGpi3, sizeof(tscGpi3), 1, file);
     fwrite(&tscHeadset, sizeof(tscHeadset), 1, file);
+    fwrite(&tscMicPga, sizeof(tscMicPga), 1, file);
     fwrite(&tscHeadsetChanged, sizeof(tscHeadsetChanged), 1, file);
     fwrite(&tscPressed, sizeof(tscPressed), 1, file);
     fwrite(&tscChangedX, sizeof(tscChangedX), 1, file);
@@ -68,6 +70,8 @@ void Spi::loadState(FILE *file) {
     fread(&tscGpi12, sizeof(tscGpi12), 1, file);
     fread(&tscGpi3, sizeof(tscGpi3), 1, file);
     fread(&tscHeadset, sizeof(tscHeadset), 1, file);
+    fread(&tscMicPga, sizeof(tscMicPga), 1, file);
+    setMicPga(tscMicPga);
     fread(&tscHeadsetChanged, sizeof(tscHeadsetChanged), 1, file);
     fread(&tscPressed, sizeof(tscPressed), 1, file);
     fread(&tscChangedX, sizeof(tscChangedX), 1, file);
@@ -111,6 +115,7 @@ bool Spi::loadFirmware() {
         0xAD, 0xA0, 0x88, 0x81 };
     memset(tscPage3, 0, sizeof(tscPage3));
     memcpy(tscPage3, page3, sizeof(page3));
+    setMicPga(0x2B);
 
     // Load the firmware from a file if it exists
     std::string &path = core->dsiMode ? Settings::dsiFirmPath : Settings::ndsFirmPath;
@@ -403,6 +408,11 @@ void Spi::writeTscDsi(uint8_t value) {
             break;
         }
     }
+    else if (tscPage == 0x01 && reg == 0x2F) {
+        // The microphone amplifier's gain
+        if (read) spiData = tscMicPga;
+        else setMicPga(value);
+    }
     else if (tscPage == 0x03) {
         // Registers 0x09 and 0x0E show whether the pen is down
         if (reg == 0x09) tscPage3[reg] = pressed ? 0x80 : 0x40;
@@ -497,7 +507,19 @@ int16_t Spi::readMic(uint32_t cycles) {
             value = micBuffer[(micRead - back) & (MIC_SIZE - 1)];
     }
     mutex.unlock();
-    return value;
+
+    // Apply the gain software asked the DSi's amplifier for
+    if (!tscDsiMode) return value;
+    return std::max(-0x8000, std::min(0x7FFF, (value * micGain) >> 12));
+}
+
+void Spi::setMicPga(uint8_t value) {
+    // Set the microphone amplifier's gain, 0 to 59.5dB in half dBs, or 0dB with bit 7; the host's microphone is already
+    // at a usable level, so the system's 21.5dB is taken as no change and other settings change it by the difference,
+    // like DSi Sound's 33dB making it 3.8 times louder
+    tscMicPga = value;
+    float db = (value & 0x80) ? 0 : std::min(value & 0x7F, 0x77) * 0.5f;
+    micGain = int32_t(4096 * powf(10, (db - 21.5f) / 20) + 0.5f);
 }
 
 void Spi::resetCycles() {
