@@ -131,7 +131,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
     int ndsSaveFd, int gbaSaveFd, int ndsStateFd, int gbaStateFd, int ndsCheatFd):
         id(id), actionReplay(this), aes(this), cartridgeGba(this), cartridgeNds(this), cp15(this), divSqrt(this), dldi(
         this), dma { Dma(this, 0), Dma(this, 1) }, gpu(this), gpu2D { Gpu2D(this, 0), Gpu2D(this, 1) }, gpu3D(this),
-        gpu3DRenderer(this), hleArm7(this), hleBios { HleBios(this, 0, HleBios::swiTable9), HleBios(this, 1, HleBios::
+        gpu3DRenderer(this), hleBios { HleBios(this, 0, HleBios::swiTable9), HleBios(this, 1, HleBios::
         swiTable7), HleBios(this, 1, HleBios::swiTableGba) }, i2c(this), input(this), interpreter { Interpreter(
         this, 0), Interpreter(this, 1) }, ipc(this), jit(this, 0), jit7(this, 1), memory(this), ndma { Ndma(this, 0), Ndma(this, 1) }, rtc(this),
         saveStates(this), sdMmc(this, false), sdio(this, true), slot2(this), dsiWifi(this), dsiMic(this), dsiGpio(this), dsiCamera(this), dsiWareSd(this), dsiDsp(this), spi(this), spu(this), timers { Timers(this, 0), Timers(this, 1) }, wifi(this) {
@@ -433,15 +433,9 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
     // Fill the GBA slot with an accessory, or look for extras on the GBA ROM's cart
     slot2.init();
 
-    // Initialize HLE ARM7 if enabled in DS mode
-    if (!gbaMode && Settings::arm7Hle) {
-        arm7Hle = true;
-        hleArm7.init();
-    }
-
-    // Run code with the JIT if enabled, for the ARM7 only if it isn't high-level emulated
+    // Run code with the JIT if enabled
     jit.enable(Settings::jit);
-    jit7.enable(Settings::jit && !arm7Hle);
+    jit7.enable(Settings::jit);
 
     // Let the core run
     running.store(true);
@@ -449,7 +443,6 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
 
 void Core::saveState(FILE *file) {
     // Write state data to the file
-    fwrite(&arm7Hle, sizeof(arm7Hle), 1, file);
     fwrite(&dsiMode, sizeof(dsiMode), 1, file);
     fwrite(&gbaMode, sizeof(gbaMode), 1, file);
     fwrite(&globalCycles, sizeof(globalCycles), 1, file);
@@ -463,7 +456,6 @@ void Core::saveState(FILE *file) {
 
 void Core::loadState(FILE *file) {
     // Read state data from the file
-    fread(&arm7Hle, sizeof(arm7Hle), 1, file);
     fread(&dsiMode, sizeof(dsiMode), 1, file);
     fread(&gbaMode, sizeof(gbaMode), 1, file);
     fread(&globalCycles, sizeof(globalCycles), 1, file);
@@ -571,8 +563,8 @@ std::string Core::debugSnapshot(const char *reason) {
         (runFunc == &Interpreter::runCoreSingle<false, 0>) ? "single-arm9" :
         (runFunc == &Interpreter::runCoreSingle<false, -1>) ? "single-arm9-dsi" :
         (runFunc == &Interpreter::runCoreSingle<true, 0>) ? "single-gba" : "?";
-    add("=== %s\nrun %s, running %d, arm7 HLE %d, DSi %d, GBA %d, global cycles %u, JIT %d/%d\n", reason, run,
-        (int)running.load(), arm7Hle, dsiMode, gbaMode, globalCycles, (int)jit.hasCode(), (int)jit7.hasCode());
+    add("=== %s\nrun %s, running %d, DSi %d, GBA %d, global cycles %u, JIT %d/%d\n", reason, run,
+        (int)running.load(), dsiMode, gbaMode, globalCycles, (int)jit.hasCode(), (int)jit7.hasCode());
     for (int i = 0; i < 2; i++) {
         Interpreter &cpu = interpreter[i];
         add("ARM%d: halted %02X, IME %d, IE %08X%08X, IF %08X%08X, CPSR %08X (IRQ %s), PC %08X, wakes %u\n",
@@ -599,10 +591,6 @@ void Core::endFrame() {
     running.store(false);
     frameEnded.store(true);
     fpsCount++;
-
-    // Run HLE ARM7 per-frame tasks if enabled
-    if (arm7Hle)
-        hleArm7.runFrame();
 
     // Update the FPS and reset the counter every second
     std::chrono::duration<double> fpsTime = std::chrono::steady_clock::now() - lastFpsTime;

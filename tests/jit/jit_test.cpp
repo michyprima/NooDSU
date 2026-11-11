@@ -2509,7 +2509,6 @@ int main(int argc, char **argv) {
     Settings::directBoot = 1;
     Settings::threaded2D = 0;
     Settings::threaded3D = 0;
-    Settings::arm7Hle = 0;
     Settings::emulateAudio = 0;
     Settings::fpsLimiter = 0;
     Settings::fast2D = 0;

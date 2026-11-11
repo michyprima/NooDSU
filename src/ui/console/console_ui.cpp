@@ -345,7 +345,6 @@ void ConsoleUI::initialize(int width, int height, std::string root, std::string 
     // Settings that aren't in the menu can't be left in a bad state by an old settings file
     Settings::emulateAudio = 1;
     Settings::audio16Bit = 1;
-    Settings::arm7Hle = 0;
     Settings::gpuOverlap = 1;
 
     // Initialize some values
@@ -2144,7 +2143,7 @@ void ConsoleUI::jitSelfTest() {
     // like the interpreter, since fast timing would otherwise let it check less often
     // Nothing can press buttons during the test, so it has to boot the game directly or it would only wait in a menu
     int saved[] = { Settings::threaded2D, Settings::threaded3D, Settings::emulateAudio, Settings::frameskip, Settings::jit,
-        Settings::hardware3D, Settings::directBoot, Settings::fpsLimiter, Settings::arm7Hle, Settings::wifi };
+        Settings::hardware3D, Settings::directBoot, Settings::fpsLimiter, Settings::wifi };
     Jit::testing = true;
     Settings::threaded2D = 0;
     Settings::threaded3D = 0;
@@ -2153,7 +2152,6 @@ void ConsoleUI::jitSelfTest() {
     Settings::frameskip = 5;
     Settings::directBoot = 1;
     Settings::fpsLimiter = 0;
-    Settings::arm7Hle = 0;
     Settings::wifi = 0;
     Rtc::fixedTime = std::time(nullptr); // Both cores must read the same clock
     Core *cores[2] = {};
@@ -2176,8 +2174,7 @@ void ConsoleUI::jitSelfTest() {
         Settings::hardware3D = saved[5];
         Settings::directBoot = saved[6];
         Settings::fpsLimiter = saved[7];
-        Settings::arm7Hle = saved[8];
-        Settings::wifi = saved[9];
+        Settings::wifi = saved[8];
         Jit::testing = false;
         Rtc::fixedTime = 0;
     };

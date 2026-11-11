@@ -46,10 +46,6 @@ void Ipc::writeIpcSync(bool arm7, uint16_t mask, uint16_t value) {
     if (arm7 && core->dsiMode && (mask & 0xF00) == 0xF00 && !(value & 0xF00))
         core->memory.applyPendingRam();
 
-    // Override sync for HLE ARM7 if enabled
-    if (core->arm7Hle && !arm7)
-        return core->hleArm7.ipcSync((ipcSync[0] >> 8) & 0xF);
-
     // Copy the input bits from this CPU to the output bits for the other CPU
     ipcSync[!arm7] = (ipcSync[!arm7] & ~((mask >> 8) & 0xF)) | (((value & mask) >> 8) & 0xF);
 
@@ -96,10 +92,8 @@ void Ipc::writeIpcFifoCnt(bool arm7, uint16_t mask, uint16_t value) {
 void Ipc::writeIpcFifoSend(bool arm7, uint32_t mask, uint32_t value) {
     if (ipcFifoCnt[arm7] & BIT(15)) { // FIFO enabled
         if (fifos[arm7].size() < 16) { // FIFO not full
-            // Push a word to the FIFO or override for HLE ARM7 if enabled
+            // Push a word to the FIFO
             LOG_INFO("ARM%d sending value through IPC FIFO: 0x%X\n", arm7 ? 7 : 9, value & mask);
-            if (core->arm7Hle && !arm7)
-                return core->hleArm7.ipcFifo(value & mask);
             fifos[arm7].push_back(value & mask);
 
             if (fifos[arm7].size() == 1) {

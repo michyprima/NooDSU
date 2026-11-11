@@ -640,7 +640,6 @@ int main(int argc, char **argv) {
     Settings::savesFolder = 1;
     Settings::threaded2D = threads;
     Settings::threaded3D = 0;
-    Settings::arm7Hle = 0;
     Settings::emulateAudio = audio;
     if (!wav.empty()) {
         // Room for the WAV header, filled in at the end

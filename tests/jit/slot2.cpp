@@ -83,7 +83,7 @@ int main(int argc, char **argv) {
     Settings::ndsBios9Path = files + "/bios9.bin"; Settings::ndsBios7Path = files + "/bios7.bin"; Settings::ndsFirmPath = files + "/firmware.bin";
     Settings::gbaBiosPath = files + "/gba_bios.bin";
     Settings::jit = 0; Settings::dsiMode = 0; Settings::directBoot = 1; Settings::savesFolder = 1;
-    Settings::threaded2D = 0; Settings::threaded3D = 0; Settings::arm7Hle = 0; Settings::emulateAudio = 0; Settings::fast2D = 0; Settings::highRes3D = 0; Settings::hardware3D = 0; Settings::fpsLimiter = 0;
+    Settings::threaded2D = 0; Settings::threaded3D = 0; Settings::emulateAudio = 0; Settings::fast2D = 0; Settings::highRes3D = 0; Settings::hardware3D = 0; Settings::fpsLimiter = 0;
     Rtc::fixedTime = 1767225600;
 
     // An empty slot reads the halfword address, garbage at 10 cycles or all high at 18; the other CPU reads zeros

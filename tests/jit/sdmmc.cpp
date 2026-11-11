@@ -83,7 +83,7 @@ int main(int argc, char **argv) {
     Settings::ndsBios9Path = files + "/bios9.bin"; Settings::ndsBios7Path = files + "/bios7.bin"; Settings::ndsFirmPath = files + "/firmware.bin";
     Settings::dsiBios9Path = files + "/bios9i.bin"; Settings::dsiBios7Path = files + "/bios7i.bin"; Settings::dsiFirmPath = files + "/firmwarei.bin";
     Settings::dsiNandPath = "nand.bin"; Settings::jit = 0; Settings::dsiMode = 1; Settings::directBoot = 0; Settings::savesFolder = 1;
-    Settings::threaded2D = 0; Settings::threaded3D = 0; Settings::arm7Hle = 0; Settings::emulateAudio = 0; Settings::fast2D = 0; Settings::highRes3D = 0; Settings::hardware3D = 0; Settings::fpsLimiter = 0;
+    Settings::threaded2D = 0; Settings::threaded3D = 0; Settings::emulateAudio = 0; Settings::fast2D = 0; Settings::highRes3D = 0; Settings::hardware3D = 0; Settings::fpsLimiter = 0;
     Rtc::fixedTime = 1767225600;
     makeImage("sd64m.img", 64 << 20);
     makeImage("sd1g.img", 1 << 30);

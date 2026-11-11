@@ -42,7 +42,6 @@
 #include "gpu/gpu_3d_renderer.h"
 #include "hle/action_replay.h"
 #include "hle/dldi.h"
-#include "hle/hle_arm7.h"
 #include "hle/hle_bios.h"
 #include "io/aes.h"
 #include "io/div_sqrt.h"
@@ -190,7 +189,6 @@ class Core {
 public:
     int id = 0;
     int fps = 0;
-    bool arm7Hle = false;
     bool dsiMode = false;
     bool directBoot = false;
     bool gbaMode = false;
@@ -207,7 +205,6 @@ public:
     Gpu2D gpu2D[2];
     Gpu3D gpu3D;
     Gpu3DRenderer gpu3DRenderer;
-    HleArm7 hleArm7;
     HleBios hleBios[3];
     I2c i2c;
     Input input;
