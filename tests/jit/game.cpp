@@ -539,7 +539,7 @@ static uint64_t hash(const void *data, size_t size, uint64_t h = 0xCBF29CE484222
 int main(int argc, char **argv) {
     if (argc < 5) {
         printf("Usage: game <system files folder> <rom, or - for none> <interp|portable|native|clear|set> <frames> [fast] [dsi] [firmware] [press=N] "
-            "[start=N] [touch=N] [trace=frame] [ppm=path] [shots=N] [sd=path] [dsplle] [mictone=Hz] [state=save:load] [headphones=N] [results=path] [ram=path] [audio] [wav=path] [keys=frame:key,...] [taps=frame:x:y,...] [wifi] [realtime] [live] [window] [input] [exact] [romtest=path]\n");
+            "[start=N] [touch=N] [trace=frame] [ppm=path] [shots=N] [sd=path] [dsplle] [mictone=Hz] [state=save:load] [headphones=N] [results=path] [ram=path] [dump=address:size:path] [audio] [wav=path] [keys=frame:key,...] [taps=frame:x:y,...] [wifi] [realtime] [live] [window] [input] [exact] [romtest=path]\n");
         return 2;
     }
     std::string files = argv[1], mode = argv[3];
@@ -548,6 +548,8 @@ int main(int argc, char **argv) {
     bool fast = false, dsi = false, firmware = false, window = false, wifi = false, realtime = false, input = false;
     bool threads = false, stress = false, audio = false;
     std::string ppm, results, ramFile, wav, sdImage, romtest;
+    struct Dump { uint32_t address, size; std::string path; };
+    std::vector<Dump> dumps;
     std::vector<std::pair<int, int>> inputs; // Frame and key to press then, for 2 frames
     std::vector<std::array<int, 3>> taps; // Frame and bottom screen position to touch then, for 8 frames
     for (int i = 5; i < argc; i++) {
@@ -580,6 +582,11 @@ int main(int argc, char **argv) {
         }
         else if (arg.rfind("results=", 0) == 0) results = arg.substr(8);
         else if (arg.rfind("ram=", 0) == 0) ramFile = arg.substr(4);
+        else if (arg.rfind("dump=", 0) == 0) { // Save memory as the ARM7 sees it at the end, as address:size:path in hex
+            size_t c1 = arg.find(':'), c2 = arg.find(':', c1 + 1);
+            dumps.push_back({ (uint32_t)strtoul(arg.c_str() + 5, nullptr, 16),
+                (uint32_t)strtoul(arg.c_str() + c1 + 1, nullptr, 16), arg.substr(c2 + 1) });
+        }
         else if (arg.rfind("romtest=", 0) == 0) romtest = arg.substr(8); // Where tests/rom's ROM saves its results
         else if (arg.rfind("wav=", 0) == 0) { wav = arg.substr(4); audio = true; }
         else if (arg.rfind("keys=", 0) == 0) {
@@ -812,6 +819,11 @@ int main(int argc, char **argv) {
     if (!ramFile.empty()) {
         FILE *out = fopen(ramFile.c_str(), "wb");
         fwrite(mem.ram, 1, mem.ramSize, out);
+        fclose(out);
+    }
+    for (Dump &d : dumps) {
+        FILE *out = fopen(d.path.c_str(), "wb");
+        for (uint32_t a = 0; a < d.size; a++) fputc(mem.read<uint8_t>(1, d.address + a), out);
         fclose(out);
     }
     if (!results.empty()) {
