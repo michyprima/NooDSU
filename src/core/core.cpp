@@ -135,13 +135,28 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
         swiTable7), HleBios(this, 1, HleBios::swiTableGba) }, i2c(this), input(this), interpreter { Interpreter(
         this, 0), Interpreter(this, 1) }, ipc(this), jit(this, 0), jit7(this, 1), memory(this), ndma { Ndma(this, 0), Ndma(this, 1) }, rtc(this),
         saveStates(this), sdMmc(this, false), sdio(this, true), slot2(this), dsiWifi(this), dsiMic(this), dsiGpio(this), dsiCamera(this), dsiWareSd(this), dsiDsp(this), spi(this), spu(this), timers { Timers(this, 0), Timers(this, 1) }, wifi(this) {
-    // Set DSi mode now and ignore changes to it later
+    // Set DSi mode and direct boot now and ignore changes to them later; DSi-only titles (unit code 3) run in DSi mode
+    // whatever the setting, and DSiWare (title ID bit 2 at 234h) starts directly, since the DSi menu can't launch it
     dsiMode = Settings::dsiMode;
+    directBoot = Settings::directBoot;
+    if (ndsRom != "") {
+        uint8_t header[0x238] = {};
+        std::lock_guard<FileLock> guard(fileLock());
+        if (FILE *file = fopen(ndsRom.c_str(), "rb")) {
+            fread(header, sizeof(uint8_t), sizeof(header), file);
+            fclose(file);
+        }
+        if (header[0x12] == 0x03) {
+            dsiMode = true;
+            if (header[0x234] & BIT(2)) directBoot = true;
+        }
+    }
+    memory.allocRam(dsiMode);
     memory.updateDsiTiming();
     updateRun();
 
     // Try to load BIOS and firmware; require DS files when not direct booting
-    bool req = !Settings::directBoot || dsiMode || (ndsRom == "" && gbaRom == "" && ndsRomFd == -1 && gbaRomFd == -1);
+    bool req = !directBoot || dsiMode || (ndsRom == "" && gbaRom == "" && ndsRomFd == -1 && gbaRomFd == -1);
     if (!memory.loadBios9() && req) throw dsiMode ? ERROR_DSI_BIOS : ERROR_NDS_BIOS;
     if (!memory.loadBios7() && req) throw dsiMode ? ERROR_DSI_BIOS : ERROR_NDS_BIOS;
     if (!spi.loadFirmware() && req) throw dsiMode ? ERROR_DSI_FIRM : ERROR_NDS_FIRM;
@@ -369,7 +384,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
             throw ERROR_ROM;
 
         // Enable GBA mode right away if direct boot is enabled
-        if (Settings::directBoot && ndsRom == "" && ndsRomFd == -1) {
+        if (directBoot && ndsRom == "" && ndsRomFd == -1) {
             memory.write<uint16_t>(0, 0x4000304, 0x8003); // POWCNT1
             enterGbaMode();
         }
@@ -384,7 +399,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
         actionReplay.loadCheats();
 
         // Prepare to boot the NDS ROM directly if direct boot is enabled
-        if (Settings::directBoot) {
+        if (directBoot) {
             // Set some registers as the BIOS/firmware would
             cp15.write(1, 0, 0, 0x0005707D); // CP15 Control
             cp15.write(9, 1, 0, 0x0300000A); // Data TCM base/size

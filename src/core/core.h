@@ -192,6 +192,7 @@ public:
     int fps = 0;
     bool arm7Hle = false;
     bool dsiMode = false;
+    bool directBoot = false;
     bool gbaMode = false;
 
     ActionReplay actionReplay;
