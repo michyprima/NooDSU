@@ -62,7 +62,7 @@ public:
         if (!alloc && !allocate()) {
             std::lock_guard<FileLock> guard(fileLock());
             fseeko(file, offset, SEEK_SET);
-            fwrite(data, sizeof(uint8_t), size, file);
+            if (fwrite(data, sizeof(uint8_t), size, file) != size) writeErrors++;
             return;
         }
 
@@ -77,6 +77,8 @@ public:
             size -= count;
         }
     }
+
+    uint32_t writeErrors = 0; // Writes that the file took only part of, counted for logs
 
     void flush(FILE *file) {
         // Write back every chunk that was changed
@@ -144,7 +146,8 @@ private:
         uint64_t offset = uint64_t(indices[held]) * CHUNK_SIZE;
         if (offset < fileSize) {
             fseeko(file, offset, SEEK_SET);
-            fwrite(&buffer[held * CHUNK_SIZE], sizeof(uint8_t), std::min<uint64_t>(CHUNK_SIZE, fileSize - offset), file);
+            uint32_t size = std::min<uint64_t>(CHUNK_SIZE, fileSize - offset);
+            if (fwrite(&buffer[held * CHUNK_SIZE], sizeof(uint8_t), size, file) != size) writeErrors++;
         }
         dirty[held] = false;
     }

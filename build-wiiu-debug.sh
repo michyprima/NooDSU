@@ -23,12 +23,13 @@
 #                audio-output.pcm; press ZL + ZR + Y to mark when you hear something
 #   romload      How long loading the ROM into RAM took, in romload.txt
 #   frameart     How long drawing the screen frames took, in frameart.txt
+#   nandlog      Every NAND and SD card command, interrupt and written block in nandlog.txt, for saves that hang
 set -e
 cd "$(dirname "$0")"
 export DEVKITPRO=${DEVKITPRO:-/opt/devkitpro} DEVKITPPC=${DEVKITPPC:-/opt/devkitpro/devkitPPC}
 BASE='-g -Ofast -fno-allow-store-data-races -flto -ffunction-sections -DESPRESSO -mcpu=750 -meabi -mhard-float $(INCLUDE) -D__WIIU__ -D__WUT__ -DENDIAN_BIG -DNO_FDOPEN -DLOG_LEVEL=0'
 
-[ $# -gt 0 ] || { sed -n '2,24p' "$0"; exit 1; }
+[ $# -gt 0 ] || { sed -n '2,25p' "$0"; exit 1; }
 for variant in "$@"; do
     case $variant in
         heartbeat) flags='-DHEARTBEAT'; name=noodsu-hb; title='NooDS U Heartbeat' ;;
@@ -50,6 +51,7 @@ for variant in "$@"; do
         audiocap) flags='-DFRAME_LOG -DAUDIO_CAPTURE'; name=noodsu-audiocap; title='NooDS U Audio Capture' ;;
         romload) flags='-DROM_LOAD_TEST'; name=noodsu-romload; title='NooDS U ROM Load' ;;
         frameart) flags='-DFRAME_ART_TEST'; name=noodsu-frameart; title='NooDS U Frame Art' ;;
+        nandlog) flags='-DNAND_LOG'; name=noodsu-nandlog; title='NooDS U NAND Log' ;;
         *) echo "Unknown variant: $variant"; exit 1 ;;
     esac
     rm -rf "build-wiiu-$name"

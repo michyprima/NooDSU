@@ -129,6 +129,7 @@ private:
     uint32_t mmcCid[0x4] = {};
 
     int irqBit() { return sdio ? 42 : 40; }
+    bool irqLine() { return sdIrqStatus & ~sdIrqMask & 0x8B7F031D; } // Unmasked requests, without the status-only bits
     uint8_t drqType() { return sdio ? 0x9 : 0x8; }
     const char *name() { return sdio ? "SDIO" : (sdPortSelect & 0x1) ? "MMC" : "SD"; }
     void scheduleRead();

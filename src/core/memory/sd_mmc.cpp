@@ -21,6 +21,27 @@
 #include "../core.h"
 #include "../file_lock.h"
 
+#ifdef NAND_LOG
+#include <cstdarg>
+
+// Writes a line to nandlog.txt for each NAND or SD command, interrupt, acknowledge and written block, for saves that
+// never finish; it's flushed every line, so the end is there however the run stops
+static void nandLog(uint32_t cycles, const char *format, ...) {
+    std::lock_guard<FileLock> guard(fileLock());
+    static FILE *log = fopen((Settings::basePath + "/nandlog.txt").c_str(), "w");
+    if (!log) return;
+    va_list args;
+    va_start(args, format);
+    fprintf(log, "%08X ", cycles);
+    vfprintf(log, format, args);
+    va_end(args);
+    fflush(log);
+}
+#define NAND_LOG_LINE(...) nandLog(core->globalCycles, __VA_ARGS__)
+#else
+#define NAND_LOG_LINE(...) ((void)0)
+#endif
+
 SdMmc::~SdMmc() {
     // Write back what's still cached, and close the NAND and SD files
     flush();
@@ -163,6 +184,7 @@ void SdMmc::flush() {
     flushPending = false;
     if (nand) nandCache.flush(nand);
     if (sd) sdCache.flush(sd);
+    NAND_LOG_LINE("flush, write errors NAND %u SD %u\n", nandCache.writeErrors, sdCache.writeErrors);
 }
 
 void SdMmc::detectCard() {
@@ -174,11 +196,13 @@ void SdMmc::detectCard() {
 }
 
 void SdMmc::sendInterrupt(int bit) {
-    // Set the interrupt's request bit
+    // Set the interrupt's request bit; the controller's interrupt line is all the unmasked requests together, so it only
+    // interrupts the ARM7 when the first one comes up, like in melonDS; DSi Sound's driver posts a message for each
+    // interrupt and takes one per command, and extra interrupts filled its queue until a save never finished
+    bool raised = irqLine();
     sdIrqStatus |= BIT(bit);
-
-    // Send an interrupt to the ARM9 if the new bit is unmasked
-    if (~sdIrqMask & BIT(bit))
+    if (!sdio) NAND_LOG_LINE("irq %d status %08X mask %08X\n", bit, sdIrqStatus, sdIrqMask);
+    if (!raised && irqLine())
         core->interpreter[1].sendInterrupt(irqBit());
 }
 
@@ -339,6 +363,7 @@ void SdMmc::writeBlock() {
     else if (FILE *dst = (sdPortSelect & BIT(0)) ? nand : sd) {
         FileCache &cache = (sdPortSelect & BIT(0)) ? nandCache : sdCache;
         cache.write(dst, hc ? (int64_t(curAddress) << 9) : curAddress, data, len << 2);
+        NAND_LOG_LINE("wrote %s block %08X size %X, %u left\n", name(), curAddress, len << 2, curBlock);
 
         // Write the cached data back to the file about half a second after the first write, so a burst goes back together
         if (!flushPending) {
@@ -357,6 +382,9 @@ void SdMmc::writeBlock() {
 void SdMmc::runCommand() {
     // Commands for the Wi-Fi chip are its own
     if (sdio) return runSdioCommand();
+
+    NAND_LOG_LINE("%s cmd %d arg %08X blocks %u status %08X\n", name(), sdCmd & 0x3F, sdCmdParam, sdData16Blkcnt,
+        cardStatus);
 
     // Nothing answers in an empty SD slot, so the command times out
     if (noCard()) return sendInterrupt(22);
@@ -396,6 +424,8 @@ void SdMmc::runCommand() {
 }
 
 void SdMmc::runAppCommand() {
+    NAND_LOG_LINE("%s acmd %d arg %08X\n", name(), sdCmd & 0x3F, sdCmdParam);
+
     // Nothing answers in an empty SD slot, so the command times out
     if (noCard()) return sendInterrupt(22);
 
@@ -657,16 +687,18 @@ void SdMmc::writeIrqStatus(uint32_t mask, uint32_t value) {
     // Acknowledge bits in the SD_IRQ_STATUS register
     mask &= ~0xA0; // Always set
     sdIrqStatus = (sdIrqStatus & ~mask) | (sdIrqStatus & value & mask);
+    if (!sdio) NAND_LOG_LINE("ack %08X, status %08X\n", ~value & mask, sdIrqStatus);
 }
 
 void SdMmc::writeIrqMask(uint32_t mask, uint32_t value) {
     // Write to the SD_IRQ_MASK register
     mask &= 0x8B7F031D;
-    uint32_t old = sdIrqMask;
+    bool raised = irqLine();
     sdIrqMask = (sdIrqMask & ~mask) | (value & mask);
+    if (!sdio) NAND_LOG_LINE("mask %08X\n", sdIrqMask);
 
-    // Trigger an ARM9 interrupt if a requested bit was newly unmasked
-    if (sdIrqStatus & old & ~sdIrqMask)
+    // Interrupt the ARM7 if unmasking raised the interrupt line
+    if (!raised && irqLine())
         core->interpreter[1].sendInterrupt(irqBit());
 }
 
