@@ -858,10 +858,10 @@ void GraphicsUcode::scaleBilinear() {
     src.resize(rectWidth * 2 + 1);
     dst.resize(dstWidth);
 
-    // The line and the one below are both loaded from the same line, as melonDS has it
+    // Keep the line and the one below it
     srcAddr += (rectY * srcWidth + rectX) << 1;
     readArm9(&src[0], srcAddr, rectWidth << 1);
-    readArm9(&src[rectWidth], srcAddr, rectWidth << 1);
+    readArm9(&src[rectWidth], srcAddr + (srcWidth << 1), rectWidth << 1);
     for (uint32_t y = 0, sy = 0x200; y < dstHeight; y++) {
         for (uint32_t x = 0, sx = 0x200; x < dstWidth; x++, sx += xStep) {
             uint16_t p[4] = { src[sx >> 10], src[(sx >> 10) + 1], src[rectWidth + (sx >> 10)],
@@ -882,7 +882,7 @@ void GraphicsUcode::scaleBilinear() {
         uint32_t next = sy + yStep;
         if ((next >> 10) != (sy >> 10)) {
             readArm9(&src[0], srcAddr + (((next >> 10) * srcWidth) << 1), rectWidth << 1);
-            readArm9(&src[rectWidth], srcAddr + (((next >> 10) * srcWidth) << 1), rectWidth << 1);
+            readArm9(&src[rectWidth], srcAddr + ((((next >> 10) + 1) * srcWidth) << 1), rectWidth << 1);
         }
         sy = next;
     }
