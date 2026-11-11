@@ -214,13 +214,14 @@ namespace ScreenFrame {
         float glyphAlpha(int c, float u, float v, float footprint) {
             // Average the font sheet's alpha over a pixel's footprint in a character's 48-pixel cell
             int samples = std::max(1, int(std::ceil(footprint))), total = 0;
+            int sheetHeight = fontBmp[0x16] | (fontBmp[0x17] << 8); // The sheet is stored bottom row first
             for (int j = 0; j < samples; j++) {
                 for (int i = 0; i < samples; i++) {
                     int x = u + (i + 0.5f) * footprint / samples, y = v + (j + 0.5f) * footprint / samples;
                     if (x < 0 || y < 0 || x >= 47 || y >= 47) continue;
                     x += 48 * (c % 10);
                     y += 48 * (c / 10);
-                    total += fontBmp[0x46 + (((511 - y) * 512 + x) << 2) + 3];
+                    total += fontBmp[0x46 + (((sheetHeight - 1 - y) * 512 + x) << 2) + 3];
                 }
             }
             return total / (255.0f * samples * samples);

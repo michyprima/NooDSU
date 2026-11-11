@@ -210,7 +210,8 @@ private:
 
     static uint32_t menu(std::string title, std::vector<MenuItem> &items,
         int &index, std::string actionX = "", std::string actionPlus = "", bool actionOk = true,
-        std::string actionY = "", uint32_t hiddenKeys = 0);
+        std::string actionY = "", uint32_t hiddenKeys = 0, const std::vector<std::string> *tabs = nullptr,
+        int *tab = nullptr);
     static uint32_t message(std::string title, std::string text, int type = 0);
 
 #ifdef JIT_SELFTEST
@@ -220,7 +221,6 @@ private:
     static void romTest();
 #endif
     static void settingsMenu();
-    static void controlsMenu();
     static void aboutMenu();
     static void pauseMenu();
     static int launchOptions(bool gba);

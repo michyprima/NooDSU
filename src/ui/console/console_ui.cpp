@@ -35,6 +35,7 @@
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
 #include <coreinit/userconfig.h>
+#include <vpad/input.h>
 
 // The emulator runs on its own thread, bound to the core that can run generated code
 static OSThread *emuThread = nullptr;
@@ -193,7 +194,8 @@ const uint8_t ConsoleUI::charWidths[] = {
     16, 12, 18, 16, 9, 20, 21, 18, 21, 20,
     10, 20, 20, 8, 12, 19, 9, 30, 20, 21,
     21, 21, 12, 16, 12, 20, 17, 29, 17, 17,
-    16, 9, 8, 9, 12, 40, 40, 40, 40, 40
+    16, 9, 8, 9, 12, 40, 40, 40, 40, 40,
+    46, 46
 };
 
 void ConsoleUI::drawRectangle(float x, float y, float w, float h, uint32_t color) {
@@ -1119,7 +1121,8 @@ int ConsoleUI::setPath(std::string path) {
 }
 
 uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
-    int &index, std::string actionX, std::string actionPlus, bool actionOk, std::string actionY, uint32_t hiddenKeys) {
+    int &index, std::string actionX, std::string actionPlus, bool actionOk, std::string actionY, uint32_t hiddenKeys,
+    const std::vector<std::string> *tabs, int *tab) {
     // Define the action strings
     if (actionY != "") actionY = "\x7F " + actionY + "     ";
     if (actionPlus != "") actionPlus = "\x83 " + actionPlus + "     ";
@@ -1134,6 +1137,18 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
     int boundsX = boundsBX - stringWidth(actionX) * 34 / 48;
     int boundsY = boundsX - stringWidth(actionY) * 34 / 48;
     int boundsPlus = boundsY - stringWidth(actionPlus) * 34 / 48;
+
+    // Lay out the tab names in place of the title, with L and R switching between them
+    std::string actionTabs = tabs ? "\x84 Previous     \x85 Next     " : "";
+    std::vector<int> tabBounds;
+    if (tabs) {
+        int x = 72;
+        for (std::string name : *tabs) {
+            tabBounds.push_back(x);
+            x += stringWidth(name) * 38 / 48 + 44;
+        }
+        tabBounds.push_back(x);
+    }
 
     // Define variables for button input
     bool upHeld = false;
@@ -1159,11 +1174,21 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
     while (true) {
         // Draw the borders
         startFrame(palette[0]);
-        drawString(title, SCALE(72), SCALE(30), SCALE(42), palette[1]);
+        if (tabs) {
+            // Draw the tab names, marking the current one with a bar
+            for (int i = 0; i < (int)tabs->size(); i++)
+                drawString((*tabs)[i], SCALE(tabBounds[i]), SCALE(34), SCALE(38), palette[i == *tab ? 1 : 6]);
+            drawRectangle(SCALE(tabBounds[*tab] - 4), SCALE(82), SCALE(tabBounds[*tab + 1] - tabBounds[*tab] - 36),
+                SCALE(6), palette[4]);
+        }
+        else {
+            drawString(title, SCALE(72), SCALE(30), SCALE(42), palette[1]);
+        }
         drawRectangle(SCALE(30), SCALE(88), SCALE(1220), lineHeight, palette[1]);
         drawRectangle(SCALE(30), SCALE(648), SCALE(1220), lineHeight, palette[1]);
         drawString(NOODSU_VERSION, SCALE(72), SCALE(667), SCALE(34), palette[1]);
-        drawString(actionPlus + actionY + actionX + actionB + actionA, SCALE(1218), SCALE(667), SCALE(34), palette[1], true);
+        drawString(actionTabs + actionPlus + actionY + actionX + actionB + actionA, SCALE(1218), SCALE(667), SCALE(34),
+            palette[1], true);
 
         // Scan for key input
         uint32_t pressed = getInputPress();
@@ -1195,6 +1220,15 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
             // Remember when the down input started
             downHeld = true;
             timeHeld = std::chrono::steady_clock::now();
+        }
+
+        // Switch tabs with the shoulder buttons, which are the DS's L and R in games, returning nothing pressed so the
+        // caller lists the new tab's items
+        if (tabs && (pressed & (VPAD_BUTTON_L | VPAD_BUTTON_R))) {
+            int count = tabs->size();
+            *tab = (*tab + ((pressed & VPAD_BUTTON_R) ? 1 : count - 1)) % count;
+            touchMode = false;
+            return 0;
         }
 
         // Return button presses so they can be handled externally
@@ -1268,6 +1302,17 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
             }
         }
         else { // Released
+            // Switch to a tab if its name was tapped
+            if (tabs && touchStarted && !touchScroll && touchStart.y < 88) {
+                for (int i = 0; i < (int)tabs->size(); i++) {
+                    if (touchStart.x >= tabBounds[i] - 22 && touchStart.x < tabBounds[i + 1] - 22) {
+                        *tab = i;
+                        touchStarted = false;
+                        return 0;
+                    }
+                }
+            }
+
             // Simulate a button press if its action text was tapped
             if (!touchScroll && touchStart.y >= 650) {
                 if (touchStart.x >= boundsBX && touchStart.x < boundsAB)
@@ -1602,8 +1647,7 @@ void ConsoleUI::settingsMenu() {
     frame.insert(frame.end(), ScreenFrame::colorNames, ScreenFrame::colorNames + ScreenFrame::COLOR_COUNT);
     const std::vector<std::string> antiAlias = { "DS-Style", "Multisample", "Off" };
     const std::vector<std::string> romIn = { "Off", "On", "Streaming" };
-    const std::vector<std::string> directBoot = { "Off (broken)", "On" };
-    const std::vector<std::string> dsiMode = { "Off", "On (slow)" };
+    const std::vector<std::string> dsiMode = { "Off", "On (Slower)" };
     const std::vector<std::string> language = { "System Language", "Japanese", "English", "French", "German",
         "Italian", "Spanish" };
     const std::vector<std::string> mic = { "Off", "GamePad" };
@@ -1615,10 +1659,36 @@ void ConsoleUI::settingsMenu() {
     Settings::sunlight = std::min(10, std::max(0, Settings::sunlight));
     if (Settings::gpuAntiAlias >= (int)antiAlias.size()) Settings::gpuAntiAlias = 0;
 
+    // Define names for the bindable inputs
+    const char *inputNames[INPUT_MAX] = {
+        "A Button", "B Button", "Select Button", "Start Button",
+        "Right Button", "Left Button", "Up Button", "Down Button",
+        "R Button", "L Button", "X Button", "Y Button", "Menu Button",
+        "Fast Forward Hold", "Fast Forward Toggle", "Screen Swap Toggle", "Blow into Mic", "Pointer Touch",
+        "Sunlight Up", "Sunlight Down", "Green Fret", "Red Fret", "Yellow Fret", "Blue Fret",
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B", "High C"
+    };
+
+    // List the inputs under headers, which are -1
+    std::vector<int> inputRows = { -1 };
+    for (int i = INPUT_A; i <= INPUT_Y; i++) inputRows.push_back(i);
+    inputRows.push_back(-1);
+    for (int i = INPUT_MENU; i <= INPUT_SUN_DOWN; i++) inputRows.push_back(i);
+    inputRows.push_back(-1);
+    for (int i = INPUT_GUITAR_GREEN; i <= INPUT_GUITAR_BLUE; i++) inputRows.push_back(i);
+    inputRows.push_back(-1);
+    for (int i = INPUT_PIANO_C; i <= INPUT_PIANO_HIGH_C; i++) inputRows.push_back(i);
+    const char *inputHeaders[] = { "Buttons", "Hotkeys", "Guitar Grip", "Easy Piano" };
+
     // The Mii name is shown for the nickname when it isn't set
     std::u16string miiName = getMiiName();
 
-    int index = 0;
+    // Split the settings into tabs, remembering the last one opened and where each was left
+    enum { TAB_EMULATION, TAB_GRAPHICS, TAB_SCREEN, TAB_CONSOLE, TAB_CONTROLS, TAB_NOODSU, TAB_COUNT };
+    const std::vector<std::string> tabs = { "Emulation", "Graphics", "Screen", "Console", "Controls", "NooDS U" };
+    static int tab = TAB_EMULATION;
+    int indices[TAB_COUNT] = {};
+
     while (true) {
         // Create a list of settings and current values, remembering what each one changes
         std::vector<MenuItem> settings;
@@ -1631,72 +1701,109 @@ void ConsoleUI::settingsMenu() {
             settings.push_back(MenuItem(name, choices[value % choices.size()]));
             values.push_back({ &value, (int)choices.size() });
         };
+        int nicknameIndex = -1, dnsIndex = -1, aboutIndex = -1;
 
-        header("General Settings");
-        add("Keep ROM in RAM", Settings::romInRam, romIn);
-        add("JIT", Settings::jit, toggle);
-        add("Fast CPU Timing", Settings::fastTiming, toggle);
-        add("FPS Limiter", Settings::fpsLimiter, toggle);
-        add("Sync to Display", Settings::syncToDisplay, toggle);
-        add("Show FPS Counter", showFpsCounter, toggle);
-        add("Menu Theme", menuTheme, theme);
-        add("Screen Frame", frameColor, frame);
-        add("Game Language", gameLanguage, language);
-        int nicknameIndex = settings.size();
-        settings.push_back(MenuItem("Nickname", nickname.empty() ?
-            (miiName.empty() ? "Mii Name" : "Mii Name (" + menuText(miiName) + ")") :
-            menuText(utf8To16(nickname))));
-        values.push_back({ nullptr, 0 });
-        add("Microphone", micInput, mic);
-        add("Right Stick Pointer", stickPointer, pointer);
+        switch (tab) {
+        case TAB_EMULATION:
+            add("Skip Frames", Settings::frameskip, frames);
+            add("JIT", Settings::jit, toggle);
+            add("Fast CPU Timing", Settings::fastTiming, toggle);
+            add("DSi Mode", Settings::dsiMode, dsiMode);
+            add("Direct Boot", Settings::directBoot, toggle);
+            add("FPS Limiter", Settings::fpsLimiter, toggle);
+            add("Sync to Display", Settings::syncToDisplay, toggle);
+            add("Keep ROM in RAM", Settings::romInRam, romIn);
+            break;
 
-        header("Graphics Settings");
-        add("GPU 3D Renderer", Settings::hardware3D, toggle);
-        if (!Settings::hardware3D) {
-            // These only do something for the software renderer
-            add("Threaded 2D", Settings::threaded2D, toggle);
-            add("Threaded 3D", Settings::threaded3D, threads);
-        }
-        add("Fast 2D Threads", Settings::fast2D, toggle);
-        add("High-Resolution 3D", Settings::highRes3D, toggle);
-        add("GPU 3D Anti-Aliasing", Settings::gpuAntiAlias, antiAlias);
-        add("Skip Frames", Settings::frameskip, frames);
-        add("Simulate Ghosting", Settings::screenGhost, toggle);
+        case TAB_GRAPHICS:
+            add("GPU 3D Renderer", Settings::hardware3D, toggle);
+            if (!Settings::hardware3D) {
+                // These only do something for the software renderer
+                add("Threaded 2D", Settings::threaded2D, toggle);
+                add("Threaded 3D", Settings::threaded3D, threads);
+            }
+            add("Fast 2D Threads", Settings::fast2D, toggle);
+            add("High-Resolution 3D", Settings::highRes3D, toggle);
+            add("GPU 3D Anti-Aliasing", Settings::gpuAntiAlias, antiAlias);
+            add("Simulate Ghosting", Settings::screenGhost, toggle);
+            break;
 
-        header("Screen Layout");
-        add("Screen Position", ScreenLayout::screenPosition, position);
-        add("Screen Rotation", ScreenLayout::screenRotation, rotation);
-        add("Screen Arrangement", ScreenLayout::screenArrangement, arrangement);
-        add("Screen Sizing", ScreenLayout::screenSizing, sizing);
-        add("Screen Gap", ScreenLayout::screenGap, gap);
-        add("Screen Filter", Settings::screenFilter, filter);
-        add("Aspect Ratio", ScreenLayout::aspectRatio, aspect);
-        add("Integer Scale", ScreenLayout::integerScale, toggle);
-        add("GBA Crop", ScreenLayout::gbaCrop, toggle);
+        case TAB_SCREEN:
+            add("Screen Position", ScreenLayout::screenPosition, position);
+            add("Screen Rotation", ScreenLayout::screenRotation, rotation);
+            add("Screen Arrangement", ScreenLayout::screenArrangement, arrangement);
+            add("Screen Sizing", ScreenLayout::screenSizing, sizing);
+            add("Screen Gap", ScreenLayout::screenGap, gap);
+            add("Screen Filter", Settings::screenFilter, filter);
+            add("Aspect Ratio", ScreenLayout::aspectRatio, aspect);
+            add("Integer Scale", ScreenLayout::integerScale, toggle);
+            add("GBA Crop", ScreenLayout::gbaCrop, toggle);
+            add("Screen Frame", frameColor, frame);
+            break;
 
-        // The accessory is put in when a game starts, so changing it takes a restart
-        header("GBA Slot");
-        add("Accessory", Settings::slot2Device, accessory);
-        add("Sunlight", Settings::sunlight, sunlight);
-
-        header("Experimental");
-        add("Direct Boot", Settings::directBoot, directBoot);
-        add("DSi Mode", Settings::dsiMode, dsiMode);
-        add("Wi-Fi", Settings::wifi, toggle);
-        int dnsIndex = -1;
-        if (Settings::wifi) {
-            // The DNS server only matters with Wi-Fi on
-            dnsIndex = settings.size();
-            settings.push_back(MenuItem("DNS Server", Settings::wfcDns));
+        case TAB_CONSOLE:
+            header("User");
+            add("Game Language", gameLanguage, language);
+            nicknameIndex = settings.size();
+            settings.push_back(MenuItem("Nickname", nickname.empty() ?
+                (miiName.empty() ? "Mii Name" : "Mii Name (" + menuText(miiName) + ")") :
+                menuText(utf8To16(nickname))));
             values.push_back({ nullptr, 0 });
+
+            header("Input");
+            add("Microphone", micInput, mic);
+            add("Right Stick Pointer", stickPointer, pointer);
+
+            // The accessory is put in when a game starts, so changing it takes a restart
+            header("GBA Slot");
+            add("Accessory", Settings::slot2Device, accessory);
+            add("Sunlight", Settings::sunlight, sunlight);
+
+            header("Wi-Fi");
+            add("Wi-Fi", Settings::wifi, toggle);
+            if (Settings::wifi) {
+                // The DNS server only matters with Wi-Fi on
+                dnsIndex = settings.size();
+                settings.push_back(MenuItem("DNS Server", Settings::wfcDns));
+                values.push_back({ nullptr, 0 });
+            }
+            break;
+
+        case TAB_CONTROLS:
+            for (size_t r = 0, h = 0; r < inputRows.size(); r++) {
+                if (inputRows[r] < 0) {
+                    header(inputHeaders[h++]);
+                    continue;
+                }
+
+                // Add the input names with commas (up to 8 entries), or the word none
+                std::string binding;
+                for (int j = 0, k = -1; j < 32 && k < 8; j++) {
+                    if (!(keyBinds[inputRows[r]] & (1 << j))) continue;
+                    if (binding != "") binding += ", ";
+                    binding += (++k < 8) ? keyNames[j] : "...";
+                }
+                settings.push_back(MenuItem(inputNames[inputRows[r]], binding == "" ? "None" : binding));
+                values.push_back({ nullptr, 0 });
+            }
+            break;
+
+        case TAB_NOODSU:
+            add("Menu Theme", menuTheme, theme);
+            add("Show FPS Counter", showFpsCounter, toggle);
+            aboutIndex = settings.size();
+            settings.push_back(MenuItem("About NooDS U"));
+            values.push_back({ nullptr, 0 });
+            break;
         }
 
-        header("About");
-        settings.push_back(MenuItem("About NooDS U"));
-        values.push_back({ nullptr, 0 });
-
-        // Create the settings menu
-        uint32_t pressed = menu("Settings", settings, index, "Controls");
+        // Create the settings menu, keeping the selection in the list if rows were hidden
+        int shown = tab;
+        int &index = indices[shown];
+        index = std::min<int>(index, settings.size() - 1);
+        uint32_t pressed = menu("Settings", settings, index, (shown == TAB_CONTROLS) ? "Clear" : "", "", true, "", 0,
+            &tabs, &tab);
+        int input = (shown == TAB_CONTROLS) ? inputRows[index] : -1;
 
         // Handle menu input
         if (pressed & defaultKeys[INPUT_A]) {
@@ -1704,6 +1811,11 @@ void ConsoleUI::settingsMenu() {
             int *value = values[index].first;
             if (value) {
                 *value = (*value + 1) % values[index].second;
+            }
+            else if (input >= 0) {
+                // Show a binding message and bind the pressed input
+                keyBinds[input] |= message(std::string("Remap ") + inputNames[input],
+                    "Press an input to add it as a binding.", 2);
             }
             else if (index == nicknameIndex) {
                 // Edit the nickname with the system keyboard, following the Mii name if left empty or matching it
@@ -1727,7 +1839,7 @@ void ConsoleUI::settingsMenu() {
                             std::to_string(parts[2]) + "." + std::to_string(parts[3]);
                 }
             }
-            else {
+            else if (index == aboutIndex) {
                 aboutMenu();
             }
 
@@ -1740,9 +1852,9 @@ void ConsoleUI::settingsMenu() {
             Settings::save();
             return;
         }
-        else if (pressed & defaultKeys[INPUT_X]) {
-            // Open the controls menu
-            controlsMenu();
+        else if ((pressed & defaultKeys[INPUT_X]) && input >= 0) {
+            // Clear an input binding
+            keyBinds[input] = 0;
         }
     }
 }
@@ -1780,72 +1892,6 @@ void ConsoleUI::aboutMenu() {
     };
     int index = 0;
     while (!(menu("About", items, index, "", "", false) & defaultKeys[INPUT_B]));
-}
-
-void ConsoleUI::controlsMenu() {
-    // Define names for the bindable inputs
-    const char *names[INPUT_MAX] = {
-        "A Button", "B Button", "Select Button", "Start Button",
-        "Right Button", "Left Button", "Up Button", "Down Button",
-        "R Button", "L Button", "X Button", "Y Button", "Menu Button",
-        "Fast Forward Hold", "Fast Forward Toggle", "Screen Swap Toggle", "Blow into Mic", "Pointer Touch",
-        "Sunlight Up", "Sunlight Down", "Green Fret", "Red Fret", "Yellow Fret", "Blue Fret",
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B", "High C"
-    };
-
-    // List the inputs under headers, which are -1
-    std::vector<int> rows = { -1 };
-    for (int i = INPUT_A; i <= INPUT_Y; i++) rows.push_back(i);
-    rows.push_back(-1);
-    for (int i = INPUT_MENU; i <= INPUT_SUN_DOWN; i++) rows.push_back(i);
-    rows.push_back(-1);
-    for (int i = INPUT_GUITAR_GREEN; i <= INPUT_GUITAR_BLUE; i++) rows.push_back(i);
-    rows.push_back(-1);
-    for (int i = INPUT_PIANO_C; i <= INPUT_PIANO_HIGH_C; i++) rows.push_back(i);
-    const char *headers[] = { "Buttons", "Hotkeys", "Guitar Grip", "Easy Piano" };
-
-    int index = 0;
-    while (true) {
-        // Create a list of inputs and current bindings
-        std::vector<MenuItem> controls;
-        for (size_t r = 0, h = 0; r < rows.size(); r++) {
-            if (rows[r] < 0) {
-                controls.push_back(MenuItem(headers[h++], true));
-                continue;
-            }
-
-            // Add the input names with commas (up to 8 entries), or the word none
-            std::string binding;
-            for (int j = 0, k = -1; j < 32 && k < 8; j++) {
-                if (!(keyBinds[rows[r]] & (1 << j))) continue;
-                if (binding != "") binding += ", ";
-                binding += (++k < 8) ? keyNames[j] : "...";
-            }
-            controls.push_back(MenuItem(names[rows[r]], binding == "" ? "None" : binding));
-        }
-
-        // Create the controls menu
-        uint32_t pressed = menu("Controls", controls, index, "Clear");
-        int i = rows[index];
-
-        // Handle menu input
-        if (pressed & defaultKeys[INPUT_B]) {
-            // Close the controls menu
-            return;
-        }
-        else if (i < 0) {
-            continue;
-        }
-        else if (pressed & defaultKeys[INPUT_A]) {
-            // Show a binding message and bind the pressed input
-            keyBinds[i] |= message(std::string("Remap ") + names[i],
-               "Press an input to add it as a binding.", 2);
-        }
-        else if (pressed & defaultKeys[INPUT_X]) {
-            // Clear an input binding
-            keyBinds[i] = 0;
-        }
-    }
 }
 
 void ConsoleUI::pauseMenu() {
