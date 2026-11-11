@@ -188,11 +188,13 @@ void Aes::decryptCtr(const uint32_t *keyX, const uint32_t *keyY, const uint32_t 
     expandKey(key);
     memcpy(ctr, iv, sizeof(ctr));
     addKey(ctr, start);
-    for (uint32_t i = 0; i + 4 <= words; i += 4) {
+    // A last block cut short is decrypted too, as the launcher works in whole blocks; DSiWare's ARM7i ends in one, with
+    // its autoload table in the last words
+    for (uint32_t i = 0; i < words; i += 4) {
         uint32_t pad[4];
         cryptBlock(ctr, pad);
         for (int j = 0, c = 1; j < 4; j++) {
-            data[i + j] ^= pad[j];
+            if (i + j < words) data[i + j] ^= pad[j];
             ctr[j] += c;
             c &= (ctr[j] == 0);
         }
