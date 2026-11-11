@@ -123,6 +123,7 @@ enum SchedTask {
     CAM_FRAME,
     CAM_LINE,
     DSP_UPDATE,
+    DSP_HLE_FINISH,
     MAX_TASKS
 };
 

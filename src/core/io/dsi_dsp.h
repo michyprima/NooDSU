@@ -23,10 +23,12 @@
 #include <cstdio>
 
 class Core;
+class DspUcode;
 namespace Teakra { class Teakra; }
 
 // The DSi's DSP, a TeakLite II that runs programs the ARM9 loads into new WRAM, with the registers the ARM9 talks to it
-// through; the processor itself is Teakra's, and the registers follow melonDS
+// through; the processor itself is Teakra's, the registers follow melonDS, and Nintendo's own programs can be done in
+// high level instead (dsi_dsp_hle)
 class DsiDsp {
 public:
     DsiDsp(Core *core): core(core) {}
@@ -35,10 +37,13 @@ public:
     void loadState(FILE *file);
 
     void update();
+    void finishHle();
     void resetCycles();
     void remap() { pagesDirty = true; }
     void clockChanged();
     bool takeSample(int16_t *sample);
+    void replyIrq(int i);
+    void semaphoreIrq();
 
     uint16_t readRst() { return rst; }
     uint16_t readPdata();
@@ -62,6 +67,7 @@ public:
 private:
     Core *core;
     Teakra::Teakra *teakra = nullptr;
+    DspUcode *ucode = nullptr; // The program done in high level, used in place of Teakra while set
 
     uint8_t *pages[16] = {}; // The new WRAM the DSP sees: 8 pages of block B as program memory, then 8 of C as data
     bool pagesDirty = true;
@@ -90,6 +96,8 @@ private:
     bool running();
     uint32_t frameCycles();
     void create();
+    void startUcode();
+    void stopUcode();
     void reset();
     void updatePages();
     void catchUp();

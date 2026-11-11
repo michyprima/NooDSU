@@ -3,6 +3,7 @@
 
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
@@ -538,11 +539,12 @@ static uint64_t hash(const void *data, size_t size, uint64_t h = 0xCBF29CE484222
 int main(int argc, char **argv) {
     if (argc < 5) {
         printf("Usage: game <system files folder> <rom, or - for none> <interp|portable|native|clear|set> <frames> [fast] [dsi] [firmware] [press=N] "
-            "[start=N] [touch=N] [trace=frame] [ppm=path] [shots=N] [sd=path] [headphones=N] [results=path] [ram=path] [audio] [wav=path] [keys=frame:key,...] [taps=frame:x:y,...] [wifi] [realtime] [live] [window] [input] [exact] [romtest=path]\n");
+            "[start=N] [touch=N] [trace=frame] [ppm=path] [shots=N] [sd=path] [dsplle] [mictone=Hz] [state=save:load] [headphones=N] [results=path] [ram=path] [audio] [wav=path] [keys=frame:key,...] [taps=frame:x:y,...] [wifi] [realtime] [live] [window] [input] [exact] [romtest=path]\n");
         return 2;
     }
     std::string files = argv[1], mode = argv[3];
     int frames = atoi(argv[4]), shots = 0, headphones = -1, press = 0, startKey = 0, touch = 0, traceFrom = -1;
+    int stateSave = -1, stateLoad = -1, micTone = 0;
     bool fast = false, dsi = false, firmware = false, window = false, wifi = false, realtime = false, input = false;
     bool threads = false, stress = false, audio = false;
     std::string ppm, results, ramFile, wav, sdImage, romtest;
@@ -570,6 +572,12 @@ int main(int argc, char **argv) {
         else if (arg.rfind("shots=", 0) == 0) shots = atoi(arg.c_str() + 6); // Save the screens every N frames, with ppm's name
         else if (arg.rfind("headphones=", 0) == 0) headphones = atoi(arg.c_str() + 11); // Plug them in at frame N
         else if (arg.rfind("sd=", 0) == 0) sdImage = arg.substr(3); // An SD card image for DSi mode, none by default
+        else if (arg == "dsplle") Settings::dspHle = 0; // Run Nintendo's DSP programs in Teakra too
+        else if (arg.rfind("mictone=", 0) == 0) micTone = atoi(arg.c_str() + 8); // A sine in the microphone, at 32 kHz
+        else if (arg.rfind("state=", 0) == 0) { // Save a state before one frame and load it before another
+            stateSave = atoi(arg.c_str() + 6);
+            stateLoad = atoi(arg.c_str() + arg.find(':') + 1);
+        }
         else if (arg.rfind("results=", 0) == 0) results = arg.substr(8);
         else if (arg.rfind("ram=", 0) == 0) ramFile = arg.substr(4);
         else if (arg.rfind("romtest=", 0) == 0) romtest = arg.substr(8); // Where tests/rom's ROM saves its results
@@ -735,10 +743,24 @@ int main(int argc, char **argv) {
             touching = touch;
         }
         if (i == headphones) DsiGpio::headphonesIn.store(true);
+        if (micTone) {
+            // A frame of the tone, the way the console sends the GamePad's microphone
+            static uint32_t phase = 0;
+            int16_t tone[534];
+            uint32_t count = (i + 1) * 32000 / 60 - i * 32000 / 60;
+            for (uint32_t j = 0; j < count; j++, phase++)
+                tone[j] = int16_t(8000 * sin(2 * M_PI * micTone * phase / 32000));
+            core->spi.sendMicData(tone, count, 32000);
+        }
         for (auto &tap: taps) {
             if (i == tap[0]) { core->input.pressScreen(); core->spi.setTouch(tap[1], tap[2]); }
             if (i == tap[0] + 8) { core->input.releaseScreen(); core->spi.clearTouch(); }
         }
+        if (i == stateSave) {
+            core->saveStates.setPath("test.state", false);
+            printf("state saved at frame %d: %d\n", i, core->saveStates.saveState());
+        }
+        if (i == stateLoad) printf("state loaded at frame %d: %d\n", i, core->saveStates.loadState());
         do core->runCore(); while (!core->frameEnded.exchange(false));
         if (realtime) std::this_thread::sleep_until(start + std::chrono::microseconds(int64_t(i + 1) * 1000000 / 60));
         if (core->gpu.getFrame(frame, false)) {

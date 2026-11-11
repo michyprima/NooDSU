@@ -49,6 +49,7 @@ public:
     static int cheatsFolder;
     static int screenFilter;
     static int dsiMode;
+    static int dspHle;
     static int arm7Hle;
     static int jit;
     static int fastTiming;

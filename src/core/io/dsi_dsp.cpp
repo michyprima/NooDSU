@@ -20,11 +20,14 @@
 #include <stdexcept>
 
 #include "../core.h"
+#include "../settings.h"
 #include "../teakra/teakra.h"
+#include "dsi_dsp_hle.h"
 
 DsiDsp::~DsiDsp() {
-    // Free the processor if it was ever used
+    // Free the processor if it was ever used, and the high-level program
     delete teakra;
+    delete ucode;
 }
 
 void DsiDsp::saveState(FILE *file) {
@@ -42,6 +45,12 @@ void DsiDsp::saveState(FILE *file) {
     fwrite(&psem, sizeof(psem), 1, file);
     fwrite(&pmask, sizeof(pmask), 1, file);
     fwrite(cmd, 2, sizeof(cmd) / 2, file);
+    fwrite(&updatePending, sizeof(updatePending), 1, file);
+
+    // Write which high-level program is running, if any, and its state
+    uint32_t id = ucode ? ucode->getId() : -1;
+    fwrite(&id, sizeof(id), 1, file);
+    if (ucode) ucode->saveState(file);
 
     // Write the processor's state if it was ever used
     bool used = teakra;
@@ -66,6 +75,16 @@ void DsiDsp::loadState(FILE *file) {
     fread(&psem, sizeof(psem), 1, file);
     fread(&pmask, sizeof(pmask), 1, file);
     fread(cmd, 2, sizeof(cmd) / 2, file);
+    fread(&updatePending, sizeof(updatePending), 1, file);
+
+    // Read which high-level program was running, and its state
+    uint32_t id = -1;
+    fread(&id, sizeof(id), 1, file);
+    stopUcode();
+    if (id != (uint32_t)-1) {
+        ucode = DspUcode::create(core, this, pages, id);
+        ucode->loadState(file);
+    }
 
     // Read the processor's state if it was in use, or put it back as it starts
     bool used = false;
@@ -79,12 +98,10 @@ void DsiDsp::loadState(FILE *file) {
         teakra->Reset();
     }
 
-    // Sound waiting to be mixed isn't kept, and neither are the scheduler's events
+    // Sound waiting to be mixed isn't kept
     sampleHead = sampleCount = 0;
     samplePhase = 0;
     pagesDirty = true;
-    updatePending = false;
-    requestUpdate();
 }
 
 bool DsiDsp::accessible() {
@@ -94,7 +111,7 @@ bool DsiDsp::accessible() {
 
 bool DsiDsp::running() {
     // The DSP runs while it has a clock and neither of its resets is held
-    return teakra && (core->memory.readScfgClk() & BIT(1)) && (rst & BIT(0)) && !(pcfg & BIT(0));
+    return (teakra || ucode) && (core->memory.readScfgClk() & BIT(1)) && (rst & BIT(0)) && !(pcfg & BIT(0));
 }
 
 uint32_t DsiDsp::frameCycles() {
@@ -109,15 +126,9 @@ void DsiDsp::create() {
     teakra->SetSharedMemoryPages(pages);
 
     // Replies and semaphore bits from the DSP can interrupt the ARM9
-    for (int i = 0; i < 3; i++) {
-        teakra->SetRecvDataHandler(i, [this, i]() {
-            if (pcfg & BIT(9 + i)) core->interpreter[0].sendInterrupt(24);
-        });
-    }
-    teakra->SetSemaphoreHandler([this]() {
-        psts |= BIT(9);
-        core->interpreter[0].sendInterrupt(24);
-    });
+    for (int i = 0; i < 3; i++)
+        teakra->SetRecvDataHandler(i, [this, i]() { replyIrq(i); });
+    teakra->SetSemaphoreHandler([this]() { semaphoreIrq(); });
 
     // The DSP can reach the ARM9's memory by itself, which happens at once here
     Teakra::AHBMCallback ahbm;
@@ -130,6 +141,32 @@ void DsiDsp::create() {
     teakra->SetAHBMCallback(ahbm);
 }
 
+void DsiDsp::replyIrq(int i) {
+    // Interrupt the ARM9 for a reply from the DSP if it's enabled
+    if (pcfg & BIT(9 + i)) core->interpreter[0].sendInterrupt(24);
+}
+
+void DsiDsp::semaphoreIrq() {
+    // Interrupt the ARM9 for semaphore bits the DSP set
+    psts |= BIT(9);
+    core->interpreter[0].sendInterrupt(24);
+}
+
+void DsiDsp::startUcode() {
+    // Do the loaded program in high level if it's one of Nintendo's, otherwise Teakra runs it
+    stopUcode();
+    if (!Settings::dspHle) return;
+    updatePages();
+    ucode = DspUcode::create(core, this, pages);
+    if (ucode) ucode->start();
+}
+
+void DsiDsp::stopUcode() {
+    // Drop the high-level program, going back to Teakra
+    delete ucode;
+    ucode = nullptr;
+}
+
 void DsiDsp::reset() {
     // Put the registers and the processor back as they start
     padr = pcfg = psts = psem = 0;
@@ -139,6 +176,7 @@ void DsiDsp::reset() {
     readLength = 0;
     sampleHead = sampleCount = 0;
     samplePhase = 0;
+    stopUcode();
     if (teakra) teakra->Reset();
 }
 
@@ -152,13 +190,19 @@ void DsiDsp::updatePages() {
         if ((slotC & 0x82) == 0x82) pages[8 + ((slotC >> 2) & 0x7)] = core->memory.getNwram(2) + (i << 15);
     }
     pagesDirty = false;
-    teakra->Wake();
+    if (teakra) teakra->Wake();
 }
 
 void DsiDsp::catchUp() {
     // Run the DSP up to the current time, at 4 of its cycles to one of the system's
     uint32_t cycles = core->globalCycles - lastCycles;
     lastCycles = core->globalCycles;
+
+    // A high-level program has nothing to run, but needs the memory it sees
+    if (ucode) {
+        if (pagesDirty) updatePages();
+        return;
+    }
     if (!cycles || !running()) return;
     if (pagesDirty) updatePages();
 
@@ -186,8 +230,11 @@ void DsiDsp::update() {
 
     // Exchange a frame of sound with the DSP, giving it the microphone and keeping its output for the mixer
     if (core->dsiMic.readSndExCnt() & BIT(15)) {
-        int16_t output[2];
-        teakra->SampleClock(output, core->spi.readMic(core->globalCycles));
+        int16_t output[2], input = core->spi.readMic(core->globalCycles);
+        if (ucode)
+            ucode->sampleClock(output, input);
+        else
+            teakra->SampleClock(output, input);
         if (sampleCount == 64) {
             sampleHead = (sampleHead + 1) & 63;
             sampleCount--;
@@ -199,10 +246,17 @@ void DsiDsp::update() {
     requestUpdate();
 }
 
+void DsiDsp::finishHle() {
+    // Finish a high-level program's command when it's due
+    catchUp();
+    if (ucode) ucode->finish();
+}
+
 void DsiDsp::resetCycles() {
     // Adjust the last run time for the global reset
     catchUp();
     lastCycles -= core->globalCycles;
+    if (ucode) ucode->resetCycles();
 }
 
 void DsiDsp::clockChanged() {
@@ -229,14 +283,22 @@ bool DsiDsp::takeSample(int16_t *sample) {
 uint32_t DsiDsp::transferAddress() {
     // Get the address PDATA reaches, with its upper bits from the DSP's first DMA channel, then move it on if set to
     uint32_t address = padr;
-    if (((pcfg >> 12) & 0x7) != 1)
+    if (((pcfg >> 12) & 0x7) != 1 && !ucode)
         address |= teakra->DMAChan0GetDstHigh() << 16;
     if (pcfg & BIT(1)) padr++;
     return address;
 }
 
 uint16_t DsiDsp::transferRead() {
-    // Read a word from the DSP's side for PDATA, from the selected kind of memory
+    // Read a word from the DSP's side for PDATA, from the selected kind of memory; a high-level program only has memory
+    if (ucode) {
+        switch ((pcfg >> 12) & 0x7) {
+            case 0: return ucode->readData(transferAddress());
+            case 5: return ucode->readProgram(transferAddress());
+        }
+        transferAddress();
+        return 0;
+    }
     if (!teakra) return 0;
     switch ((pcfg >> 12) & 0x7) {
         case 0: return teakra->DataReadA32(transferAddress()); // Data
@@ -287,26 +349,25 @@ uint16_t DsiDsp::readPsts() {
     uint16_t value = (psts & BIT(9)) | BIT(8);
     if (readCount == 16) value |= BIT(5);
     if (readCount) value |= BIT(6) | BIT(0);
-    if (!teakra) return value;
     for (int i = 0; i < 3; i++) {
-        if (teakra->RecvDataIsReady(i)) value |= BIT(10 + i);
-        if (!teakra->SendDataIsEmpty(i)) value |= BIT(13 + i);
+        if (ucode ? ucode->replyReady(i) : (teakra && teakra->RecvDataIsReady(i))) value |= BIT(10 + i);
+        if (ucode ? !ucode->cmdEmpty(i) : (teakra && !teakra->SendDataIsEmpty(i))) value |= BIT(13 + i);
     }
     return value;
 }
 
 uint16_t DsiDsp::readSem() {
     // Read the semaphore bits the DSP has set
-    if (!accessible() || !teakra) return 0;
+    if (!accessible() || !(teakra || ucode)) return 0;
     catchUp();
-    return teakra->GetSemaphore();
+    return ucode ? ucode->getSemaphore() : teakra->GetSemaphore();
 }
 
 uint16_t DsiDsp::readRep(int i) {
     // Read one of the DSP's replies, which lets it send the next
-    if (!accessible() || !teakra) return 0;
+    if (!accessible() || !(teakra || ucode)) return 0;
     catchUp();
-    return teakra->RecvData(i);
+    return ucode ? ucode->readReply(i) : teakra->RecvData(i);
 }
 
 void DsiDsp::writeRst(uint16_t mask, uint16_t value) {
@@ -323,7 +384,14 @@ void DsiDsp::writePdata(uint16_t mask, uint16_t value) {
     // Write a word to the DSP's side, to the selected kind of memory
     if (!accessible() || mask != 0xFFFF) return;
     catchUp();
-    if (teakra) {
+    if (ucode) {
+        switch ((pcfg >> 12) & 0x7) {
+            case 0: ucode->writeData(transferAddress(), value); break;
+            case 5: ucode->writeProgram(transferAddress(), value); break;
+            default: transferAddress(); break;
+        }
+    }
+    else if (teakra) {
         switch ((pcfg >> 12) & 0x7) {
             case 0: teakra->DataWriteA32(transferAddress(), value); break; // Data
             case 1: teakra->MMIOWrite(transferAddress() & 0x7FF, value); break; // Registers
@@ -364,9 +432,15 @@ void DsiDsp::writePcfg(uint16_t mask, uint16_t value) {
     uint16_t old = pcfg;
     pcfg = (pcfg & ~mask) | (value & mask);
 
-    // Bit 0 holds the processor in reset, which puts it back as it starts
-    if (!(old & BIT(0)) && (pcfg & BIT(0)) && teakra)
-        teakra->Reset();
+    // Bit 0 holds the processor in reset, which puts it back as it starts; letting it go starts the loaded program,
+    // which may be done in high level
+    if (!(old & BIT(0)) && (pcfg & BIT(0))) {
+        stopUcode();
+        if (teakra) teakra->Reset();
+    }
+    else if ((old & BIT(0)) && !(pcfg & BIT(0)) && (rst & BIT(0))) {
+        startUcode();
+    }
     requestUpdate();
 
     // Bit 4 starts a read transfer of the set length, filling the FIFO, and clearing it drops what was fetched
@@ -385,7 +459,8 @@ void DsiDsp::writePsem(uint16_t mask, uint16_t value) {
     if (!accessible()) return;
     catchUp();
     psem = (psem & ~mask) | (value & mask);
-    if (teakra) teakra->SetSemaphore(psem);
+    if (ucode) ucode->setSemaphore(psem);
+    else if (teakra) teakra->SetSemaphore(psem);
 }
 
 void DsiDsp::writePmask(uint16_t mask, uint16_t value) {
@@ -393,15 +468,17 @@ void DsiDsp::writePmask(uint16_t mask, uint16_t value) {
     if (!accessible()) return;
     catchUp();
     pmask = (pmask & ~mask) | (value & mask);
-    if (teakra) teakra->MaskSemaphore(pmask);
+    if (ucode) ucode->maskSemaphore(pmask);
+    else if (teakra) teakra->MaskSemaphore(pmask);
 }
 
 void DsiDsp::writePclear(uint16_t mask, uint16_t value) {
     // Write to the DSP_PCLEAR register, clearing semaphore bits the DSP set
     if (!accessible()) return;
     catchUp();
-    if (teakra) teakra->ClearSemaphore(value & mask);
-    if (!teakra || !teakra->GetSemaphore())
+    if (ucode) ucode->clearSemaphore(value & mask);
+    else if (teakra) teakra->ClearSemaphore(value & mask);
+    if (ucode ? !ucode->getSemaphore() : (!teakra || !teakra->GetSemaphore()))
         psts &= ~BIT(9);
 }
 
@@ -410,5 +487,6 @@ void DsiDsp::writeCmd(int i, uint16_t mask, uint16_t value) {
     if (!accessible() || mask != 0xFFFF) return;
     catchUp();
     cmd[i] = value;
-    if (teakra) teakra->SendData(i, value);
+    if (ucode) ucode->writeCmd(i, value);
+    else if (teakra) teakra->SendData(i, value);
 }

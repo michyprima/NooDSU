@@ -14,6 +14,7 @@ BUILD := build-wiiu
 SRCS := src src/core src/core/arm src/core/gpu src/core/hle src/core/io src/core/memory src/core/net src/core/teakra src/ui src/ui/console
 SLIRP := src/core/net/libslirp
 SLIRPSRCS := $(SLIRP)/src $(SLIRP)/glib
+FAAD := src/core/faad2
 DATA := src/ui/console/images src/ui/console/shaders
 LIBS := -lwut -lSDL2
 INCS := $(PORTLIBS) $(WUT_ROOT)
@@ -27,6 +28,11 @@ LDFLAGS = -g $(ARCH) $(RPXSPECS) -Wl,-Map,$(notdir $*.map)
 CFLAGS := -g -O2 -ffunction-sections $(MACHDEP) -D__WIIU__ -D__WUT__ $(foreach dir,$(INCS),-I$(dir)/include)
 override CFLAGS += -DLIBSLIRP_STATIC_BUILD -DBUILDING_LIBSLIRP '-DG_LOG_DOMAIN="Slirp"' $(SLIRPINCLUDE) -include compat.h
 
+# faad2, the AAC decoder for the DSP's high-level AAC program, is C with its own flags: only AAC LC, as the DSP decodes
+FAADFLAGS := -g -O2 -w -ffunction-sections $(MACHDEP) -DHAVE_INTTYPES_H=1 -DHAVE_MEMCPY=1 -DHAVE_STRING_H=1 \
+    -DHAVE_STRINGS_H=1 -DHAVE_SYS_STAT_H=1 -DHAVE_SYS_TYPES_H=1 -DHAVE_LRINTF=1 '-DPACKAGE_VERSION="2.11.4"' \
+    -DAPPLY_DRC -DLC_ONLY_DECODER -DDISABLE_SBR
+
 ifneq ($(BUILD),$(notdir $(CURDIR)))
 
 # The tag of this commit if it has one, otherwise its short hash, marked if tracked files have uncommitted changes
@@ -37,15 +43,17 @@ export LD := $(CXX)
 export OUTPUT := $(CURDIR)/$(NAME)
 export DEPSDIR := $(CURDIR)/$(BUILD)
 export LIBPATHS := $(foreach dir,$(INCS),-L$(dir)/lib)
-export VPATH := $(foreach dir,$(SRCS) $(SLIRPSRCS),$(CURDIR)/$(dir)) $(foreach dir,$(DATA),$(CURDIR)/$(dir))
+export VPATH := $(foreach dir,$(SRCS) $(SLIRPSRCS) $(FAAD),$(CURDIR)/$(dir)) $(foreach dir,$(DATA),$(CURDIR)/$(dir))
+export FAADINCLUDE := -I$(CURDIR)/$(FAAD)
 export SLIRPINCLUDE := -I$(CURDIR)/$(SLIRP)/src -I$(CURDIR)/$(SLIRP)/glib -I$(CURDIR)/$(SLIRP)/wiiu
 export INCLUDE := $(foreach dir,$(SRCS),-I$(CURDIR)/$(dir)) $(foreach dir,$(INCS),-I$(dir)/include) -I$(CURDIR)/$(BUILD)
 
 CPPFILES := $(foreach dir,$(SRCS),$(notdir $(wildcard $(dir)/*.cpp)))
 CFILES := $(foreach dir,$(SLIRPSRCS),$(notdir $(wildcard $(dir)/*.c)))
+export FAADOFILES := $(patsubst %.c,%.o,$(notdir $(wildcard $(FAAD)/*.c)))
 BMPFILES := $(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.bmp)))
 GSHFILES := $(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.gsh)))
-export OFILES := $(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(BMPFILES:.bmp=.o) $(addsuffix .o,$(GSHFILES))
+export OFILES := $(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(FAADOFILES) $(BMPFILES:.bmp=.o) $(addsuffix .o,$(GSHFILES))
 
 .PHONY: $(BUILD)
 all: $(BUILD)
@@ -68,6 +76,10 @@ all: $(OUTPUT).wuhb
 $(OUTPUT).wuhb: $(OUTPUT).rpx
 $(OUTPUT).rpx: $(OUTPUT).elf
 $(OUTPUT).elf: $(OFILES)
+
+$(FAADOFILES): %.o: %.c
+	@echo $(notdir $<)
+	@$(CC) -MMD -MP -MF $(DEPSDIR)/$*.d $(FAADFLAGS) $(FAADINCLUDE) -c $< -o $@
 
 %.o: %.bmp
 	@echo $(notdir $<)

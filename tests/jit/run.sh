@@ -25,6 +25,14 @@ for f in $(cd "$build/src"; find . -name '*.cpp'); do
     if [ ! -e "$o" ] || [ "$build/src/$f" -nt "$o" ]; then clang++ $flags -c "$build/src/$f" -o "$o" & fi
     while [ "$(jobs -r | wc -l)" -ge 12 ]; do sleep 0.05; done
 done
+# faad2, the AAC decoder, is C with its own settings, as in the Makefile
+faad="-O2 -w -DHAVE_INTTYPES_H=1 -DHAVE_MEMCPY=1 -DHAVE_STRING_H=1 -DHAVE_STRINGS_H=1 -DHAVE_SYS_STAT_H=1 -DHAVE_SYS_TYPES_H=1
+    -DHAVE_LRINTF=1 -DPACKAGE_VERSION=\"2.11.4\" -DAPPLY_DRC -DLC_ONLY_DECODER -DDISABLE_SBR -I$build/src/faad2"
+for f in $(cd "$build/src/faad2"; ls *.c); do
+    o="$build/obj/faad2_${f%.c}.o"
+    if [ ! -e "$o" ] || [ "$build/src/faad2/$f" -nt "$o" ]; then clang $faad -c "$build/src/faad2/$f" -o "$o" & fi
+    while [ "$(jobs -r | wc -l)" -ge 12 ]; do sleep 0.05; done
+done
 clang++ $flags -c "$here/jit_test.cpp" -o "$build/obj/jit_test.o" &
 clang -O2 -c "$here/shim/slirp.c" -o "$build/obj/slirp.o" &
 wait

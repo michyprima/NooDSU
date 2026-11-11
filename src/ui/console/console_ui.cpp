@@ -1604,6 +1604,7 @@ void ConsoleUI::settingsMenu() {
     const std::vector<std::string> romIn = { "Off", "On", "Streaming" };
     const std::vector<std::string> directBoot = { "Off (broken)", "On" };
     const std::vector<std::string> dsiMode = { "Off", "On (slow)" };
+    const std::vector<std::string> dsp = { "Low-Level (slow)", "High-Level" };
     const std::vector<std::string> language = { "System Language", "Japanese", "English", "French", "German",
         "Italian", "Spanish" };
     const std::vector<std::string> mic = { "Off", "GamePad" };
@@ -1682,6 +1683,10 @@ void ConsoleUI::settingsMenu() {
         header("Experimental");
         add("Direct Boot", Settings::directBoot, directBoot);
         add("DSi Mode", Settings::dsiMode, dsiMode);
+        if (Settings::dsiMode) {
+            // The DSP only exists in DSi mode, and a change takes effect the next time software starts its program
+            add("DSi DSP", Settings::dspHle, dsp);
+        }
         add("Wi-Fi", Settings::wifi, toggle);
         int dnsIndex = -1;
         if (Settings::wifi) {
