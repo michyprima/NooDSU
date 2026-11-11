@@ -301,6 +301,9 @@ void Jit::initCodegen() {
     addrStore8 = (uint32_t)(uintptr_t)(arm7 ? &jitStore8<true> : &jitStore8<false>);
     addrLoad16 = (uint32_t)(uintptr_t)(arm7 ? &jitLoad16<true> : &jitLoad16<false>);
     addrStore16 = (uint32_t)(uintptr_t)(arm7 ? &jitStore16<true> : &jitStore16<false>);
+    addrCp15 = (uint32_t)(uintptr_t)&core->cp15;
+    addrCodeLines = (uint32_t)(uintptr_t)&core->cp15.codeLines[0];
+    addrCodeMiss = (uint32_t)(uintptr_t)&Cp15::codeMissCall;
     PpcEmitter e(codeArea);
     emitStubs(e);
     codeStart = (uint8_t*)e.here();
@@ -381,14 +384,16 @@ void Jit::emitStubs(PpcEmitter &e) {
     // After an instruction, with its cycles in r3: add them, doubled for the half-speed ARM7 and halved for the DSi's
     // ARM9 at 133MHz, then continue if nothing else needs to run first; impure versions also check if code changed,
     // since the block might be stale. The DSi's ARM9 gets versions for both of its speeds, and at 133MHz a cheaper one
-    // for fast timing
-    for (int half = 0; half < ((core->dsiMode && !arm7) ? 3 : 1); half++) {
+    // for fast timing; its ARM7 gets a second version that doesn't double, for code outside main RAM
+    for (int half = 0; half < (!core->dsiMode ? 1 : arm7 ? 2 : 3); half++) {
         for (int store = 0; store < 2; store++) {
             for (int impure = 0; impure < 2; impure++) {
                 codePost[half][impure][store] = e.here();
-                if (arm7) e.add(3, 3, 3);
+                if (arm7 && !half) e.add(3, 3, 3);
                 uint32_t *none = nullptr;
-                if (half == 2) {
+                if (arm7) {
+                }
+                else if (half == 2) {
                     // Fast timing doesn't need the odd half cycle; an instruction that rounds down to no time is fine,
                     // since a loop always has a taken branch, which takes at least one
                     e.rlwinm(3, 3, 31, 1, 31);
@@ -432,6 +437,31 @@ void Jit::emitStubs(PpcEmitter &e) {
                 e.bge(codeSlowPost[store]);
                 e.blr();
             }
+        }
+    }
+
+    // Fetch: before an instruction in a line of main RAM that the ARM9's code cache doesn't hold, with the program
+    // counter register at that instruction, bring the line in and count the time it takes, with any run's so far, like
+    // an instruction that does nothing else; the program counter is stored as it is before the instruction, so stopping
+    // here leaves the instruction to run next
+    for (int half = 0; half < ((core->dsiMode && !arm7) ? 3 : 0); half++) {
+        for (int thumb = 0; thumb < 2; thumb++) {
+            codeFetch[half][thumb] = e.here();
+            e.stwu(1, -16, 1);
+            e.mflr(0);
+            e.stw(0, 20, 1);
+            e.loadConst(3, addrCp15);
+            e.addi(4, R_PC, thumb ? -4 : -8);
+            e.call(addrCodeMiss);
+            e.lwz(0, 20, 1);
+            e.mtlr(0);
+            e.addi(1, 1, 16);
+            e.addi(4, R_PC, thumb ? -2 : -4);
+            e.stw(4, offPc, R_ARM);
+            if (half) e.add(3, 3, 3);
+            e.add(3, 3, R_BATCH);
+            e.li(R_BATCH, 0);
+            e.b(codePost[half][0][0]);
         }
     }
 
@@ -1111,7 +1141,8 @@ enum NativeKind {
 static bool cacheControl(uint32_t op) {
     // Check if an MCR is for the cache or write buffer, which aren't emulated, and not one of the writes that halts
     uint32_t reg = (((op >> 16) & 0xF) << 16) | ((op & 0xF) << 8) | ((op >> 5) & 0x7);
-    return (op & 0x0F100010) == 0x0E000010 && (reg >> 16) == 7 && reg != 0x070004 && reg != 0x070802;
+    // Writes that empty the code cache go to the interpreter too, which keeps track of what the cache holds
+    return (op & 0x0F100010) == 0x0E000010 && (reg >> 16) == 7 && (reg >> 8) != 0x0705 && reg != 0x070004 && reg != 0x070802;
 }
 
 static bool restoresFlags(uint32_t op, bool arm7) {
@@ -2117,7 +2148,35 @@ void Jit::findLiveFlags(JitBlock *block) {
         int reads, writes, always;
         flagUse(op, nativeKind(op, arm7), reads, writes, always);
         live = (live & ~always) | reads;
+
+        // Fetching a line into the code cache can stop before the instruction, so the flags have to be exact there
+        if (fetches(block, i)) live = FLAG_ALL;
     }
+}
+
+bool Jit::fetches(JitBlock *block) {
+    // Check if a block's code goes through the ARM9's code cache, which is only counted for main RAM in DSi software,
+    // which is what the code is generated for when it counts half cycles
+    return !arm7 && halfCycles && (block->address >> 24) == 0x02;
+}
+
+bool Jit::fetches(JitBlock *block, size_t i) {
+    // Check if an instruction is where its line of code has to be in the code cache: the first of the block, since
+    // jumps can come from anywhere, and the first of each line after that
+    return fetches(block) && (i == 0 || !((block->address + i * (block->thumb ? 2 : 4)) & 0x1F));
+}
+
+void Jit::emitFetch(PpcEmitter &e, uint32_t address) {
+    // Check the byte that says the code cache holds an instruction's line, and fetch the line if not; the program
+    // counter register has to be at the instruction
+    uint32_t held = addrCodeLines + ((address & 0xFFFFFF) >> 5);
+    e.lis(4, (held + 0x8000) >> 16);
+    e.lbz(4, int16_t(held), 4);
+    e.cmpwi(4, 0);
+    uint32_t *there = e.here();
+    e.bne(nullptr);
+    e.call(codeFetch[postHalf()][thumbCode]);
+    e.patchBc(there);
 }
 
 bool Jit::batched(JitBlock *block, size_t i) {
@@ -2338,6 +2397,7 @@ void *Jit::generate(JitBlock *block) {
     block->entriesBehind.clear();
     pcBehind = 0;
     thumbCode = block->thumb;
+    fullSpeed = arm7 && codeFullSpeed && !Interpreter::mainRam(block->address);
     block->links.clear();
     bool ok = true;
     JS_START(emitStart);
@@ -2346,6 +2406,10 @@ void *Jit::generate(JitBlock *block) {
         if (i > 0) pcBehind += step;
         block->entries.push_back((uint8_t*)e.here() - codePtr);
         block->entriesBehind.push_back(pcBehind);
+        if (fetches(block, i)) {
+            stepPc(e);
+            emitFetch(e, pc - step * 2);
+        }
         emitInstr(e, block, i, pc, ok);
     }
 
@@ -2376,6 +2440,9 @@ void *Jit::generate(JitBlock *block) {
     return code;
 }
 
+// The most host code an entry point into the middle of a block takes, which is with a check of the code cache
+static const size_t ENTRY_SIZE = 48;
+
 void *Jit::generateEntry(JitBlock *host, size_t index) {
     // Generate a small entry point into the middle of another block's code, instead of compiling it again
     if (!codeArea || !host->code || index >= host->entries.size() || codePtr + 64 > codeEnd) return nullptr;
@@ -2383,7 +2450,18 @@ void *Jit::generateEntry(JitBlock *host, size_t index) {
     if (OSGetCoreId() != codeCore || !OSSwitchSecCodeGenMode(CODEGEN_RW_)) return nullptr;
     JS_ADD(JS_SWITCH_RW, writableStart);
     PpcEmitter e(codePtr);
-    e.loadConst(R_PC, host->address + (index + 2) * (host->thumb ? 2 : 4) - host->entriesBehind[index]);
+    if (fetches(host) && !fetches(host, index)) {
+        // Nothing there checks that the code cache holds the instruction's line, so that's done here, with the program
+        // counter register at the instruction until it's done
+        uint32_t step = host->thumb ? 2 : 4;
+        thumbCode = host->thumb;
+        e.loadConst(R_PC, host->address + (index + 2) * step);
+        emitFetch(e, host->address + index * step);
+        if (host->entriesBehind[index]) e.addi(R_PC, R_PC, -host->entriesBehind[index]);
+    }
+    else {
+        e.loadConst(R_PC, host->address + (index + 2) * (host->thumb ? 2 : 4) - host->entriesBehind[index]);
+    }
     e.b((uint8_t*)host->code + host->entries[index]);
     uint8_t *code = codePtr;
     size_t size = (uint8_t*)e.here() - code;
@@ -2394,12 +2472,12 @@ void *Jit::generateEntry(JitBlock *host, size_t index) {
 void Jit::linkEntry(JitBlock *block) {
     // Link waiting jumps to a block that's an entry into another block's code
     if (!block->code || pendingLinks.find(block->address | block->thumb) == pendingLinks.end()) {
-        finishCode((uint8_t*)block->code, 16, std::vector<uint32_t*>());
+        finishCode((uint8_t*)block->code, ENTRY_SIZE, std::vector<uint32_t*>());
         return;
     }
     std::vector<uint32_t*> patched;
     linkBlock(block, patched);
-    finishCode((uint8_t*)block->code, 16, patched);
+    finishCode((uint8_t*)block->code, ENTRY_SIZE, patched);
 }
 
 

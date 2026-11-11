@@ -206,7 +206,7 @@ void Memory::loadState(FILE *file) {
         fread(scfgExt, 4, sizeof(scfgExt) / 4, file);
         fread(&scfgRom, sizeof(scfgRom), 1, file);
         fread(&scfgClk, sizeof(scfgClk), 1, file);
-        core->jit.setHalfCycles(fastArm9());
+        updateDsiTiming();
         fread(&bigRam, sizeof(bigRam), 1, file);
         fread(&ramPending, sizeof(ramPending), 1, file);
         fread(&scfgMc, sizeof(scfgMc), 1, file);
@@ -3024,6 +3024,15 @@ void Memory::writeScfgClk(uint16_t mask, uint16_t value) {
     if (!((old ^ scfgClk) & BIT(0))) return;
 
     // Count the ARM9's cycles at the new speed, picking the run loop again once the current instruction is done
-    core->jit.setHalfCycles(scfgClk & BIT(0));
+    updateDsiTiming();
     core->schedule(UPDATE_RUN, 0);
+}
+
+void Memory::updateDsiTiming() {
+    // DSi software, which runs the ARM9 at 133MHz, gets the timing measured on a DSi: the ARM9's code cache, and the
+    // ARM7 at full speed outside main RAM. DS software keeps a DS's timing, which also costs less to emulate
+    bool dsi = fastArm9();
+    core->jit.setHalfCycles(dsi);
+    if (core->cp15.codeCache != dsi) core->cp15.codeFlush();
+    core->cp15.codeCache = core->interpreter[1].fullSpeedWram = dsi;
 }

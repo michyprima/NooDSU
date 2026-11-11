@@ -22,7 +22,7 @@
 #include "../settings.h"
 #include "../emu_profile.h"
 
-Interpreter::Interpreter(Core *core, bool arm7): core(core), arm7(arm7) {
+Interpreter::Interpreter(Core *core, bool arm7): core(core), cp15(&core->cp15), arm7(arm7) {
     // Initialize the registers for user mode
     for (int i = 0; i < 32; i++)
         registers[i] = &registersUsr[i & 0xF];
@@ -152,9 +152,10 @@ template <bool _arm7, int shift> void Interpreter::runCoreSingle(Core &core) {
                 if (arm.pipelineStale) arm.refillPipeline();
             }
             uint32_t pc = *arm.registers[15];
-            int cycles = arm.runOpcode();
+            int cycles = _arm7 ? 0 : (arm.fetchCycles() << (shift < 0));
+            if (!cycles) cycles = arm.runOpcode();
             if (shift < 0) cycles = arm.dsiCycles(cycles);
-            else if (shift) cycles = arm7Cycles(cycles, pc);
+            else if (shift) cycles = arm.arm7Cycles(cycles, pc);
             arm.cycles = (core.globalCycles += cycles);
             if (!_arm7) EP_INC(EC_INTERP9);
         }
@@ -189,7 +190,8 @@ template <bool dsi> void Interpreter::runCoreNds(Core &core) {
             if (core.globalCycles >= arm9.cycles) {
                 if (core.jit.enabled && core.jit.run(&arm7.cycles)) continue;
                 if (arm9.pipelineStale) arm9.refillPipeline();
-                int cycles = arm9.runOpcode();
+                int cycles = arm9.fetchCycles() << dsi;
+                if (!cycles) cycles = arm9.runOpcode();
                 arm9.cycles = core.globalCycles + (dsi ? arm9.dsiCycles(cycles) : cycles);
                 EP_INC(EC_INTERP9);
             }
@@ -235,7 +237,8 @@ template <bool dsi> void Interpreter::runCoreNdsFast(Core &core) {
                 core.sliceLimit = arm7.cycles + Core::FAST_SLICE;
                 if (core.jit.enabled && core.jit.run(&core.sliceLimit)) continue;
                 if (arm9.pipelineStale) arm9.refillPipeline();
-                int cycles = arm9.runOpcode();
+                int cycles = arm9.fetchCycles() << dsi;
+                if (!cycles) cycles = arm9.runOpcode();
                 uint32_t next = core.globalCycles + (dsi ? arm9.dsiCycles(cycles) : cycles);
                 EP_INC(EC_INTERP9);
                 arm9.cycles = next;
@@ -288,7 +291,7 @@ void Interpreter::stepArm7(Core &core) {
     // Compiled code might have run while the ARM7 was alone, leaving the pipeline for the interpreter to fill
     if (arm7.pipelineStale) arm7.refillPipeline();
     uint32_t pc = *arm7.registers[15];
-    arm7.cycles = core.globalCycles + arm7Cycles(arm7.runOpcode(), pc);
+    arm7.cycles = core.globalCycles + arm7.arm7Cycles(arm7.runOpcode(), pc);
 }
 
 bool Interpreter::runArm7UntilArm9(Core &core) {

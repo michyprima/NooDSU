@@ -25,6 +25,10 @@ if 'addrRestoreCpsr' not in open(root + '/arm/jit.h').read():
         '    static void restoreCpsrCall(Interpreter *arm, uint32_t before) {}\n    uint32_t modeBanks[32][4] = {};\n'))
 if 'addrGxStat' not in open(root + '/arm/jit.h').read():
     edit('arm/jit.h', ('    uint32_t addrDtcmReg = 0,', '    int offIme = 0;\n    uint32_t addrGxStat = 0;\n    uint32_t addrDtcmReg = 0,'))
+# and they don't count the time the ARM9's code cache takes
+if 'addrCodeLines' not in open(root + '/arm/jit.h').read():
+    edit('arm/jit.h', ('    uint32_t addrDtcmReg = 0,', '    uint32_t addrCp15 = 0, addrCodeLines = 0, addrCodeMiss = 0;\n    uint32_t addrDtcmReg = 0,'))
+    edit('arm/cp15.h', ('    Cp15(Core *core): core(core) {}\n', '    Cp15(Core *core): core(core) {}\n    uint8_t codeLines[1] = {};\n    int codeMiss(uint32_t address) { return 0; }\n'))
 # Older cores also lack the DSi's headphone pin, reset request and SD/MMC write-back, which the harness uses
 if not os.path.exists(root + '/io/dsi_gpio.h'):
     edit('core.h', ('#include "io/spi.h"\n', '#include "io/spi.h"\n\nstruct DsiGpio { static inline std::atomic<bool> headphonesIn{false}; };\n'))

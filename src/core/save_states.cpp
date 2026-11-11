@@ -22,7 +22,7 @@
 #include "file_lock.h"
 
 const char *SaveStates::stateTag = "NOOD";
-const uint32_t SaveStates::stateVersion = 18;
+const uint32_t SaveStates::stateVersion = 19;
 
 void SaveStates::setPath(std::string path, bool gba) {
     // Set the NDS or GBA state path

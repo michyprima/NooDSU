@@ -137,6 +137,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
         saveStates(this), sdMmc(this, false), sdio(this, true), slot2(this), dsiWifi(this), dsiMic(this), dsiGpio(this), dsiCamera(this), dsiDsp(this), spi(this), spu(this), timers { Timers(this, 0), Timers(this, 1) }, wifi(this) {
     // Set DSi mode now and ignore changes to it later
     dsiMode = Settings::dsiMode;
+    memory.updateDsiTiming();
     updateRun();
 
     // Try to load BIOS and firmware; require DS files when not direct booting

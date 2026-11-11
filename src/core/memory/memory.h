@@ -114,6 +114,7 @@ public:
     uint16_t readScfgRom() { return scfgRom; }
     uint16_t readScfgClk() { return scfgClk; }
     bool fastArm9();
+    void updateDsiTiming();
     uint32_t readKeyTable(int i, bool dsiCart = false);
     uint16_t readScfgMc();
     uint16_t readCardInsertDelay() { return cardInsertDelay; }

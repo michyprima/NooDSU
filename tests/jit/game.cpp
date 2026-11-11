@@ -40,7 +40,7 @@ static const uint32_t
     CACHE_AREA = 0x30000, CACHE = CACHE_AREA + 0x1000, // Live: the code changed flag, then the block cache
     STACK = 0x60000, STACK_TOP = 0x7FF00, END = 0x80000,
     COND_TABLE = 0x200000, MODE_BANKS = COND_TABLE + 0x400, // Fixed
-    FAKE_HANDLERS = 0x3E0000, FAKE = 0x3F0000, FAKE_MEMORY = 0x3F0800, FAKE_MSR = 0x3F1800, FAKE_RESTORE = 0x3F1840, FAKE_INTERLEAVE = 0x3F2000,
+    FAKE_HANDLERS = 0x3E0000, FAKE = 0x3F0000, FAKE_MEMORY = 0x3F0800, FAKE_MSR = 0x3F1800, FAKE_RESTORE = 0x3F1840, FAKE_FETCH = 0x3F1880, FAKE_CP15 = 0x3F18C0, FAKE_INTERLEAVE = 0x3F2000,
     READ_MAP = 0x400000, WRITE_MAP = 0x800000, // Live: memory maps, with host pointers turned into emulator addresses
     CODE = 0x10000000, CODE_SIZE = 0x2000000,
     RAM = 0x20000000, // Main RAM, shared with the core
@@ -310,6 +310,11 @@ static void hookCall(uc_engine *uc, uint64_t address, uint32_t, void *user) {
         Jit::restoreCpsrCall(en.arm, r4);
         keepR3 = false;
     }
+    else if (address == FAKE_FETCH) {
+        // A line of code the ARM9's code cache doesn't hold, like Cp15::codeMissCall
+        if (r3 != FAKE_CP15) fatal("fetch called without the coprocessor: %08X", r3);
+        result = core->cp15.codeMiss(r4);
+    }
     else if (address == FAKE_INTERLEAVE) {
         if (r4 != LIMIT) fatal("interleave called without the limit: %08X", r4);
         result = en.jit->interleave(en.limit);
@@ -437,6 +442,11 @@ static void setup(Jit &jit) {
     jit.addrStore8 = FAKE + 24;
     jit.addrLoad16 = FAKE + 32;
     jit.addrStore16 = FAKE + 40;
+
+    // The bytes that say what the code cache holds are in the core, which is mapped whole
+    jit.addrCp15 = FAKE_CP15;
+    jit.addrCodeLines = CORE + uint32_t((uint8_t*)core->cp15.codeLines - (uint8_t*)core);
+    jit.addrCodeMiss = FAKE_FETCH;
 }
 
 static void countBlock(uc_engine*, uint64_t, uint32_t size, void *arm7) {

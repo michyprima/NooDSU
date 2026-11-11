@@ -567,15 +567,17 @@ bool Jit::run(const uint32_t *limit) {
     if (!codeArea && !codeFailed)
         initCodegen();
 
-    // Code generated with fast timing or for the ARM9's other speed counts cycles differently, so start over if either
-    // changed
-    if (bool(Settings::fastTiming) != codeFast || nextHalfCycles != halfCycles) {
+    // Code generated with fast timing, for the ARM9's other speed or for the ARM7's other timing counts cycles
+    // differently, so start over if any changed
+    bool fullSpeed = arm7 && core->interpreter[1].fullSpeedWram;
+    if (bool(Settings::fastTiming) != codeFast || nextHalfCycles != halfCycles || fullSpeed != codeFullSpeed) {
         reset();
         for (size_t i = 0; i < graveyard.size(); i++)
             delete graveyard[i];
         graveyard.clear();
         codeFast = Settings::fastTiming;
         halfCycles = nextHalfCycles;
+        codeFullSpeed = fullSpeed;
     }
 
     // Find the host memory for the next instruction, if it's somewhere code can be compiled from
@@ -711,8 +713,17 @@ void Jit::execute(JitBlock *block, const uint32_t *limit) {
             JitInstr &instr = block->instrs[i];
             arm.registersUsr[15] = pc;
             if (!arm7) EP_INC(EC_INTERP9);
+
+            // A line the ARM9's code cache doesn't hold is fetched first, like an instruction before this one that
+            // only takes time, with the program counter where the run loop would have it
+            Cp15 &cp15 = core->cp15;
+            bool fetch = !arm7 && cp15.codeCache && cp15.codeMissing(pc - step * 2);
             int cycles;
-            if (block->thumb) {
+            if (fetch) {
+                cycles = cp15.codeMiss(pc - step * 2) << halfCycles;
+                arm.registersUsr[15] = pc - step;
+            }
+            else if (block->thumb) {
                 cycles = (arm.*instr.thumb)(instr.opcode);
             }
             else {
@@ -728,7 +739,8 @@ void Jit::execute(JitBlock *block, const uint32_t *limit) {
             // An instruction that took no time also stops at the limit, since the run loop would run the ARM7 next if
             // it was due when the instruction started, which is now
             if (halfCycles) cycles = arm.dsiCycles(cycles);
-            uint32_t next = core->globalCycles + (cycles << arm7);
+            else if (arm7) cycles = arm.arm7Cycles(cycles, pc);
+            uint32_t next = core->globalCycles + cycles;
             arm.cycles = next;
             if (next > *limit || (!cycles && next == *limit) || next >= core->events[0].cycles || codeChanged) {
                 if (!interleave(limit)) {
@@ -738,6 +750,12 @@ void Jit::execute(JitBlock *block, const uint32_t *limit) {
             }
             else {
                 core->globalCycles = next;
+            }
+            if (fetch) {
+                // Run the instruction now that its line is there
+                i--;
+                pc -= step;
+                continue;
             }
             if (arm.registersUsr[15] != pc) break; // Jumped
         }
