@@ -832,7 +832,6 @@ void GraphicsUcode::scaleNearest() {
     src.resize(rectWidth);
     dst.resize(dstWidth);
 
-    // Each new source line is found with the rectangle's width, as melonDS has it
     srcAddr += (rectY * srcWidth + rectX) << 1;
     readArm9(&src[0], srcAddr, rectWidth << 1);
     for (uint32_t y = 0, sy = 0x3FF; y < dstHeight; y++) {
@@ -842,7 +841,7 @@ void GraphicsUcode::scaleNearest() {
         dstAddr += dstWidth << 1;
         uint32_t next = sy + yStep;
         if ((next >> 10) != (sy >> 10))
-            readArm9(&src[0], srcAddr + (((next >> 10) * rectWidth) << 1), rectWidth << 1);
+            readArm9(&src[0], srcAddr + (((next >> 10) * srcWidth) << 1), rectWidth << 1);
         sy = next;
     }
 }
