@@ -130,6 +130,16 @@ private:
     void syncSamples();
     void mixSample();
 
+    // Each channel fetches the data it will play ahead of time, like the hardware's FIFOs, so software refilling a
+    // buffer just behind the playing position doesn't change what's still to be played in a batch made late; a
+    // channel reads from where it is, and from its loop start if it gets there within the batch
+    static const uint32_t FETCH_SIZE = 128;
+    uint8_t fetchData[16][2][FETCH_SIZE];
+    uint32_t fetchAddress[16][2] = {};
+    uint32_t fetchCount[16][2] = {};
+    void prefetch();
+    template <typename T> T readData(int channel, uint32_t address);
+
     static const int indexTable[8];
     static const int16_t adpcmTable[89];
 

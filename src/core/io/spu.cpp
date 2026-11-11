@@ -102,7 +102,8 @@ void Spu::saveState(FILE *file) {
 }
 
 void Spu::loadState(FILE *file) {
-    // Read state data from the file
+    // Read state data from the file, reading channel data from memory until the next batch fetches ahead
+    memset(fetchCount, 0, sizeof(fetchCount));
     fread(&batchEnd, sizeof(batchEnd), 1, file);
     fread(&batchDone, sizeof(batchDone), 1, file);
     fread(&gbaFrameSequencer, sizeof(gbaFrameSequencer), 1, file);
@@ -497,6 +498,48 @@ void Spu::runSamples() {
         mixSample();
     batchEnd = core->globalCycles + SPU_BATCH * 512 * 2;
     batchDone = 0;
+    prefetch();
+}
+
+void Spu::prefetch() {
+    // Fetch the data each playing channel will read during the batch that starts now
+    for (int i = 0; i < 16; i++) {
+        fetchCount[i][0] = fetchCount[i][1] = 0;
+        uint8_t format = (soundCnt[i] >> 29) & 0x3;
+        if (!(enabled & BIT(i)) || format == 3) continue;
+
+        // Count the bytes it can move through, with a sample to spare, at a byte a sample for ADPCM
+        uint32_t period = 0x10000 - soundTmr[i];
+        uint32_t size = std::min(FETCH_SIZE, (SPU_BATCH * 512 / period + 2) * (format == 1 ? 2 : 1) + 4);
+        uint32_t end = soundSad[i] + (soundPnt[i] + soundLen[i]) * 4;
+        uint32_t starts[2] = { soundCurrent[i], end };
+        uint32_t sizes[2] = { std::min(size, end - std::min(end, soundCurrent[i])), 0 };
+        if (sizes[0] < size && ((soundCnt[i] >> 27) & 0x3) == 1) { // Loop infinite
+            starts[1] = soundSad[i] + soundPnt[i] * 4;
+            sizes[1] = size - sizes[0];
+        }
+
+        // Copy whole words, keeping the bytes in order on any host
+        for (int w = 0; w < 2; w++) {
+            if (!sizes[w]) continue;
+            uint32_t base = starts[w] & ~0x3;
+            uint32_t words = std::min(FETCH_SIZE / 4, (starts[w] + sizes[w] - base + 3) >> 2);
+            for (uint32_t j = 0; j < words; j++)
+                writeLsb<uint32_t>(&fetchData[i][w][j * 4], core->memory.read<uint32_t>(1, base + j * 4));
+            fetchAddress[i][w] = base;
+            fetchCount[i][w] = words * 4;
+        }
+    }
+}
+
+template <typename T> T Spu::readData(int channel, uint32_t address) {
+    // Read channel data from what was fetched ahead, or from memory if it wasn't
+    for (int w = 0; w < 2; w++) {
+        uint32_t offset = address - fetchAddress[channel][w];
+        if (offset + sizeof(T) <= fetchCount[channel][w])
+            return readLsb<T>(&fetchData[channel][w][offset]);
+    }
+    return core->memory.read<T>(1, address);
 }
 
 void Spu::syncSamples() {
@@ -534,11 +577,11 @@ void Spu::mixSample() {
         // Read the sample data
         switch (format) {
         case 0: // PCM8
-            data = (int8_t)core->memory.read<uint8_t>(1, soundCurrent[i]) << 8;
+            data = (int8_t)readData<uint8_t>(i, soundCurrent[i]) << 8;
             break;
 
         case 1: // PCM16
-            data = (int16_t)core->memory.read<uint16_t>(1, soundCurrent[i]);
+            data = (int16_t)readData<uint16_t>(i, soundCurrent[i]);
             break;
 
         case 2: // ADPCM
@@ -584,7 +627,7 @@ void Spu::mixSample() {
                 }
 
                 // Get the 4-bit ADPCM data
-                uint8_t adpcmData = core->memory.read<uint8_t>(1, soundCurrent[i]);
+                uint8_t adpcmData = readData<uint8_t>(i, soundCurrent[i]);
                 adpcmData = adpcmToggle[i] ? ((adpcmData & 0xF0) >> 4) : (adpcmData & 0x0F);
 
                 // Calculate the sample difference, using masks since which bits are set can't be predicted
@@ -825,7 +868,8 @@ void Spu::pushSample(int16_t sampleLeft, int16_t sampleRight) {
 }
 
 void Spu::startChannel(int channel) {
-    // Reload the channel's internal registers
+    // Reload the channel's internal registers, reading from memory until the next batch fetches ahead again
+    fetchCount[channel][0] = fetchCount[channel][1] = 0;
     soundCurrent[channel] = soundSad[channel];
     soundTimers[channel] = soundTmr[channel];
 
@@ -1034,8 +1078,9 @@ void Spu::writeSoundTmr(int channel, uint16_t mask, uint16_t value) {
 
 void Spu::writeSoundPnt(int channel, uint16_t mask, uint16_t value) {
     syncSamples();
-    // Write to one of the SOUNDPNT registers
+    // Write to one of the SOUNDPNT registers, which moves the loop start the channel might have fetched from
     soundPnt[channel] = (soundPnt[channel] & ~mask) | (value & mask);
+    fetchCount[channel][1] = 0;
 }
 
 void Spu::writeSoundLen(int channel, uint32_t mask, uint32_t value) {
@@ -1043,6 +1088,7 @@ void Spu::writeSoundLen(int channel, uint32_t mask, uint32_t value) {
     // Write to one of the SOUNDLEN registers
     mask &= 0x003FFFFF;
     soundLen[channel] = (soundLen[channel] & ~mask) | (value & mask);
+    fetchCount[channel][0] = fetchCount[channel][1] = 0;
 }
 
 void Spu::writeMainSoundCnt(uint16_t mask, uint16_t value) {
