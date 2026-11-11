@@ -192,13 +192,58 @@ A real DSi settled most of it, and NooDS U now does the same:
 - Muting the microphone in the touchscreen controller doesn't zero the samples; they drift slowly, like an input settling.
   The first run read FFFF for every sample, since calico's touchscreen controller calls do nothing without the SPI lock.
 
+## The speed test
+
+`build/noodsu-speed.nds` is a seventh ROM, for a DS or a DSi in either mode; DSi mode is the one that matters. It settles
+how fast each CPU really runs, which decides races between them: DSi Sound's menu only loads if the ARM7 answers a
+command before the ARM9, switching to a thread that has never run, gets its next one out. NooDS U counts no time for code
+and data that aren't in the ARM9's caches, and counts each of the ARM7's cycles as two outside its BIOS.
+
+It runs by itself in under a second, shows the least ticks of each measurement and saves `noodsu-speedtest.bin` like the
+other ROMs. To see what it found, and how that compares with NooDS U:
+
+```
+tests/hardware/speed.py noodsu-speedtest.bin [NooDS U's]
+```
+
+NooDS U's comes from a RAM dump, `tests/jit/game.sh tests/hardware/build/noodsu-speed.nds <system files folder> 400 --modes
+interp dsi ram=speed.bin`, which `speed.py` reads too.
+
+Everything is timed with timers 0 and 1, which count at 33.513982MHz on both CPUs, four times each with interrupts off.
+A measurement includes the call, which the empty one gives by itself.
+
+- The ARM9 runs 48 lines of code, 32 bytes each: two instructions in each, then all eight. Each is run from the cache,
+  right after the cache is emptied, and with the cache off. It also reads, then writes, a word in each of 24 lines of
+  data, in the cache and right after they're written out and forgotten. The difference between in the cache and not,
+  for each line, is what a miss costs. The timing itself runs from ITCM, which the caches don't cover. There are fewer
+  lines than each cache has sets, since two lines in a set can push each other out even with the set's other lines free.
+- A loop of 4096 turns of `subs` and `bne`, 4 cycles a turn from the cache, gives the ARM9's clock, and the BIOS's wait
+  loop is timed the same way on both CPUs.
+- The ARM7 runs that loop, and the loop with a read or a write of a word next to it, in its own WRAM, in the DSi's new
+  WRAM, where DSi software has most of its ARM7 code, and in main RAM. Its timer ticks are its cycles, so the ticks a
+  turn are the cycles each takes. The ARM9 sleeps meanwhile, so it leaves main RAM alone.
+
+The block also holds SCFG_CLK and SCFG_EXT as each CPU found them, and the ARM9's control register and regions, to
+show the caches were on and covered the code and data.
+
+On a DSi in DSi mode (`speed-realdsi.bin`, from the first version, which ran 128 lines of code and 64 of data):
+
+- The ARM9 runs at 134MHz. A line of code or data that isn't in the cache costs about 22 ticks, 0.66 microseconds, and a
+  write to one about 4 to 8 ticks. With the code cache off every instruction takes 9 ticks to fetch.
+- The ARM7 takes 4 cycles a turn in its WRAM and in new WRAM, with 3 more for a read or a write, and the same 4 in its
+  BIOS's wait loop. In main RAM the same loop takes 15, and 40 with a read.
+- That run's "in the cache" times for the lines are as slow as the misses: with twice as many lines as sets, each line
+  pushed out the one sharing its set, so the cache replaces a set's lines by turns even while others are free.
+
+NooDS U counts nothing for a miss, runs the ARM9 at 67MHz, and counts 8 for the ARM7's loop wherever it is.
+
 ## Building it
 
 ```
 tests/hardware/build.sh [results from NooDS U]
 ```
 
-It builds all six ROMs, and needs devkitPro's `nds-dev`. The results are NooDS U's for the instruction test's CPUs, as 2 x
+It builds all seven ROMs, and needs devkitPro's `nds-dev`. The results are NooDS U's for the instruction test's CPUs, as 2 x
 110 x 12 little-endian words, which go in a table of the same size either way, so the code doesn't move. Build once without
 them, run that in NooDS U to get them, and build again. On the Mac, `tests/jit/game.sh` gets them:
 
