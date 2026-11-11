@@ -1204,6 +1204,41 @@ static bool nativeJumps(int kind) {
     return kind == NK_BRANCH || kind == NK_BRANCH_REG || kind == NK_BLOCK_PC || kind == NK_BLX || kind == NK_TRANSFER_PC || kind == NK_ALU_PC;
 }
 
+// The condition flags as generated code keeps track of them, in the order of bits 28 to 31 of the CPSR
+enum { FLAG_V = BIT(0), FLAG_C = BIT(1), FLAG_Z = BIT(2), FLAG_N = BIT(3), FLAG_ALL = 0xF };
+
+static void flagUse(uint32_t op, int kind, int &reads, int &writes, int &always) {
+    // Get which flags a native instruction of a kind that can be in a run reads, which it can change, and which of those
+    // it changes whenever it runs, so their old values can't be seen after it unless it has a condition, which reads them
+    reads = writes = always = 0;
+    if (kind == NK_ALU) {
+        // Arithmetic sets every flag; logical operations leave V alone, and C too unless the shifter gives a new one,
+        // which a shift by a register only does if the amount isn't 0
+        uint32_t opc = (op >> 21) & 0xF;
+        bool logical = (opc <= 1) || (opc >= 8 && opc <= 9) || opc >= 12;
+        bool byRegister = !(op & BIT(25)) && (op & BIT(4));
+        bool rrx = !(op & BIT(25)) && (op & 0xFF0) == 0x060;
+        if ((opc >= 5 && opc <= 7) || rrx) reads |= FLAG_C;
+        if (op & BIT(20)) {
+            writes = always = logical ? (FLAG_N | FLAG_Z) : FLAG_ALL;
+            if (logical && byRegister) writes |= FLAG_C;
+            else if (logical && (op & ((op & BIT(25)) ? 0xF00 : 0xFE0))) writes = always = FLAG_N | FLAG_Z | FLAG_C;
+        }
+    }
+    else if (kind == NK_MULTIPLY) {
+        if (op & BIT(20)) writes = always = FLAG_N | FLAG_Z;
+    }
+    else if (kind == NK_MISC) {
+        if (!(op & BIT(4))) reads = FLAG_ALL; // MRS
+    }
+    else if (kind == NK_TRANSFER) {
+        if ((op & BIT(25)) && (op & 0xFF0) == 0x060) reads = FLAG_C; // An offset rotated through the carry
+    }
+
+    // A condition can read any of them
+    if ((op >> 28) != 0xE) reads = FLAG_ALL;
+}
+
 static uint32_t thumbToArm(uint32_t op) {
     // Get the ARM instruction that does the same as a THUMB instruction, for the same native code, or one that doesn't
     // have any if there's none; the callers handle how the program counter and timing differ
@@ -1358,6 +1393,13 @@ void Jit::emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc) {
     bool restore = rd == 15 && s && (opc < 8 || opc > 11);
     if (restore) s = false;
     bool jump = rd == 15 && !s;
+
+    // Flags that nothing reads before they're set again aren't worked out, which only happens inside a run, where
+    // nothing can stop to see them; the instruction is then generated as if it didn't set any
+    int reads, writes, always;
+    flagUse(op, NK_ALU, reads, writes, always);
+    int need = s ? (writes & flagsLive) : 0;
+    if (!need) s = false;
     auto store = [&](int rs) {
         if (restore) {
             if (rs != 5) e.mr(5, rs);
@@ -1455,12 +1497,22 @@ void Jit::emitAlu(PpcEmitter &e, uint32_t op, uint32_t pc) {
         case 0xF: e.nor(5, 4, 4); break; // MVN
     }
 
-    // Set flags with a shared routine
+    // Set flags with a shared routine, except for arithmetic that's only needed for its carry, as between the words of
+    // a longer addition, which just copies the host's; nothing sets the carry without N and Z, so logical operations
+    // have no such case
     if (s) {
-        if (logical)
+        if (logical) {
             e.call(codeFlags[carry]);
-        else
+        }
+        else if (need == FLAG_C) {
+            e.adde(9, 9, 9); // The host's carry in the low bit, whatever was there
+            e.lwz(6, offCpsr, R_ARM);
+            e.rlwimi(6, 9, 29, 2, 2);
+            e.stw(6, offCpsr, R_ARM);
+        }
+        else {
             e.call(codeFlags[(opc == 0x4 || opc == 0x5 || opc == 0xB) ? 2 : (opc == 0x3 || opc == 0x7) ? 4 : 3]);
+        }
     }
 
     // Store the result unless it's a compare or test
@@ -1784,7 +1836,9 @@ void Jit::emitMultiply(PpcEmitter &e, uint32_t op, uint32_t pc) {
     // Multiply, with an optional accumulate and flags; only N and Z change
     // Timing is fixed on the ARM9, and depends on the value in r4 on the ARM7
     uint32_t high = (op >> 16) & 0xF, low = (op >> 12) & 0xF;
+    // Flags that nothing reads aren't worked out, though the ARM9 still takes the time for them
     bool accumulate = op & BIT(21), flags = op & BIT(20);
+    bool setFlags = flags && (flagsLive & (FLAG_N | FLAG_Z));
     readReg(e, 3, op & 0xF, pc);
     readReg(e, 4, (op >> 8) & 0xF, pc);
     e.mullw(5, 3, 4);
@@ -1794,7 +1848,7 @@ void Jit::emitMultiply(PpcEmitter &e, uint32_t op, uint32_t pc) {
             e.add(5, 5, 6);
         }
         writeReg(e, 5, high);
-        if (flags) e.call(codeFlags[0]);
+        if (setFlags) e.call(codeFlags[0]);
         if (arm7) {
             e.call(codeMultiplyCycles);
             e.addi(3, 6, accumulate ? 2 : 1);
@@ -1817,7 +1871,7 @@ void Jit::emitMultiply(PpcEmitter &e, uint32_t op, uint32_t pc) {
     writeReg(e, 6, high);
 
     // Flags are from all 64 bits
-    if (flags) {
+    if (setFlags) {
         e.or_(7, 5, 6);
         e.cntlzw(7, 7);
         e.rlwinm(7, 7, 25, 1, 1);
@@ -2045,6 +2099,27 @@ static bool mayJump(uint32_t op, bool thumb) {
     return (op & 0x0E000010) == 0x06000010; // Undefined
 }
 
+void Jit::findLiveFlags(JitBlock *block) {
+    // Work out which flags are read after each instruction of a block before something sets them again, going
+    // backwards from what follows it. Every flag counts as read at the end of the block and before any instruction
+    // that isn't in a run, which covers everywhere code can stop or leave the block, so the state there is always
+    // exact. Only instructions in a run that's followed by more of it can have flags nothing reads after them
+    size_t count = block->instrs.size();
+    liveFlags.assign(count, FLAG_ALL);
+    int live = FLAG_ALL;
+    for (size_t i = count; i-- > 0;) {
+        if (!batched(block, i)) {
+            live = FLAG_ALL;
+            continue;
+        }
+        liveFlags[i] = live;
+        uint32_t op = armOpcode(block, i);
+        int reads, writes, always;
+        flagUse(op, nativeKind(op, arm7), reads, writes, always);
+        live = (live & ~always) | reads;
+    }
+}
+
 bool Jit::batched(JitBlock *block, size_t i) {
     // Check if an instruction is in a run whose cycles are checked together, which is only done with fast timing
     // Runs are native ALU instructions and loads; stores always check, since they can halt the CPU, change code
@@ -2074,6 +2149,7 @@ void Jit::emitInstr(PpcEmitter &e, JitBlock *block, size_t i, uint32_t pc, bool 
     // Generate one instruction; the program counter register only holds its value after stepping
     // Instructions in a run don't use it until the check at the end, so they leave stepping until then
     uint32_t raw = block->instrs[i].opcode, op = armOpcode(block, i);
+    flagsLive = liveFlags[i];
     if (!batched(block, i)) stepPc(e);
 
     // Instructions with a condition in the middle of a run add the cycle a failed condition takes after the instruction,
@@ -2265,6 +2341,7 @@ void *Jit::generate(JitBlock *block) {
     block->links.clear();
     bool ok = true;
     JS_START(emitStart);
+    findLiveFlags(block);
     for (size_t i = 0; i < block->instrs.size() && ok; i++, pc += step) {
         if (i > 0) pcBehind += step;
         block->entries.push_back((uint8_t*)e.here() - codePtr);
@@ -2274,6 +2351,7 @@ void *Jit::generate(JitBlock *block) {
 
     // Continue to whatever block comes next
     e.b(codeDispatch);
+    flagsLive = FLAG_ALL;
     JS_ADD(JS_EMIT, emitStart);
 
     // Link jumps between this block and others while the area is writable

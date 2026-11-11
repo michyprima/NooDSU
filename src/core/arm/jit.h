@@ -193,6 +193,8 @@ private:
     void *codeEnter = nullptr, *codeExit = nullptr, *codeDispatch = nullptr;
     void *codeRefresh = nullptr;
     uint32_t pcBehind = 0; // How far the program counter register will be behind at this point in a block being generated
+    std::vector<uint8_t> liveFlags; // Which of N, Z, C and V are read after each instruction of the block being generated
+    uint8_t flagsLive = 0xF; // The same for the instruction being generated, as bits 28 to 31 of the CPSR
     bool thumbCode = false; // Whether the block being generated is THUMB
     void *codePost[3][2][2] = {}, *codeSlowPost[2] = {}; // Indexed by how cycles are halved, impure, then storing the PC
     void *codeCond[14] = {}, *codeFlags[5] = {}, *codeMemory[6] = {}, *codeShift[4] = {}, *codeShiftCarry[4] = {}, *codeMultiplyCycles = nullptr, *codeOverflowQ = nullptr, *codeMsr[2] = {}, *codeReturn = nullptr;
@@ -244,6 +246,7 @@ private:
     void emitMath(PpcEmitter &e, bool load, int size);
     bool emitNative(PpcEmitter &e, uint32_t op, uint32_t pc);
     uint32_t armOpcode(JitBlock *block, size_t i);
+    void findLiveFlags(JitBlock *block);
     bool batched(JitBlock *block, size_t i);
     bool endsRun(JitBlock *block, size_t i);
     void stepPc(PpcEmitter &e);
