@@ -1268,7 +1268,14 @@ void captureDrcMix(void *mix) {
 
 void outputAudio(void *data, uint8_t *buffer, int length) {
     // Refill the audio buffer as a callback
-    ConsoleUI::fillAudioBuffer((uint32_t*)buffer, length / sizeof(uint32_t), 32768);
+    uint32_t *samples = (uint32_t*)buffer;
+    int count = length / sizeof(uint32_t);
+    ConsoleUI::fillAudioBuffer(samples, count, 32768);
+
+    // The core's samples have the right channel in their high half, which comes first in memory here, and the left
+    // channel is what has to come first
+    for (int i = 0; i < count; i++)
+        samples[i] = (samples[i] << 16) | (samples[i] >> 16);
 }
 
 int runUi(int argc, void *argv) {
