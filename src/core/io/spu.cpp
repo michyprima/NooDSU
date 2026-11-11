@@ -761,6 +761,21 @@ void Spu::mixSample() {
         sampleLeft = (std::max(0, std::min<int32_t>(0x3FF, (sampleLeft >> 6) + soundBias)) - 0x200) << 6;
         sampleRight = (std::max(0, std::min<int32_t>(0x3FF, (sampleRight >> 6) + soundBias)) - 0x200) << 6;
     }
+
+    // On a DSi, the output is shared with the DSP in the ratio SNDEXCNT sets, and can be muted or turned off there
+    if (core->dsiMode) {
+        uint16_t sndExCnt = core->dsiMic.readSndExCnt();
+        int16_t dsp[2];
+        core->dsiDsp.takeSample(dsp);
+        int ratio = std::min(8, sndExCnt & 0xF);
+        if ((sndExCnt & 0xC000) != 0x8000) {
+            sampleLeft = sampleRight = 0;
+        }
+        else if (ratio != 8) {
+            sampleLeft = (sampleLeft * ratio + dsp[0] * (8 - ratio)) >> 3;
+            sampleRight = (sampleRight * ratio + dsp[1] * (8 - ratio)) >> 3;
+        }
+    }
     pushSample(sampleLeft, sampleRight);
 }
 

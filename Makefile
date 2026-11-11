@@ -11,7 +11,7 @@ include $(DEVKITPRO)/wut/share/wut_rules
 
 NAME := noodsu
 BUILD := build-wiiu
-SRCS := src src/core src/core/arm src/core/gpu src/core/hle src/core/io src/core/memory src/core/net src/ui src/ui/console
+SRCS := src src/core src/core/arm src/core/gpu src/core/hle src/core/io src/core/memory src/core/net src/core/teakra src/ui src/ui/console
 SLIRP := src/core/net/libslirp
 SLIRPSRCS := $(SLIRP)/src $(SLIRP)/glib
 DATA := src/ui/console/images src/ui/console/shaders

@@ -134,7 +134,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
         gpu3DRenderer(this), hleArm7(this), hleBios { HleBios(this, 0, HleBios::swiTable9), HleBios(this, 1, HleBios::
         swiTable7), HleBios(this, 1, HleBios::swiTableGba) }, i2c(this), input(this), interpreter { Interpreter(
         this, 0), Interpreter(this, 1) }, ipc(this), jit(this, 0), jit7(this, 1), memory(this), ndma { Ndma(this, 0), Ndma(this, 1) }, rtc(this),
-        saveStates(this), sdMmc(this, false), sdio(this, true), slot2(this), dsiWifi(this), dsiMic(this), dsiGpio(this), dsiCamera(this), spi(this), spu(this), timers { Timers(this, 0), Timers(this, 1) }, wifi(this) {
+        saveStates(this), sdMmc(this, false), sdio(this, true), slot2(this), dsiWifi(this), dsiMic(this), dsiGpio(this), dsiCamera(this), dsiDsp(this), spi(this), spu(this), timers { Timers(this, 0), Timers(this, 1) }, wifi(this) {
     // Set DSi mode now and ignore changes to it later
     dsiMode = Settings::dsiMode;
     updateRun();
@@ -194,6 +194,7 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
     tasks[SDMMC_FLUSH] = std::bind(&SdMmc::flush, &sdMmc);
     tasks[CAM_FRAME] = std::bind(&DsiCamera::frameStart, &dsiCamera);
     tasks[CAM_LINE] = std::bind(&DsiCamera::transferLine, &dsiCamera);
+    tasks[DSP_UPDATE] = std::bind(&DsiDsp::update, &dsiDsp);
 
     // Schedule initial tasks for NDS mode
     schedule(RESET_CYCLES, 0x7FFFFFFF);
@@ -489,6 +490,7 @@ void Core::resetCycles() {
     spu.resetCycles();
     spi.resetCycles();
     dsiMic.resetCycles();
+    dsiDsp.resetCycles();
     globalCycles -= globalCycles;
     schedule(RESET_CYCLES, 0x7FFFFFFF);
 }

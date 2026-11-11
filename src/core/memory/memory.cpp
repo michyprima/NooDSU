@@ -1371,6 +1371,7 @@ template <typename T> T Memory::ioRead9(uint32_t address) {
             switch (base) {
                 DEF_IO08(0x4004000, data = readScfgRom()) // SCFG_A9ROM
                 DEF_IO16(0x4004004, data = readScfgClk()) // SCFG_CLK
+                DEF_IO16(0x4004006, data = core->dsiDsp.readRst()) // SCFG_RST
                 DEF_IO32(0x4004008, data = readScfgExt(0)) // SCFG_EXT9
                 DEF_IO16(0x4004010, data = readScfgMc()) // SCFG_MC
                 DEF_IO08(0x4004040, data = readMbk1(0)) // MBK1.0
@@ -1431,6 +1432,18 @@ template <typename T> T Memory::ioRead9(uint32_t address) {
                 DEF_IO32(0x4004204, data = core->dsiCamera.readData()) // CAM_DAT
                 DEF_IO32(0x4004210, data = core->dsiCamera.readSofs()) // CAM_SOFS
                 DEF_IO32(0x4004214, data = core->dsiCamera.readEofs()) // CAM_EOFS
+                DEF_IO16(0x4004300, data = core->dsiDsp.readPdata()) // DSP_PDATA
+                DEF_IO16(0x4004308, data = core->dsiDsp.readPcfg()) // DSP_PCFG
+                DEF_IO16(0x400430C, data = core->dsiDsp.readPsts()) // DSP_PSTS
+                DEF_IO16(0x4004310, data = core->dsiDsp.readPsem()) // DSP_PSEM
+                DEF_IO16(0x4004314, data = core->dsiDsp.readPmask()) // DSP_PMASK
+                DEF_IO16(0x400431C, data = core->dsiDsp.readSem()) // DSP_SEM
+                DEF_IO16(0x4004320, data = core->dsiDsp.readCmd(0)) // DSP_CMD0
+                DEF_IO16(0x4004324, data = core->dsiDsp.readRep(0)) // DSP_REP0
+                DEF_IO16(0x4004328, data = core->dsiDsp.readCmd(1)) // DSP_CMD1
+                DEF_IO16(0x400432C, data = core->dsiDsp.readRep(1)) // DSP_REP1
+                DEF_IO16(0x4004330, data = core->dsiDsp.readCmd(2)) // DSP_CMD2
+                DEF_IO16(0x4004334, data = core->dsiDsp.readRep(2)) // DSP_REP2
             }
         }
 
@@ -2133,6 +2146,7 @@ template <typename T> void Memory::ioWrite9(uint32_t address, T value) {
             }
             switch (base) {
                 DEF_IO16(0x4004004, writeScfgClk(IOWR_PARAMS)) // SCFG_CLK
+                DEF_IO16(0x4004006, core->dsiDsp.writeRst(IOWR_PARAMS)) // SCFG_RST
                 DEF_IO32(0x4004008, writeScfgExt9(IOWR_PARAMS)) // SCFG_EXT9
                 DEF_IO08(0x4004040, writeMbk1(0, IOWR_PARAMS8)) // MBK1.0
                 DEF_IO08(0x4004041, writeMbk1(1, IOWR_PARAMS8)) // MBK1.1
@@ -2190,6 +2204,15 @@ template <typename T> void Memory::ioWrite9(uint32_t address, T value) {
                 DEF_IO16(0x4004202, core->dsiCamera.writeCnt(IOWR_PARAMS)) // CAM_CNT
                 DEF_IO32(0x4004210, core->dsiCamera.writeSofs(IOWR_PARAMS)) // CAM_SOFS
                 DEF_IO32(0x4004214, core->dsiCamera.writeEofs(IOWR_PARAMS)) // CAM_EOFS
+                DEF_IO16(0x4004300, core->dsiDsp.writePdata(IOWR_PARAMS)) // DSP_PDATA
+                DEF_IO16(0x4004304, core->dsiDsp.writePadr(IOWR_PARAMS)) // DSP_PADR
+                DEF_IO16(0x4004308, core->dsiDsp.writePcfg(IOWR_PARAMS)) // DSP_PCFG
+                DEF_IO16(0x4004310, core->dsiDsp.writePsem(IOWR_PARAMS)) // DSP_PSEM
+                DEF_IO16(0x4004314, core->dsiDsp.writePmask(IOWR_PARAMS)) // DSP_PMASK
+                DEF_IO16(0x4004318, core->dsiDsp.writePclear(IOWR_PARAMS)) // DSP_PCLEAR
+                DEF_IO16(0x4004320, core->dsiDsp.writeCmd(0, IOWR_PARAMS)) // DSP_CMD0
+                DEF_IO16(0x4004328, core->dsiDsp.writeCmd(1, IOWR_PARAMS)) // DSP_CMD1
+                DEF_IO16(0x4004330, core->dsiDsp.writeCmd(2, IOWR_PARAMS)) // DSP_CMD2
             }
         }
 
@@ -2817,6 +2840,7 @@ void Memory::writeMbk23(int i, uint8_t value) {
     uint8_t old = mbk23[i];
     if (old == (value & 0x9F)) return;
     mbk23[i] = (value & 0x9F);
+    core->dsiDsp.remap();
     updateNwramSlots(mbk7, 15, (old >> 2) & 0x7, (value >> 2) & 0x7);
 }
 
@@ -2825,6 +2849,7 @@ void Memory::writeMbk45(int i, uint8_t value) {
     uint8_t old = mbk45[i];
     if (old == (value & 0x9F)) return;
     mbk45[i] = (value & 0x9F);
+    core->dsiDsp.remap();
     updateNwramSlots(mbk8, 15, (old >> 2) & 0x7, (value >> 2) & 0x7);
 }
 
@@ -2991,10 +3016,11 @@ bool Memory::fastArm9() {
 
 void Memory::writeScfgClk(uint16_t mask, uint16_t value) {
     // Write to the ARM9's clock register; bit 0 runs the ARM9 at 133MHz instead of the DS's 67MHz, which the system
-    // turns off for DS titles, and the others clock the DSP, the camera and new WRAM (not emulated)
+    // turns off for DS titles, bit 1 clocks the DSP, and the others clock the camera and new WRAM (not emulated)
     uint16_t old = scfgClk;
     mask &= 0x0187;
     scfgClk = (scfgClk & ~mask) | (value & mask);
+    if ((old ^ scfgClk) & BIT(1)) core->dsiDsp.clockChanged();
     if (!((old ^ scfgClk) & BIT(0))) return;
 
     // Count the ARM9's cycles at the new speed, picking the run loop again once the current instruction is done

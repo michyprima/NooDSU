@@ -22,7 +22,7 @@
 #include "file_lock.h"
 
 const char *SaveStates::stateTag = "NOOD";
-const uint32_t SaveStates::stateVersion = 17;
+const uint32_t SaveStates::stateVersion = 18;
 
 void SaveStates::setPath(std::string path, bool gba) {
     // Set the NDS or GBA state path
@@ -117,6 +117,7 @@ bool SaveStates::saveState() {
     core->dsiMic.saveState(file);
     core->dsiGpio.saveState(file);
     core->dsiCamera.saveState(file);
+    core->dsiDsp.saveState(file);
     core->spi.saveState(file);
     core->spu.saveState(file);
     core->timers[0].saveState(file);
@@ -171,6 +172,7 @@ bool SaveStates::loadState() {
     core->dsiMic.loadState(file);
     core->dsiGpio.loadState(file);
     core->dsiCamera.loadState(file);
+    core->dsiDsp.loadState(file);
     core->spi.loadState(file);
     core->spu.loadState(file);
     core->timers[0].loadState(file);

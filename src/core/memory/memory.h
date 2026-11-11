@@ -102,6 +102,7 @@ public:
     uint16_t readExMemStat() { return (exMemCnt & 0xFF80) | (exMemStat & 0x7F); }
     uint8_t readHaltCnt() { return haltCnt; }
 
+    uint8_t *getNwram(int block) { return block == 0 ? nwramA : (block == 1 ? nwramB : nwramC); }
     uint8_t readMbk1(int i) { return mbk1[i]; }
     uint8_t readMbk23(int i) { return mbk23[i]; }
     uint8_t readMbk45(int i) { return mbk45[i]; }

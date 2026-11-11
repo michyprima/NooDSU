@@ -50,6 +50,7 @@
 #include "io/dsi_mic.h"
 #include "io/dsi_gpio.h"
 #include "io/dsi_camera.h"
+#include "io/dsi_dsp.h"
 #include "io/i2c.h"
 #include "io/input.h"
 #include "io/ipc.h"
@@ -121,6 +122,7 @@ enum SchedTask {
     SDMMC_FLUSH,
     CAM_FRAME,
     CAM_LINE,
+    DSP_UPDATE,
     MAX_TASKS
 };
 
@@ -220,6 +222,7 @@ public:
     DsiMic dsiMic;
     DsiGpio dsiGpio;
     DsiCamera dsiCamera;
+    DsiDsp dsiDsp;
     Spi spi;
     Spu spu;
     Timers timers[2];
