@@ -475,11 +475,16 @@ int16_t Spi::readMic(uint32_t cycles) {
     int16_t value = 0;
     mutex.lock();
     if (micStep) {
-        // Move past the samples that played since the last read
+        // Move past the samples that played since the last read; a time before that, from a reader catching up after
+        // another one moved on, gets the older sample that was playing then
+        uint32_t back = 0;
         if (int32_t(cycles - micCycles) > 0) {
             uint32_t played = (cycles - micCycles) / micStep;
             micRead += played;
             micCycles += played * micStep;
+        }
+        else {
+            back = (micCycles - cycles + micStep - 1) / micStep;
         }
 
         // Stay a few frames behind the newest samples, skipping ahead if reads fell behind, and
@@ -488,8 +493,8 @@ int16_t Spi::readMic(uint32_t cycles) {
             micRead = micWrite - micRate / 30;
         if (int32_t(micWrite - micRead) <= 0)
             micRead = micWrite, micCycles = cycles;
-        else
-            value = micBuffer[micRead & (MIC_SIZE - 1)];
+        else if (micWrite - (micRead - back) <= MIC_SIZE)
+            value = micBuffer[(micRead - back) & (MIC_SIZE - 1)];
     }
     mutex.unlock();
     return value;
