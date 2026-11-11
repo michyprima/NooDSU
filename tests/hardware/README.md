@@ -266,8 +266,10 @@ ARM7.
 plays from the left speaker only, then a high one from the right only, a second each, over and over; holding A plays
 both. If the low tone comes from the right, left and right are swapped somewhere after the DS's mixer.
 
-The ARM7 sets the sound registers itself, since libnds's sound driver doesn't get through its start-up in NooDS U yet:
-it turns the screens white and never answers the ARM9. That also means nothing turns a real console's speaker amplifier
-on beyond what it starts with, so on real hardware this ROM may stay silent. On the Mac, `tests/jit/game.sh
+The ARM7 sets the sound registers itself, without libnds's sound driver. Using that driver would take the ARM7's mic
+server as well: any ARM9 that links libnds's sound functions runs `soundInit()` and `micInit()` before `main()`, and
+`micInit()` waits for the ARM7's mic server, so with only `soundStartServer()` the ARM9 never reaches `main()` and the
+screens stay white, on a real DS as in NooDS U. Without the driver, nothing turns a real console's speaker amplifier on
+beyond what it starts with, so on real hardware this ROM may stay silent. On the Mac, `tests/jit/game.sh
 tests/hardware/build/noodsu-stereo.nds <system files folder> 420 wav=stereo.wav` saves what the DS's mixer made, which
 has the low tone on the left.
