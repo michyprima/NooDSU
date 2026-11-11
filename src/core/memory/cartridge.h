@@ -68,6 +68,7 @@ public:
     void resizeSave(int newSize, bool dirty = true);
 
     int getRomSize() { return romSize; }
+    std::string getSavePath() { return savePath; }
     int getSaveSize() { return saveSize; }
 
 protected:
@@ -175,6 +176,8 @@ public:
 
     void directBoot();
     void powerReset();
+    void readRom(uint32_t offset, uint8_t *data, uint32_t size);
+    void bootDsiWare();
     void wordReady(bool cpu);
     void flushWord();
     bool burstReady() { return burstDone && (romCtrl[1] & BIT(23)); }

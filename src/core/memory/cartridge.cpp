@@ -982,6 +982,70 @@ void CartridgeNds::directBoot() {
     if (!dsi) return;
     loadDsiCode(false);
     loadDsiCode(true);
+
+    // DSiWare (title IDs 00030004 and up, not cards) gets its files and saves from the SD card, as if launched from there
+    if (romFile) loadRomSection(0, 0x1000);
+    if (rom[0x234] & BIT(2)) bootDsiWare();
+}
+
+void CartridgeNds::readRom(uint32_t offset, uint8_t *data, uint32_t size) {
+    // Copy part of the ROM for something other than the card bus, like a DSiWare title's SD card, with 0xFFs past the end
+    uint32_t count = (offset < uint32_t(romSize)) ? std::min<uint32_t>(size, romSize - offset) : 0;
+    if (romFile && count) {
+        loadRomSection(offset, count);
+        memcpy(data, rom, count);
+    }
+    else if (count) {
+        ensureLoaded(offset, count);
+        memcpy(data, &rom[offset], count);
+    }
+    memset(&data[count], 0xFF, size - count);
+}
+
+void CartridgeNds::bootDsiWare() {
+    // Put the title and its saves on an SD card of their own; the header still has to be read after, since making the
+    // card can load other parts of the ROM over it
+    if (romFile) loadRomSection(0, 0x1000);
+    uint8_t header[0x1000];
+    memcpy(header, rom, sizeof(header));
+    core->dsiWareSd.create(header, getSavePath());
+    core->sdMmc.insertDsiWareSd();
+
+    // Give the title the devices the DSi menu would, as seen when it launches one from the NAND, but with its files and
+    // saves on the SD card; the SD card has to come before the saves, since entries can only refer back
+    // Entries are a drive letter, flags, access rights, then a name and a path; the physical NAND partitions are always
+    // there, with no access for titles that aren't system ones
+    struct Device { char letter; uint8_t flags, access; std::string name, path; };
+    std::vector<Device> devices = {
+        { 'A', 0x81, 0x00, "nand", "/" },
+        { 'B', 0xA1, 0x00, "nand2", "/" },
+        { 'D', 0x11, 0x04, "shared1", "nand:/shared1" },
+        { 'F', 0x31, 0x00, "photo", "nand2:/photo" },
+        { 'I', 0x00, 0x06, "sdmc", "/" },
+    };
+    for (int i = 1; i < core->dsiWareSd.fileCount(); i++) {
+        std::string file = core->dsiWareSd.fileName(i);
+        bool pub = (file.substr(file.size() - 3) == "PUB");
+        devices.push_back({ pub ? 'H' : 'G', 0x09, 0x06, pub ? "dataPub" : "dataPrv", "sdmc:/" + file });
+    }
+    uint32_t list = U8TO32(header, 0x1D4);
+    for (uint32_t i = 0; i < 0x400; i += 4)
+        core->memory.write<uint32_t>(1, list + i, 0);
+    for (size_t i = 0; i < devices.size(); i++) {
+        uint32_t entry = list + i * 0x54;
+        core->memory.write<uint8_t>(1, entry + 0, devices[i].letter);
+        core->memory.write<uint8_t>(1, entry + 1, devices[i].flags);
+        core->memory.write<uint8_t>(1, entry + 2, devices[i].access);
+        for (size_t j = 0; j < devices[i].name.size(); j++)
+            core->memory.write<uint8_t>(1, entry + 0x04 + j, devices[i].name[j]);
+        for (size_t j = 0; j < devices[i].path.size(); j++)
+            core->memory.write<uint8_t>(1, entry + 0x14 + j, devices[i].path[j]);
+    }
+
+    // The title finds its own file by the path at the end of the list
+    std::string path = "sdmc:/" + core->dsiWareSd.fileName(0);
+    for (size_t j = 0; j < path.size(); j++)
+        core->memory.write<uint8_t>(1, list + 0x3C0 + j, path[j]);
 }
 
 uint64_t CartridgeNds::encrypt64(uint64_t value) {

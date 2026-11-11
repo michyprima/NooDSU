@@ -184,7 +184,16 @@ void SdMmc::flush() {
     flushPending = false;
     if (nand) nandCache.flush(nand);
     if (sd) sdCache.flush(sd);
+    if (virtualSd) core->dsiWareSd.flush();
     NAND_LOG_LINE("flush, write errors NAND %u SD %u\n", nandCache.writeErrors, sdCache.writeErrors);
+}
+
+void SdMmc::insertDsiWareSd() {
+    // Swap the SD card for the one made for a DSiWare title, which is always standard capacity
+    virtualSd = true;
+    sdSize = core->dsiWareSd.size();
+    sdhc = false;
+    sdIrqStatus |= BIT(4) | 0xA0;
 }
 
 void SdMmc::detectCard() {
@@ -321,6 +330,9 @@ void SdMmc::readBlock() {
         core->dsiWifi.readData(data, size);
         len = (size + 3) >> 2;
     }
+    else if (virtualSd && !(sdPortSelect & BIT(0))) {
+        core->dsiWareSd.read(curAddress, data, len << 2);
+    }
     else if (FILE *src = (sdPortSelect & BIT(0)) ? nand : sd) {
         FileCache &cache = (sdPortSelect & BIT(0)) ? nandCache : sdCache;
         cache.read(src, hc ? (int64_t(curAddress) << 9) : curAddress, data, len << 2);
@@ -359,6 +371,13 @@ void SdMmc::writeBlock() {
     // Write the data to the SD or MMC if present, in 512- or 1-byte units, or to the Wi-Fi chip
     if (sdio) {
         core->dsiWifi.writeData(data, sdData16Blklen ? sdData16Blklen : 0x200);
+    }
+    else if (virtualSd && !(sdPortSelect & BIT(0))) {
+        core->dsiWareSd.write(curAddress, data, len << 2);
+        if (!flushPending) {
+            flushPending = true;
+            core->schedule(SDMMC_FLUSH, 1 << 24);
+        }
     }
     else if (FILE *dst = (sdPortSelect & BIT(0)) ? nand : sd) {
         FileCache &cache = (sdPortSelect & BIT(0)) ? nandCache : sdCache;
@@ -826,7 +845,7 @@ void SdMmc::writeSoftReset(uint16_t mask, uint16_t value) {
     }
 
     // Detect the SD card again when coming out of reset, after its detect time
-    if (!sdio && sd) {
+    if (!sdio && (sd || virtualSd)) {
         if (release) {
             detecting = true;
             startDetect();
