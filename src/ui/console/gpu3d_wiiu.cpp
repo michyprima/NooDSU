@@ -97,6 +97,7 @@ struct GpuDraw {
     bool clearMask; // Whether this starts a group of shadow masks, which clears the shadow bits first
     bool split; // Whether pixels can be opaque or translucent, so they're drawn separately to follow different rules
     bool lines; // Whether this draws the edges of wireframe polygons as lines, instead of triangles
+    bool noFog; // Whether this is translucent without fog, which turns fog off for the pixels it's drawn over
     uint32_t first, count;
 };
 
@@ -803,8 +804,8 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         }
     };
 
-    // Draw a group of triangles
-    auto submitDraw = [&](GpuDraw &draw) {
+    // Set the shaders and textures for a group of triangles
+    auto bindDraw = [&](GpuDraw &draw) {
         WHBGfxShaderGroup &group = groups[draw.shader];
         GX2SetFetchShader(&group.fetchShader);
         GX2SetVertexShader(group.vertexShader);
@@ -822,6 +823,11 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2SetPixelSampler(&samplers[0], 1);
             GX2SetPixelUniformReg(4, 4, toonMode);
         }
+    };
+
+    // Draw a group of triangles
+    auto submitDraw = [&](GpuDraw &draw) {
+        bindDraw(draw);
         GX2PrimitiveMode primitive = draw.lines ? GX2_PRIMITIVE_MODE_LINES : GX2_PRIMITIVE_MODE_TRIANGLES;
         GX2CompareFunction func = wBuffer ? (draw.depthEqual ? GX2_COMPARE_FUNC_GEQUAL : GX2_COMPARE_FUNC_GREATER) :
             (draw.depthEqual ? GX2_COMPARE_FUNC_LEQUAL : GX2_COMPARE_FUNC_LESS);
@@ -1037,12 +1043,14 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             draw.solid = !translucent;
             draw.stencil = translucent ? (0x40 | polygon->id) : polygon->id;
             draw.split = translucent && polygon->alpha == 0x3F;
+            draw.noFog = translucent && !polygon->fog;
 
             // Shadow polygons with ID 0 are masks, which only mark where they're hidden; the first in a row clears
             // the marks of the last group, and their color doesn't matter
             if (polygon->mode == 3) {
                 draw.shadow = polygon->id ? 2 : 1;
                 draw.split = false;
+                draw.noFog = false;
                 if (draw.shadow == 1) {
                     draw.texture = nullptr;
                     draw.shader = 0;
@@ -1188,7 +1196,7 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             if (last && last->shader == draw.shader && last->texture == draw.texture && last->sampler == draw.sampler &&
                     last->translucent == draw.translucent && last->depthEqual == draw.depthEqual &&
                     last->depthWrite == draw.depthWrite && last->stencil == draw.stencil && last->split == draw.split &&
-                    last->shadow == draw.shadow && !draw.clearMask && last->lines == draw.lines &&
+                    last->shadow == draw.shadow && !draw.clearMask && last->lines == draw.lines && last->noFog == draw.noFog &&
                     last->first + last->count == draw.first && draws.size() > sentDraws)
                 last->count += draw.count;
             else
@@ -1335,6 +1343,42 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             HB_LAP(HB_GPU_PASS_EDGE_US);
         }
 
+        // The DS keeps the fog flag of a pixel only while translucent polygons drawn over it have fog too, but the
+        // attributes only have the solid polygon's flag; translucent polygons without fog are drawn again to mark their
+        // pixels in the stencil's top bit, which the fog pass skips. They're tested against the final depths, which
+        // differs from the DS only if a closer translucent polygon that writes depth was drawn over them later
+        bool noFogMarks = fog && std::any_of(draws.begin(), draws.end(), [](const GpuDraw &d) { return d.noFog; });
+        if (noFogMarks) {
+            WHBGfxShaderGroup &mark = groups[0];
+            GX2SetFetchShader(&mark.fetchShader);
+            GX2SetVertexShader(mark.vertexShader);
+            GX2SetPixelShader(mark.pixelShader);
+            GX2SetDepthStencilControl(TRUE, FALSE, GX2_COMPARE_FUNC_ALWAYS, TRUE, FALSE,
+                GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
+                GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
+                GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+            GX2SetStencilMask(0x80, 0x80, 0, 0x80, 0x80, 0);
+            GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
+            GX2SetTargetChannelMasks(NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
+                NO_CHANNELS, NO_CHANNELS);
+            GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 6, QUAD, 1);
+
+            // Pixels the polygons left out for their alpha are left out again by the alpha test, and ones that wrote
+            // their depth pass with it equal
+            GX2SetDepthStencilControl(TRUE, FALSE, wBuffer ? GX2_COMPARE_FUNC_GEQUAL : GX2_COMPARE_FUNC_LEQUAL, TRUE,
+                FALSE, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
+                GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
+                GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+            GX2SetStencilMask(0x80, 0x80, 0x80, 0x80, 0x80, 0x80);
+            GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
+            for (GpuDraw &draw : draws) {
+                if (!draw.noFog) continue;
+                bindDraw(draw);
+                GX2DrawEx(draw.lines ? GX2_PRIMITIVE_MODE_LINES : GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
+            }
+            HB_LAP(HB_GPU_PASS_FOG_US);
+        }
+
         if (fog) {
             // Mix in the fog color by each pixel's density, given in every channel of the output, while the blend
             // factor holds the fog color; it only changes the alpha if set to
@@ -1360,9 +1404,11 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_BLEND_FACTOR, GX2_BLEND_MODE_INV_SRC_COLOR,
                 GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_BLEND_FACTOR, GX2_BLEND_MODE_INV_SRC_ALPHA,
                 GX2_BLEND_COMBINE_MODE_ADD);
-            GX2SetDepthStencilControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS, FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS,
+            // Pixels marked as having lost their fog are skipped
+            GX2SetDepthStencilControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS, noFogMarks, FALSE, GX2_COMPARE_FUNC_EQUAL,
                 GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS,
                 GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+            GX2SetStencilMask(0x80, 0, 0, 0x80, 0, 0);
             GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
             GX2SetColorControl(GX2_LOGIC_OP_COPY, 0x01, FALSE, TRUE);
             GX2SetTargetChannelMasks((disp3DCnt & BIT(6)) ? GX2_CHANNEL_MASK_A : GX2_CHANNEL_MASK_RGBA, NO_CHANNELS,
