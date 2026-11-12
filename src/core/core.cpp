@@ -409,7 +409,14 @@ Core::Core(std::string ndsRom, std::string gbaRom, int id, int ndsRomFd, int gba
             memory.write<uint8_t>(1, 0x4000300, 0x01); // POSTFLG (ARM7)
             memory.write<uint16_t>(0, 0x4000304, 0x0001); // POWCNT1
             memory.write<uint16_t>(1, 0x4000504, 0x0200); // SOUNDBIAS
-            if (dsiMode) memory.write<uint16_t>(1, 0x4004700, 0x8008); // SNDEXCNT, as the DSi menu leaves it
+            if (dsiMode) {
+                // Set sound and the GPIO pins as the DSi menu leaves them for DS and DSi titles alike; nothing emulated
+                // acts on these values, so they only change what software reads back
+                memory.write<uint16_t>(1, 0x4004700, 0x800F); // SNDEXCNT, all DS sound
+                memory.write<uint16_t>(1, 0x4004C00, 0x80D7); // GPIO_DATA and GPIO_DIR, GPIO33[3] an output
+                memory.write<uint16_t>(1, 0x4004C02, 0x4000); // GPIO_IEDGE and GPIO_IE, GPIO33[2] interrupting
+                memory.write<uint16_t>(1, 0x4004C04, 0x0100); // GPIO_WIFI, DS Wi-Fi mode
+            }
 
             cartridgeNds.directBoot();
 
