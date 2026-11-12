@@ -2475,7 +2475,13 @@ bool ConsoleUI::createCore() {
                 startFrame(palette[0]);
                 int percent = Cartridge::loadPercent.load();
                 if (percent >= 0) {
-                    drawString("Loading ROM... " + std::to_string(percent) + "%", SCALE(72), SCALE(330), SCALE(42), palette[1]);
+                    // Show the title and percentage centered, with a full-width bar between them
+                    std::string title = "Loading ROM";
+                    std::string amount = std::to_string(std::min(percent, 100)) + "%";
+                    drawString(title, SCALE(640) - stringWidth(title) * SCALE(42) / 96, SCALE(270), SCALE(42), palette[1]);
+                    drawRectangle(SCALE(30), SCALE(340), SCALE(1220), SCALE(30), palette[2]);
+                    drawRectangle(SCALE(30), SCALE(340), SCALE(1220 * std::min(percent, 100) / 100), SCALE(30), palette[4]);
+                    drawString(amount, SCALE(640) - stringWidth(amount) * SCALE(38) / 96, SCALE(395), SCALE(38), palette[1]);
                     drawString("\x81 Cancel", SCALE(1218), SCALE(667), SCALE(34), palette[1], true);
                 }
                 endFrame();
