@@ -825,6 +825,27 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
         }
     };
 
+    // Mark the pixels where a draw of shadow masks fails the depth test, which is where shadows are drawn
+    auto markMasks = [&](GpuDraw &draw) {
+        GX2CompareFunction func = wBuffer ? (draw.depthEqual ? GX2_COMPARE_FUNC_GEQUAL : GX2_COMPARE_FUNC_GREATER) :
+            (draw.depthEqual ? GX2_COMPARE_FUNC_LEQUAL : GX2_COMPARE_FUNC_LESS);
+        GX2SetDepthStencilControl(TRUE, FALSE, func, TRUE, FALSE,
+            GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_REPLACE,
+            GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
+            GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
+        GX2SetStencilMask(0x80, 0x80, 0x80, 0x80, 0x80, 0x80);
+        GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
+        GX2SetTargetChannelMasks(NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
+            NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
+        GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
+        GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
+    };
+
+    // Shadows remove marks to follow the DS's rules for their own ID, which it keeps in the attributes instead, so the
+    // draws of the current group of masks are kept to mark again for a shadow with another ID
+    size_t masksFirst = 0, masksEnd = 0;
+    int lastShadowId = -1;
+
     // Draw a group of triangles
     auto submitDraw = [&](GpuDraw &draw) {
         bindDraw(draw);
@@ -848,22 +869,28 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                 GX2SetTargetChannelMasks(NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
                     NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
                 GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 6, QUAD, 1);
+                masksFirst = &draw - draws.data();
+                lastShadowId = -1;
             }
 
             // Masks draw nothing, but mark the pixels where they fail the depth test
-            GX2SetDepthStencilControl(TRUE, FALSE, func, TRUE, FALSE,
-                GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_REPLACE,
-                GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
-                GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
-            GX2SetStencilMask(0x80, 0x80, 0x80, 0x80, 0x80, 0x80);
-            GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
-            GX2SetTargetChannelMasks(NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
-                NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
-            GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
-            GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
+            masksEnd = &draw - draws.data() + 1;
+            markMasks(draw);
             return;
         }
         if (draw.shadow == 2) {
+            // A shadow with another ID than the last one in the group is drawn where the masks marked, like on the DS,
+            // so the marks the last one removed are made again
+            int id = draw.stencil & 0x3F;
+            if (lastShadowId >= 0 && lastShadowId != id) {
+                for (size_t i = masksFirst; i < masksEnd; i++) {
+                    bindDraw(draws[i]);
+                    markMasks(draws[i]);
+                }
+                bindDraw(draw);
+            }
+            lastShadowId = id;
+
             // Shadows aren't drawn over pixels with their own ID, so first remove the marks under those
             GX2SetDepthStencilControl(TRUE, FALSE, GX2_COMPARE_FUNC_ALWAYS, TRUE, FALSE,
                 GX2_COMPARE_FUNC_EQUAL, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
@@ -876,12 +903,15 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
             GX2SetAlphaTest(TRUE, GX2_COMPARE_FUNC_GREATER, alphaMin);
 
-            // Then draw them where the marks are left, like translucent pixels, keeping the marks
+            // Then draw them where the marks are left, like translucent pixels, removing the marks they draw over;
+            // polygons with the same ID in a draw can overlap, like the faces of Mario Kart's shadow volumes, and the
+            // DS draws each pixel once, since translucent pixels aren't drawn over ones with their own ID
+            // The reference has no mark, so it passes where the mark differs from it and writes it cleared
             GX2SetDepthStencilControl(TRUE, draw.depthWrite, func, TRUE, FALSE,
-                GX2_COMPARE_FUNC_EQUAL, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
+                GX2_COMPARE_FUNC_NOT_EQUAL, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_KEEP,
                 GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
                 GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
-            GX2SetStencilMask(0x80, 0x7F, 0xC0 | draw.stencil, 0x80, 0x7F, 0xC0 | draw.stencil);
+            GX2SetStencilMask(0x80, 0xFF, draw.stencil & 0x7F, 0x80, 0xFF, draw.stencil & 0x7F);
             GX2SetTargetChannelMasks(colorMask, (attribs && draw.depthWrite) ? GX2_CHANNEL_MASK_G : NO_CHANNELS,
                 NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
             GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
