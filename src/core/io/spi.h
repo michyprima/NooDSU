@@ -49,6 +49,7 @@ public:
 
     bool loadFirmware();
     void directBoot();
+    void setTscDsMode() { tscDsiMode = false; }
     const uint8_t *getFirmware(size_t &size) { size = firmSize; return firmware; }
     void writeWfcSettings();
 

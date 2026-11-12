@@ -966,8 +966,10 @@ void CartridgeNds::directBoot() {
         core->dsiWifi.setFirmwareLoaded();
     }
     else if (core->dsiMode) {
-        // Leave only the DS features, as the system does for a DS title
+        // Leave only the DS features, as the system does for a DS title, and put the touchscreen controller in DS mode,
+        // since the title only knows how to read the DS one
         core->memory.setScfgExt(0x03000000, 0x12A03000);
+        core->spi.setTscDsMode();
     }
     if (core->dsiMode)
         core->memory.prepareTitle(dsi);
