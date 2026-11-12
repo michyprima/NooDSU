@@ -1185,7 +1185,14 @@ uint32_t ConsoleUI::menu(std::string title, std::vector<MenuItem> &items,
         }
         drawRectangle(SCALE(30), SCALE(88), SCALE(1220), lineHeight, palette[1]);
         drawRectangle(SCALE(30), SCALE(648), SCALE(1220), lineHeight, palette[1]);
-        drawString(NOODSU_VERSION, SCALE(72), SCALE(667), SCALE(34), palette[1]);
+        // Dev builds also show when they were built, on a second line
+        if (NOODSU_DEV) {
+            drawString(NOODSU_VERSION, SCALE(72), SCALE(655), SCALE(28), palette[1]);
+            drawString(NOODSU_BUILT, SCALE(72), SCALE(685), SCALE(28), palette[1]);
+        }
+        else {
+            drawString(NOODSU_VERSION, SCALE(72), SCALE(667), SCALE(34), palette[1]);
+        }
         drawString(actionTabs + actionPlus + actionY + actionX + actionB + actionA, SCALE(1218), SCALE(667), SCALE(34),
             palette[1], true);
 
@@ -1863,6 +1870,7 @@ void ConsoleUI::aboutMenu() {
     std::vector<MenuItem> items = {
         MenuItem("NooDS U", true),
         MenuItem("Version", NOODSU_VERSION),
+        MenuItem("Built", NOODSU_BUILT),
         MenuItem("Based on", "NooDS by Hydr8gon"),
         MenuItem("License", "GNU GPL v3 or later"),
         MenuItem("Authors", true),

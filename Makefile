@@ -35,9 +35,15 @@ FAADFLAGS := -g -O2 -w -ffunction-sections $(MACHDEP) -DHAVE_INTTYPES_H=1 -DHAVE
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
 
-# The tag of this commit if it has one, otherwise its short hash, marked if tracked files have uncommitted changes
-VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo unknown)$(shell \
-    git diff --quiet HEAD 2>/dev/null; [ $$? -eq 1 ] && echo -dev)
+# The tag of this commit if it has one, otherwise its short hash; with uncommitted changes to tracked files, it's the
+# short hash marked as a dev build, which also shows the build's date and time to the minute so each one can be told apart
+DEV := $(shell git diff --quiet HEAD 2>/dev/null && echo 0 || echo 1)
+ifeq ($(DEV),1)
+VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)-dev
+else
+VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo unknown)
+endif
+BUILT := $(shell date +%y%m%d-%H%M)
 
 export LD := $(CXX)
 export OUTPUT := $(CURDIR)/$(NAME)
@@ -60,7 +66,8 @@ all: $(BUILD)
 
 $(BUILD):
 	mkdir -p $@
-	@echo '#define NOODSU_VERSION "$(VERSION)"' > $@/version.tmp
+	@printf '#define NOODSU_VERSION "%s"\n#define NOODSU_BUILT "%s"\n#define NOODSU_DEV %s\n' '$(VERSION)' '$(BUILT)' \
+		'$(DEV)' > $@/version.tmp
 	@cmp -s $@/version.tmp $@/version.h && rm $@/version.tmp || mv $@/version.tmp $@/version.h
 	$(MAKE) -C $(BUILD) -f $(CURDIR)/Makefile
 
