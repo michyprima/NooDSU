@@ -876,8 +876,8 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
                 GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP,
                 GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
             GX2SetStencilMask(0x80, 0x7F, 0xC0 | draw.stencil, 0x80, 0x7F, 0xC0 | draw.stencil);
-            GX2SetTargetChannelMasks(colorMask, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS,
-                NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
+            GX2SetTargetChannelMasks(colorMask, (attribs && draw.depthWrite) ? GX2_CHANNEL_MASK_G : NO_CHANNELS,
+                NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
             GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, draw.count, draw.first, 1);
             return;
         }
@@ -905,9 +905,11 @@ void Gpu3DWiiU::renderFrame(Gpu3DRenderer *renderer) {
             GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_COMPARE_FUNC_ALWAYS,
             GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP, GX2_STENCIL_FUNCTION_KEEP);
         GX2SetStencilMask(0x7F, 0x7F, draw.stencil, 0x7F, 0x7F, draw.stencil);
-        // Only solid pixels set the attributes, since translucent ones keep the solid polygon's ID underneath
-        GX2SetTargetChannelMasks(colorMask,
-            (attribs && draw.solid) ? GX2_CHANNEL_MASK_RGBA : NO_CHANNELS,
+        // Only solid pixels set all the attributes, since translucent ones keep the solid polygon's ID underneath, but
+        // translucent ones that write depth set it there too, which fog uses: Mario Kart's translucent road would
+        // otherwise be fogged by the sky's depth behind it
+        GX2SetTargetChannelMasks(colorMask, !attribs ? NO_CHANNELS : draw.solid ? GX2_CHANNEL_MASK_RGBA :
+            draw.depthWrite ? GX2_CHANNEL_MASK_G : NO_CHANNELS,
             NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS, NO_CHANNELS);
         GX2DrawEx(primitive, draw.count, draw.first, 1);
     };
