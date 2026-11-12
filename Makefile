@@ -36,8 +36,9 @@ FAADFLAGS := -g -O2 -w -ffunction-sections $(MACHDEP) -DHAVE_INTTYPES_H=1 -DHAVE
 ifneq ($(BUILD),$(notdir $(CURDIR)))
 
 # The tag of this commit if it has one, otherwise its short hash; with uncommitted changes to tracked files, it's the
-# short hash marked as a dev build, which also shows the build's date and time to the minute so each one can be told apart
-DEV := $(shell git diff --quiet HEAD 2>/dev/null && echo 0 || echo 1)
+# short hash marked as a dev build, which also shows the build's date and time to the minute so each one can be told apart.
+# Only git's "changes found" status counts: in CI's container git fails outright, and those builds aren't dev builds
+DEV := $(shell git diff --quiet HEAD 2>/dev/null; [ $$? -eq 1 ] && echo 1 || echo 0)
 ifeq ($(DEV),1)
 VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)-dev
 else
